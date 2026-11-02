@@ -104,31 +104,64 @@ async function route() {
 }
 window.addEventListener('hashchange', route);
 
+// Kuvakkeet (yksinkertaiset viivakuvakkeet, currentColor)
+const ICONS = {
+  plus: 'M12 5v14M5 12h14',
+  chart: 'M4 20V10M10 20V4M16 20v-7M22 20H2',
+  list: 'M8 6h13M8 12h13M8 18h13M3.5 6h.01M3.5 12h.01M3.5 18h.01',
+  users: 'M16 20v-1.5a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4V20M9 10.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7zM22 20v-1.5a4 4 0 0 0-3-3.87M16 3.63a3.5 3.5 0 0 1 0 6.75',
+  route: 'M6 19a2 2 0 1 0 0-4 2 2 0 0 0 0 4zM18 9a2 2 0 1 0 0-4 2 2 0 0 0 0 4zM6 15V9a4 4 0 0 1 4-4h6M18 9v6a4 4 0 0 1-4 4H8',
+  download: 'M12 3v12M7 10l5 5 5-5M4 21h16',
+  settings: 'M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12M20 18h0M14 4v4M8 10v4M16 16v4',
+  logout: 'M15 4h4a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1h-4M10 17l-5-5 5-5M5 12h11',
+  menu: 'M4 7h16M4 12h16M4 17h16',
+  close: 'M6 6l12 12M18 6L6 18',
+};
+function icon(name, size = 20) {
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('viewBox', '0 0 24 24'); svg.setAttribute('width', size); svg.setAttribute('height', size);
+  svg.setAttribute('aria-hidden', 'true'); svg.setAttribute('class', 'icon');
+  const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+  path.setAttribute('d', ICONS[name]); svg.append(path); return svg;
+}
+
 function renderNav(hash) {
   const bar = document.getElementById('topbar');
   const nav = document.getElementById('nav');
-  if (!state.me || hash === '#/kirjaudu') { bar.hidden = true; return; }
-  bar.hidden = false;
+  if (!state.me || hash === '#/kirjaudu') { bar.hidden = true; document.body.classList.remove('has-nav'); return; }
+  bar.hidden = false; document.body.classList.add('has-nav');
   const p = state.me.permissions;
-  const link = (href, text) => h('a', { href, class: hash === href || (href !== '#/kirjaa' && hash.startsWith(href)) ? 'active' : null }, text);
-  const adminHref = p.manageQuestions ? '#/hallinta/kysymykset' : null;
+  const isActive = (href, prefix) => hash === href || (prefix && hash.startsWith(prefix));
+  const link = (href, text, ic, prefix) => h('a', { href, class: 'nav-link' + (isActive(href, prefix) ? ' active' : ''), 'aria-current': isActive(href, prefix) ? 'page' : null },
+    icon(ic), h('span', null, text));
+  const group = (title, items) => { const it = items.filter(Boolean); return it.length ? h('div', { class: 'nav-group' }, h('span', { class: 'nav-heading' }, title), it) : null; };
+  const u = state.me.user;
+  const initials = u.name.split(/\s+/).map(x => x[0]).slice(0, 2).join('').toUpperCase();
   nav.replaceChildren(...[
-    link('#/kirjaa', 'Uusi kirjaus'),
-    p.dashScope !== 'none' ? link('#/tilastot', 'Tilastot') : null,
-    p.viewScope !== 'none' ? link('#/kirjaukset', p.viewScope === 'own' ? 'Omat kirjaukset' : 'Kirjaukset') : null,
-    p.staffScope !== 'none' ? link('#/tyontekijat', 'Työntekijät') : null,
-    p.pathScope !== 'none' ? link('#/asiakaspolut', 'Asiakaspolut') : null,
-    p.exportScope !== 'none' ? link('#/vienti', 'Excel-vienti') : null,
-    adminHref ? h('a', { href: adminHref, class: hash.startsWith('#/hallinta') ? 'active' : null }, 'Hallinta') : null,
-    h('a', { href: '#/salasana', class: 'who' + (hash === '#/salasana' ? ' active' : ''), title: 'Vaihda salasana' }, state.me.user.name, h('small', null, state.me.user.roleLabel)),
-    h('button', { type: 'button', onclick: logout }, 'Kirjaudu ulos'),
+    h('a', { href: '#/kirjaa', class: 'nav-cta' + (hash === '#/kirjaa' ? ' active' : '') }, icon('plus'), h('span', null, 'Uusi kirjaus')),
+    group('Kirjaukset', [
+      p.viewScope !== 'none' ? link('#/kirjaukset', p.viewScope === 'own' ? 'Omat kirjaukset' : 'Kirjaukset', 'list', '#/kirjaukset') : null,
+    ]),
+    group('Seuranta', [
+      p.dashScope !== 'none' ? link('#/tilastot', 'Tilastot', 'chart') : null,
+      p.staffScope !== 'none' ? link('#/tyontekijat', 'Työntekijät', 'users', '#/tyontekijat') : null,
+      p.pathScope !== 'none' ? link('#/asiakaspolut', 'Asiakaspolut', 'route') : null,
+      p.exportScope !== 'none' ? link('#/vienti', 'Excel-vienti', 'download') : null,
+    ]),
+    group('Ylläpito', [p.manageQuestions ? link('#/hallinta/kysymykset', 'Hallinta', 'settings', '#/hallinta') : null]),
+    h('div', { class: 'nav-user' },
+      h('a', { href: '#/salasana', class: 'who' + (hash === '#/salasana' ? ' active' : ''), title: 'Vaihda salasana' },
+        h('span', { class: 'avatar', 'aria-hidden': 'true' }, initials), h('span', { class: 'who-text' }, h('strong', null, u.name), h('small', null, u.roleLabel))),
+      h('button', { type: 'button', class: 'nav-logout', onclick: logout }, icon('logout'), h('span', null, 'Kirjaudu ulos'))),
   ].filter(Boolean));
   nav.classList.remove('open');
-  document.getElementById('menuToggle').setAttribute('aria-expanded', 'false');
+  const t = document.getElementById('menuToggle');
+  t.setAttribute('aria-expanded', 'false'); t.replaceChildren(icon('menu', 22), h('span', { class: 'sr-only' }, 'Valikko'));
 }
 document.getElementById('menuToggle').addEventListener('click', (e) => {
-  const nav = document.getElementById('nav'); nav.classList.toggle('open');
-  e.currentTarget.setAttribute('aria-expanded', nav.classList.contains('open'));
+  const nav = document.getElementById('nav'); const open = nav.classList.toggle('open');
+  e.currentTarget.setAttribute('aria-expanded', open);
+  e.currentTarget.replaceChildren(icon(open ? 'close' : 'menu', 22), h('span', { class: 'sr-only' }, open ? 'Sulje valikko' : 'Valikko'));
 });
 
 async function logout() {
@@ -156,13 +189,17 @@ async function viewLogin() {
     h('div', { class: 'field' }, h('label', { for: 'email' }, 'Sähköposti'), email),
     h('div', { class: 'field' }, h('label', { for: 'password' }, 'Salasana'), pw),
     err, btn);
-  $app.replaceChildren(h('div', { class: 'login-wrap' }, h('div', { class: 'login' }, h('div', { class: 'card' },
-    h('div', { class: 'brand-mark' }, 'K'),
-    h('h1', null, 'Kohtaamisten raportointi'),
-    h('p', { class: 'muted' }, 'A-klinikkasäätiön hankkeiden yhteinen kirjauslomake.'),
-    form,
-    h('p', { class: 'small muted' }, 'Tunnukset saat hankkeesi tiimivetäjältä tai pääkäyttäjältä.'),
-  ))));
+  const mark = () => { const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg'); svg.setAttribute('viewBox', '0 0 554 437');
+    const use = document.createElementNS('http://www.w3.org/2000/svg', 'use'); use.setAttribute('href', '/brand/tunnus.svg#tunnus'); svg.append(use); return svg; };
+  $app.replaceChildren(h('div', { class: 'login-wrap' },
+    h('div', { class: 'login-brand' },
+      h('div', { class: 'login-mark', 'aria-hidden': 'true' }, mark()),
+      h('div', null, h('p', { class: 'login-org' }, 'A-klinikkasäätiö'), h('p', { class: 'login-claim' }, 'Kohtaamisten raportointi'))),
+    h('div', { class: 'login' },
+      h('h1', null, 'Kirjaudu sisään'),
+      h('p', { class: 'muted' }, 'Hankkeiden yhteinen kohtaamisten kirjaus ja seuranta.'),
+      form,
+      h('p', { class: 'small muted login-help' }, 'Tunnukset saat hankkeesi tiimivetäjältä tai pääkäyttäjältä.'))));
   $app.classList.remove('container');
   email.focus();
 }
@@ -262,7 +299,13 @@ function renderEncounterForm(opts) {
 
   const projectField = projects.length === 1
     ? h('div', { class: 'field' }, h('div', { class: 'label' }, 'Hanke'), h('p', null, h('strong', null, projects[0].name)))
-    : h('div', { class: 'field', id: 'fw-project' }, h('label', { for: 'f-project' }, 'Hanke', h('span', { class: 'req' }, '*')),
+    : projects.length <= 8
+      ? h('div', { class: 'field', id: 'fw-project' }, h('div', { class: 'label', id: 'l-project' }, 'Hanke', h('span', { class: 'req' }, '*')),
+          h('div', { class: 'options project-cards', role: 'radiogroup', 'aria-labelledby': 'l-project' },
+            projects.map(p => h('label', { class: 'opt' },
+              h('input', { type: 'radio', name: 'project', value: p.id, checked: p.id === s.project_id, onchange: () => { s.project_id = p.id; renderDynamic(); } }),
+              h('span', null, h('span', { class: 'opt-title' }, p.name), p.digital ? h('span', { class: 'opt-desc' }, 'Digipalvelu') : null)))))
+      : h('div', { class: 'field', id: 'fw-project' }, h('label', { for: 'f-project' }, 'Hanke', h('span', { class: 'req' }, '*')),
         h('select', { id: 'f-project', required: true, onchange: (e) => { s.project_id = Number(e.target.value) || null; renderDynamic(); } },
           h('option', { value: '' }, '– Valitse hanke –'),
           projects.map(p => h('option', { value: p.id, selected: p.id === s.project_id }, p.name))));
@@ -272,9 +315,9 @@ function renderEncounterForm(opts) {
 
   const typeField = h('div', { class: 'field', id: 'fw-type' }, h('div', { class: 'label', id: 'l-type' }, 'Valitse, mitä raportoit', h('span', { class: 'req' }, '*')),
     h('div', { class: 'segmented', role: 'radiogroup', 'aria-labelledby': 'l-type' },
-      [['yksilo', 'Yksi kohtaaminen'], ['ryhma', 'Ryhmä tai useita kohtaamisia']].map(([v, t]) => h('label', { class: 'opt' },
+      [['yksilo', 'Yksi kohtaaminen', 'Yksi henkilö, yksi keskustelu'], ['ryhma', 'Ryhmä tai useita kohtaamisia', 'Ryhmä tai useampi kohtaaminen kerralla']].map(([v, t, d]) => h('label', { class: 'opt' },
         h('input', { type: 'radio', name: 'encounter_type', value: v, checked: s.encounter_type === v, onchange: () => { s.encounter_type = v; renderDynamic(); } }),
-        h('span', null, t)))));
+        h('span', null, h('span', { class: 'opt-title' }, t), h('span', { class: 'opt-desc' }, d))))));
 
   const basics = h('section', { class: 'card section' },
     h('div', { class: 'section-title' }, h('h2', null, 'Perustiedot')),
@@ -284,7 +327,10 @@ function renderEncounterForm(opts) {
       h('details', { class: 'define' }, h('summary', null, 'Mikä on kohtaaminen?'),
         h('p', null, 'Kohtaaminen on vuorovaikutustilanne, jossa kohderyhmään kuuluva henkilö tai kohderyhmään kuuluvien ryhmä on vuorovaikutuksessa ammattilaisen, koulutetun ohjaajan tai muun tukea tarjoavan kanssa. Kohtaamisessa tarjotaan hankkeen tavoitteiden mukaista tukea, ohjausta, neuvontaa, vertaistukea tai muuta kohderyhmälle suunnattua vuorovaikutteista palvelua.'),
         h('p', null, 'Jos raportoit pitkäkestoisesta ryhmästä tai dialogista, merkitse aloituspäivä.')),
-      dateInput),
+      h('div', { class: 'date-row' }, dateInput, h('div', { class: 'date-chips' },
+        [['Tänään', 0], ['Eilen', 1], ['Toissapäivänä', 2]].map(([t, n]) => h('button', { type: 'button', class: 'chip', onclick: () => {
+          const d = new Date(me.today + 'T12:00:00'); d.setDate(d.getDate() - n); s.encounter_date = d.toISOString().slice(0, 10); dateInput.value = s.encounter_date;
+          clearFieldError(dateInput); } }, t))))),
     projectField, typeField);
 
   // --- Dynaaminen osa: yksilö/ryhmä, yhteiset ja hankekohtaiset kysymykset
@@ -340,7 +386,7 @@ function renderEncounterForm(opts) {
   }
 
   const submitBtn = h('button', { class: 'btn btn-primary btn-lg', type: 'submit' }, opts.submitLabel || 'Tallenna kirjaus');
-  const form = h('form', { novalidate: true, onsubmit: async (e) => {
+  const form = h('form', { novalidate: true, class: 'encounter-form', onsubmit: async (e) => {
     e.preventDefault(); errBox.hidden = true;
     clearFieldErrors(form);
     const problem = clientValidate();

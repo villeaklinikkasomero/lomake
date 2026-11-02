@@ -14,6 +14,14 @@ Ensimmäisellä käynnistyksellä luodaan admin-käyttäjä. Väliaikainen salas
 
 Testit: `npm test` (18 testiä: roolit, validointi, tunnistetietojen esto, Excel-vienti ja kysymysten versiointi).
 
+## Ulkoasu
+
+Ulkoasu noudattaa A-klinikkasäätiön graafista ohjeistoa (15.12.2023):
+- **Värit:** päävärit sininen `#0037D3`, musta ja valkoinen. Kaavioissa käytetään brändin sinistä, vaaleansinistä (`#00A0F4`) ja vihreää (`#008900`). Yhdistelmä on tarkistettu värisokeille erottuvaksi.
+- **Fontti:** Work Sans (otsikot Semibold, leipäteksti Regular). Fontti on isännöity sovelluksen omalla palvelimella (`public/fonts`, OFL-lisenssi), joten Googlen palvelimiin ei oteta yhteyttä.
+- **Tunnus:** `public/brand/tunnus.svg` on piirretty ohjeiston mittasuhteista. Ohjeiston mukaan logoissa käytetään alkuperäistiedostoja, joten korvaa tiedosto viestinnän virallisella SVG:llä. Sovellus käyttää sen sellaisenaan (elementin id `tunnus`).
+- **Navigaatio:** työpöydällä sivupalkki, jossa kohdat on ryhmitelty (Kirjaukset, Seuranta, Ylläpito). Mobiilissa yläpalkki ja avattava valikko.
+
 ## Roolit
 
 | | Admin | Tiimivetäjä | Hanketyöntekijä | Tuntityöntekijä (avustaja) |

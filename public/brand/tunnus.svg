@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 554 437">
+  <!-- A-klinikkasäätiön tunnus (liikemerkki). Korvaa tarvittaessa viestinnän virallisella SVG-tiedostolla. -->
+  <g id="tunnus" fill="currentColor">
+    <rect x="209" y="0" width="138" height="62"/>
+    <rect x="149" y="124" width="258" height="62"/>
+    <rect x="78" y="250" width="401" height="62"/>
+    <rect x="0" y="375" width="208" height="62"/>
+    <rect x="348" y="375" width="206" height="62"/>
+  </g>
+</svg>
