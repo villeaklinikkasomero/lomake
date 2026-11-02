@@ -35,7 +35,7 @@ p { margin: .25rem 0 .75rem; }
 
 /* Yläpalkki */
 .topbar { background: var(--navy); color: #fff; position: sticky; top: 0; z-index: 10; }
-.topbar-inner { max-width: 1100px; margin: 0 auto; padding: .5rem 1rem; display: flex; align-items: center; gap: 1rem; flex-wrap: wrap; }
+.topbar-inner { max-width: 1240px; margin: 0 auto; padding: .5rem 1rem; display: flex; align-items: center; gap: 1rem; flex-wrap: wrap; }
 .brand { display: flex; gap: .6rem; align-items: center; color: #fff; text-decoration: none; margin-right: auto; }
 .brand-mark { width: 32px; height: 32px; border-radius: 7px; background: #fff; color: var(--navy); display: grid; place-items: center; font-weight: 800; }
 .brand strong { display: block; font-size: .98rem; line-height: 1.1; }
@@ -87,7 +87,7 @@ input:focus, select:focus, textarea:focus, button:focus-visible, .opt input:focu
 .opt:hover span { border-color: var(--blue); }
 
 .segmented { display: grid; grid-template-columns: 1fr 1fr; gap: .5rem; }
-.segmented .opt span { justify-content: center; font-weight: 600; padding: .85rem; }
+.segmented .opt span { justify-content: center; text-align: center; font-weight: 600; padding: .85rem; }
 .segmented .opt span::before { display: none; }
 
 .rating { display: flex; gap: .4rem; flex-wrap: wrap; align-items: center; }
@@ -174,10 +174,162 @@ dl.kv dd { margin: 0; white-space: pre-wrap; word-break: break-word; }
 .switch input { width: 18px; height: 18px; }
 .secret { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; background: #fff; border: 1px dashed var(--ok); padding: .2rem .5rem; border-radius: 6px; user-select: all; }
 
-.toast { position: fixed; left: 50%; bottom: 1.25rem; transform: translateX(-50%) translateY(150%); background: #1e293b; color: #fff; padding: .7rem 1.1rem; border-radius: 8px; box-shadow: 0 6px 24px rgba(0,0,0,.2); transition: transform .2s; z-index: 50; max-width: calc(100% - 2rem); }
-.toast.show { transform: translateX(-50%) translateY(0); }
+.toast { position: fixed; left: 50%; bottom: calc(1.25rem + env(safe-area-inset-bottom)); transform: translateX(-50%) translateY(12px); opacity: 0; visibility: hidden; pointer-events: none;
+  background: #1e293b; color: #fff; padding: .7rem 1.1rem; border-radius: 8px; box-shadow: 0 6px 24px rgba(0,0,0,.2); transition: opacity .2s, transform .2s, visibility 0s .2s; z-index: 50; max-width: calc(100% - 2rem); }
+.toast.show { transform: translateX(-50%) translateY(0); opacity: 1; visibility: visible; transition: opacity .2s, transform .2s; }
 .toast.err { background: var(--err); }
 .empty { text-align: center; color: var(--muted); padding: 2rem 1rem; }
 .loading { color: var(--muted); padding: 2rem 0; text-align: center; }
 .grow { flex: 1; min-width: 0; }
 .nav button { text-align: left; }
+
+/* ---------------------------------------------------------------------------
+   Kenttävirheet
+   --------------------------------------------------------------------------- */
+.field.has-error { border-left: 3px solid var(--err); padding-left: .75rem; margin-left: calc(-.75rem - 3px); }
+.field.has-error input, .field.has-error select, .field.has-error textarea, .field.has-error .opt span { border-color: var(--err); }
+.field-error { color: var(--err); font-weight: 600; font-size: .9rem; margin: .1rem 0 .45rem; }
+input, select, textarea, .opt { scroll-margin: 90px 0 120px; }
+.field { scroll-margin: 90px 0 120px; }
+
+.brand .short { display: none; }
+.brand-text { min-width: 0; }
+.filter-card > summary { cursor: pointer; font-weight: 600; color: var(--navy); list-style: none; }
+.filter-card > summary::-webkit-details-marker { display: none; }
+.filter-card > summary::before { content: "▸ "; color: var(--blue); }
+.filter-card[open] > summary::before { content: "▾ "; }
+.filter-card[open] > summary { margin-bottom: .75rem; }
+@media (min-width: 641px) { .filter-card > summary { display: none; } }
+
+/* ---------------------------------------------------------------------------
+   Mobiili
+   --------------------------------------------------------------------------- */
+@media (max-width: 640px) {
+  body { font-size: 16px; }
+  .container { padding: .75rem max(.75rem, env(safe-area-inset-left)) 6rem max(.75rem, env(safe-area-inset-right)); }
+  .topbar-inner { padding: .45rem .75rem; gap: .5rem; flex-wrap: wrap; }
+  .brand { flex: 1; min-width: 0; }
+  .brand strong { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .menu-toggle { min-height: 44px; min-width: 44px; }
+  .nav a, .nav button { padding: .7rem .75rem; font-size: 1rem; min-height: 44px; }
+  h1 { font-size: 1.35rem; }
+  h2 { font-size: 1.08rem; }
+  .page-head { margin-bottom: .6rem; }
+  .form-head p { margin-bottom: .25rem; }
+  .card { padding: 1rem; border-radius: 12px; }
+  .card.section { padding: 1rem 1rem .25rem; }
+  .field { margin-bottom: 1.1rem; }
+  .notice { padding: .6rem .75rem; margin: .25rem 0 .75rem; }
+  .input-narrow { max-width: none; }
+  input[type=text], input[type=email], input[type=password], input[type=number], input[type=date], select, textarea { min-height: 48px; padding: .7rem .75rem; }
+  input[type=date] { -webkit-appearance: none; appearance: none; display: block; }
+  .opt span { min-height: 48px; padding: .65rem .75rem; }
+  .segmented .opt span { min-height: 56px; padding: .6rem; }
+  .row { gap: 0; }
+
+  /* Arvio 1–5 aina yhdellä rivillä */
+  .rating { gap: .35rem; }
+  .rating .opt { flex: 1 1 0; max-width: 60px; }
+  .rating .opt span { width: 100%; min-width: 40px; height: 52px; }
+  .rating .clear-link { flex-basis: 100%; text-align: left; }
+  .rating-legend { max-width: 316px; }
+  .clear-link { padding: .5rem 0; }
+
+  /* Tallenna-painike kiinteänä alapalkkina */
+  .sticky-actions { position: fixed; left: 0; right: 0; bottom: 0; margin: 0; z-index: 20;
+    background: rgba(255,255,255,.97); border-top: 1px solid var(--line); box-shadow: 0 -4px 16px rgba(16,32,64,.08);
+    padding: .6rem max(.75rem, env(safe-area-inset-right)) calc(.6rem + env(safe-area-inset-bottom)) max(.75rem, env(safe-area-inset-left)); flex-wrap: nowrap; }
+  .sticky-actions .btn { flex: 1; min-height: 50px; }
+  .sticky-actions .btn-primary { flex: 2; }
+  .toast { bottom: calc(5.25rem + env(safe-area-inset-bottom)); }
+
+  .success { padding: 1.75rem 1rem; }
+  .success .actions { flex-direction: column; align-items: stretch; }
+  .success .actions .btn { min-height: 48px; }
+
+  /* Listat kortteina */
+  .stats { gap: .5rem; margin: .75rem 0; }
+  .stat { flex: 1; min-width: 0; padding: .6rem .75rem; }
+  .stat b { font-size: 1.35rem; }
+  .filters { grid-template-columns: 1fr 1fr; }
+  .table-wrap:has(.cards-mobile) { border: 0; background: none; overflow: visible; }
+  table.cards-mobile thead { display: none; }
+  table.cards-mobile, table.cards-mobile tbody, table.cards-mobile tr, table.cards-mobile td { display: block; width: 100%; }
+  table.cards-mobile tr { background: #fff; border: 1px solid var(--line); border-radius: 10px; padding: .6rem .8rem; margin-bottom: .5rem; box-shadow: var(--shadow); }
+  table.cards-mobile td { border: 0; padding: .15rem 0; text-align: left; display: flex; justify-content: space-between; gap: 1rem; }
+  table.cards-mobile td[data-label]::before { content: attr(data-label); color: var(--muted); font-size: .85rem; font-weight: 400; }
+  table.cards-mobile td.cell-title { display: block; padding-bottom: .35rem; }
+  .pager .actions .btn { min-height: 44px; }
+  dl.kv dt { font-size: .85rem; }
+}
+@media (max-width: 359px) {
+  .brand .long { display: none; }
+  .brand .short { display: inline; }
+  .brand small { display: none; }
+  .brand-mark { width: 28px; height: 28px; }
+  .filters { grid-template-columns: 1fr; }
+}
+
+/* ---------------------------------------------------------------------------
+   Työntekijäseuranta ja kaaviot
+   --------------------------------------------------------------------------- */
+.presets { margin-top: .75rem; }
+.sort-btn { background: none; border: 0; padding: 0; font: inherit; font-weight: 600; color: inherit; cursor: pointer; text-align: inherit; white-space: normal; }
+.sort-btn.active { color: var(--navy); }
+th.num .sort-btn { text-align: right; }
+.staff-table th { white-space: normal; vertical-align: bottom; font-size: .85rem; }
+tr.dim td { color: var(--muted); }
+.stat small { display: block; color: var(--muted); font-size: .78rem; margin-top: .15rem; }
+.stats-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); }
+.grid-2 { display: grid; gap: 0 1rem; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); }
+
+.chart-wrap { position: relative; }
+svg.chart { width: 100%; height: auto; display: block; overflow: visible; }
+svg.chart .grid { stroke: #e6eaf0; stroke-width: 1; }
+svg.chart .axis { stroke: #b8c2d1; stroke-width: 1; }
+svg.chart .tick { fill: var(--muted); font-size: 11px; font-family: inherit; }
+svg.chart .bar { fill: var(--blue); }
+svg.chart .hit { fill: transparent; cursor: default; outline: none; }
+svg.chart .hit.on { fill: rgba(26, 95, 180, .07); }
+.chart-tip { position: absolute; transform: translate(-50%, calc(-100% - 10px)); background: #fff; border: 1px solid var(--line); border-radius: 8px;
+  box-shadow: 0 4px 16px rgba(16,32,64,.12); padding: .45rem .65rem; font-size: .82rem; white-space: nowrap; pointer-events: none; z-index: 3; }
+.chart-tip strong { color: var(--navy); }
+.chart-table { margin-top: .5rem; font-size: .9rem; }
+.chart-table summary { cursor: pointer; color: var(--blue-600); font-weight: 600; }
+.chart-table .table-wrap { margin-top: .5rem; }
+
+.hbars { display: grid; gap: .45rem; }
+.hbar { display: grid; grid-template-columns: minmax(90px, 38%) 1fr auto; gap: .6rem; align-items: center; font-size: .9rem; }
+.hbar-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hbar-track { height: 14px; background: #eef1f5; border-radius: 4px; overflow: hidden; }
+.hbar-fill { height: 100%; background: var(--blue); border-radius: 0 4px 4px 0; min-width: 2px; }
+.hbar-value { font-variant-numeric: tabular-nums; font-weight: 600; min-width: 2.5rem; text-align: right; }
+
+@media (max-width: 640px) {
+  .stats-grid { grid-template-columns: 1fr 1fr; }
+  .grid-2 { grid-template-columns: 1fr; }
+  svg.chart .tick { font-size: 15px; }
+  .staff-table td.num { font-weight: 400; }
+  .hbar { grid-template-columns: 1fr auto; }
+  .hbar-label { grid-column: 1 / -1; }
+}
+
+/* Yläpalkin käyttäjä + korjaukset */
+.nav a.who { display: flex; flex-direction: column; line-height: 1.15; padding: .3rem .7rem; border-left: 1px solid rgba(255,255,255,.2); border-radius: 0 6px 6px 0; margin-left: .25rem; color: #fff; font-size: .88rem; }
+.nav a.who small { color: #b9c8e6; font-size: .72rem; }
+.nav { flex-wrap: nowrap; }
+@media (max-width: 1100px) and (min-width: 761px) { .brand small { display: none; } .nav a, .nav button { padding: .45rem .5rem; } }
+.filters .field { min-width: 0; }
+.filters input, .filters select { min-width: 0; max-width: 100%; }
+.hbar-label { white-space: normal; overflow: visible; line-height: 1.25; }
+.hbars.compact .hbar { grid-template-columns: 1.5rem 1fr auto; }
+.hbars.compact .hbar-label { grid-column: auto; font-weight: 600; }
+@media (max-width: 760px) { .nav { flex-wrap: wrap; } .nav a.who { border-left: 0; margin: 0; border-radius: 6px; } }
+@media (max-width: 640px) {
+  .filters .field:has(select) { grid-column: 1 / -1; }
+  .filters input[type=date] { padding-left: .5rem; padding-right: .5rem; }
+  table.cards-mobile td.hide-m { display: none; }
+  svg.chart .tick { font-size: 11px; }
+  .hbars.compact .hbar { grid-template-columns: 1.5rem 1fr auto; }
+  .hbars.compact .hbar-label { grid-column: auto; }
+}

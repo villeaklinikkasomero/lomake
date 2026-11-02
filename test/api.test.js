@@ -182,3 +182,75 @@ test('suljettu tunnus ei pääse sisään ja CSRF-otsake vaaditaan', async () =>
   const noHeader = await fetch(base + '/api/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
   assert.equal(noHeader.status, 403);
 });
+
+test('testidata: vähintään 30 erilaista kirjausta, kaikki hankkeet, poisto koskee vain testidataa', async () => {
+  const a = users.admin;
+  const realBefore = db.prepare('SELECT COUNT(*) n FROM encounters WHERE is_test = 0').get().n;
+  const r = await a('POST', '/admin/demo-data', { count: 40 });
+  assert.equal(r.status, 201, JSON.stringify(r.data));
+  assert.equal(r.data.created, 40);
+  const rows = db.prepare(`SELECT e.*, (SELECT group_concat(question_id || '=' || value, '|') FROM encounter_answers WHERE encounter_id = e.id) ans
+                           FROM encounters e WHERE is_test = 1`).all();
+  const distinct = new Set(rows.map(e => [e.project_id, e.encounter_date, e.encounter_type, e.encounter_count, e.person_count, e.pseudonym, e.recorder_role, e.ans].join('#')));
+  assert.ok(distinct.size >= 30, `erilaisia ${distinct.size}`);
+  const activeProjects = db.prepare('SELECT COUNT(*) n FROM projects WHERE active = 1').get().n;
+  assert.equal(new Set(rows.map(e => e.project_id)).size, activeProjects);
+  assert.ok(rows.some(e => e.encounter_type === 'ryhma') && rows.some(e => e.encounter_type === 'yksilo'));
+  assert.ok(new Set(rows.map(e => e.recorder_role)).size >= 2);
+  assert.ok(rows.every(e => e.encounter_date <= new Date().toISOString().slice(0, 10)));
+  assert.equal((await users.tiimivetaja('POST', '/admin/demo-data', { count: 5 })).status, 403);
+  const d = await a('DELETE', '/admin/demo-data');
+  assert.equal(d.data.deleted, 40);
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM encounters WHERE is_test = 0').get().n, realBefore);
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM encounter_answers WHERE encounter_id NOT IN (SELECT id FROM encounters)').get().n, 0);
+});
+
+test('työntekijäseuranta: admin kaikki, tiimivetäjä vain omat hankkeet, muut ei', async () => {
+  const p = P();
+  // ht kirjaa Katuklinikkaan (tv:n hanke); admin kirjaa Jalmaan (ei tv:n hanke)
+  await users.hanketyontekija('POST', '/encounters', basePayload(p.KATUKLINIKKA, { encounter_type: 'ryhma', encounter_count: 12, person_count: 5, answers: { tyontekijan_arvio: '5' } }));
+  await users.admin('POST', '/encounters', basePayload(p.JALMA));
+  const htId = db.prepare("SELECT id FROM users WHERE email='ht@t.fi'").get().id;
+  const adminId = db.prepare("SELECT id FROM users WHERE email='admin@t.fi'").get().id;
+
+  const all = await users.admin('GET', '/staff');
+  assert.equal(all.status, 200);
+  const htRow = all.data.rows.find(r => r.id === htId);
+  assert.ok(htRow && htRow.encounters >= 12 && htRow.worker_rating != null);
+
+  const tv = await users.tiimivetaja('GET', '/staff');
+  assert.equal(tv.status, 200);
+  assert.ok(!tv.data.rows.some(r => r.id === adminId), 'tiimivetäjä ei näe toisen hankkeen kirjaajaa');
+  const jalmaRows = db.prepare('SELECT COUNT(*) n FROM encounters WHERE project_id = ? AND deleted_at IS NULL').get(p.JALMA).n;
+  assert.ok(jalmaRows > 0);
+  const tvTotal = tv.data.totals.rows;
+  const allowed = db.prepare(`SELECT COUNT(*) n FROM encounters WHERE deleted_at IS NULL AND project_id IN (?, ?)`).get(p.KATUKLINIKKA, p.AK21).n;
+  assert.equal(tvTotal, allowed);
+
+  const det = await users.tiimivetaja('GET', `/staff/${htId}`);
+  assert.equal(det.status, 200);
+  assert.ok(det.data.kpi.encounters >= 12 && det.data.monthly.length >= 1 && det.data.byProject.length >= 1);
+  assert.equal((await users.tiimivetaja('GET', `/staff/${adminId}`)).status, 404);
+
+  assert.equal((await users.hanketyontekija('GET', '/staff')).status, 403);
+  assert.equal((await users.hanketyontekija('GET', `/staff/${htId}`)).status, 403);
+
+  // Kirjauslistan kirjaajasuodatin
+  const list = await users.tiimivetaja('GET', `/encounters?created_by=${htId}`);
+  assert.ok(list.data.rows.length > 0 && list.data.rows.every(r => r.created_by === htId));
+  // Hanketyöntekijä ei voi ohittaa omaa rajaustaan
+  const own = await users.hanketyontekija('GET', `/encounters?created_by=${adminId}`);
+  assert.ok(own.data.rows.every(r => r.created_by === htId));
+});
+
+test('testidata jakautuu testityöntekijöille ja poistuu heidän kanssaan', async () => {
+  const a = users.admin;
+  await a('POST', '/admin/demo-data', { count: 40 });
+  const workers = db.prepare('SELECT u.id, COUNT(e.id) n FROM users u JOIN encounters e ON e.created_by = u.id WHERE u.is_test = 1 GROUP BY u.id').all();
+  assert.ok(workers.length >= 4, `testityöntekijöitä ${workers.length}`);
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM users WHERE is_test = 1 AND active = 1').get().n, 0, 'testitunnukset ovat suljettuja');
+  const staff = await a('GET', '/staff');
+  assert.ok(staff.data.rows.filter(r => r.is_test && r.rows > 0).length >= 4);
+  await a('DELETE', '/admin/demo-data');
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM users WHERE is_test = 1').get().n, 0);
+});

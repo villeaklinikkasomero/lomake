@@ -10,6 +10,7 @@ const bcrypt = require('bcryptjs');
 const { db, ensureAdmin, audit, RECORDER_ROLES } = require('./db');
 const { ROLES, PERMISSIONS, DEFAULT_RECORDER_ROLE_INDEX, can, scope, allowsEncounter } = require('./permissions');
 const { buildWorkbook } = require('./export');
+const demo = require('./demo');
 
 const PORT = Number(process.env.PORT || 3000);
 const IS_PROD = process.env.NODE_ENV === 'production';
@@ -265,11 +266,12 @@ app.get('/api/encounters', requireAuth, (req, res) => {
   if (isDate(req.query.to)) { where.push('e.encounter_date <= ?'); params.push(req.query.to); }
   if (req.query.project_id) { where.push('e.project_id = ?'); params.push(Number(req.query.project_id)); }
   if (['yksilo', 'ryhma'].includes(req.query.type)) { where.push('e.encounter_type = ?'); params.push(req.query.type); }
+  if (req.query.created_by && scope(req.user, 'viewScope') !== 'own') { where.push('e.created_by = ?'); params.push(Number(req.query.created_by)); }
   const limit = Math.min(Number(req.query.limit) || 50, 200);
   const offset = Math.max(Number(req.query.offset) || 0, 0);
   const whereSql = where.join(' AND ');
   const totals = db.prepare(`SELECT COUNT(*) rows, COALESCE(SUM(encounter_count),0) encounters FROM encounters e WHERE ${whereSql}`).get(...params);
-  const rows = db.prepare(`SELECT e.id, e.encounter_date, e.encounter_type, e.encounter_count, e.person_count, e.created_at, e.updated_at,
+  const rows = db.prepare(`SELECT e.id, e.encounter_date, e.encounter_type, e.encounter_count, e.person_count, e.created_at, e.updated_at, e.is_test,
                                   e.project_id, e.created_by, p.name project_name, u.name created_by_name
                            FROM encounters e JOIN projects p ON p.id = e.project_id JOIN users u ON u.id = e.created_by
                            WHERE ${whereSql} ORDER BY e.encounter_date DESC, e.created_at DESC, e.rowid DESC LIMIT ? OFFSET ?`).all(...params, limit, offset);
@@ -322,6 +324,93 @@ app.delete('/api/encounters/:id', requireAuth, (req, res) => {
   db.prepare("UPDATE encounters SET deleted_at = datetime('now'), deleted_by = ? WHERE id = ?").run(req.user.id, e.id);
   audit(req.user.id, 'encounter_delete', 'encounter', e.id);
   res.json({ ok: true });
+});
+
+// ---------------------------------------------------------------------------
+// Työntekijäkohtainen seuranta (admin: kaikki, tiimivetäjä: omien hankkeiden kirjaukset)
+// ---------------------------------------------------------------------------
+function staffScopeSql(req, alias = 'e') {
+  const s = scope(req.user, 'staffScope');
+  if (s === 'all') return { sql: '1=1', params: [] };
+  return { sql: `${alias}.project_id IN (${req.projectIds.map(() => '?').join(',') || 'NULL'})`, params: [...req.projectIds] };
+}
+function staffFilters(req) {
+  const sc = staffScopeSql(req);
+  const where = ['e.deleted_at IS NULL', sc.sql]; const params = [...sc.params];
+  if (isDate(req.query.from)) { where.push('e.encounter_date >= ?'); params.push(req.query.from); }
+  if (isDate(req.query.to)) { where.push('e.encounter_date <= ?'); params.push(req.query.to); }
+  if (req.query.project_id) { where.push('e.project_id = ?'); params.push(Number(req.query.project_id)); }
+  return { sql: where.join(' AND '), params };
+}
+const ratingQ = (key) => (db.prepare('SELECT id FROM questions WHERE key = ?').get(key) || {}).id || -1;
+
+// Käyttäjät, jotka kuuluvat tarkastelijan näkyvyyteen (myös ne, joilla ei ole kirjauksia)
+function staffUserIds(req) {
+  if (scope(req.user, 'staffScope') === 'all') return db.prepare("SELECT id FROM users WHERE role <> 'admin' AND (active = 1 OR is_test = 1)").all().map(r => r.id);
+  if (!req.projectIds.length) return [];
+  return db.prepare(`SELECT DISTINCT user_id id FROM user_projects WHERE project_id IN (${req.projectIds.map(() => '?').join(',')})`).all(...req.projectIds).map(r => r.id);
+}
+
+app.get('/api/staff', requireAuth, (req, res) => {
+  if (scope(req.user, 'staffScope') === 'none') return bad(res, 'Ei oikeutta.', 403);
+  const f = staffFilters(req);
+  const wr = ratingQ('tyontekijan_arvio'), cr = ratingQ('asiakkaan_arvio');
+  const stats = db.prepare(`
+    SELECT e.created_by user_id, COUNT(*) rows, SUM(e.encounter_count) encounters,
+           SUM(e.encounter_type = 'yksilo') yksilo_rows,
+           SUM(e.encounter_type = 'ryhma') ryhma_rows,
+           COALESCE(SUM(CASE WHEN e.encounter_type = 'ryhma' THEN e.encounter_count END), 0) ryhma_encounters,
+           COUNT(DISTINCT e.encounter_date) active_days, MAX(e.encounter_date) last_date, MAX(e.created_at) last_saved,
+           AVG(CAST(w.value AS REAL)) worker_rating, AVG(CAST(c.value AS REAL)) client_rating, COUNT(c.value) client_rating_n
+    FROM encounters e
+    LEFT JOIN encounter_answers w ON w.encounter_id = e.id AND w.question_id = ?
+    LEFT JOIN encounter_answers c ON c.encounter_id = e.id AND c.question_id = ?
+    WHERE ${f.sql} GROUP BY e.created_by`).all(wr, cr, ...f.params);
+  const byUser = new Map(stats.map(s => [s.user_id, s]));
+  const ids = new Set([...staffUserIds(req), ...byUser.keys()]);
+  if (!ids.size) return res.json({ rows: [], totals: { rows: 0, encounters: 0 } });
+  const users = db.prepare(`SELECT id, name, role, recorder_role, active, is_test FROM users WHERE id IN (${[...ids].map(() => '?').join(',')})`).all(...ids);
+  const rows = users.map(u => ({ ...u, rows: 0, encounters: 0, yksilo_rows: 0, ryhma_rows: 0, ryhma_encounters: 0, active_days: 0,
+    last_date: null, last_saved: null, worker_rating: null, client_rating: null, client_rating_n: 0, ...(byUser.get(u.id) || {}) }))
+    .sort((a, b) => b.encounters - a.encounters || a.name.localeCompare(b.name, 'fi'));
+  const totals = rows.reduce((t, r) => ({ rows: t.rows + r.rows, encounters: t.encounters + r.encounters }), { rows: 0, encounters: 0 });
+  res.json({ rows, totals });
+});
+
+app.get('/api/staff/:id', requireAuth, (req, res) => {
+  if (scope(req.user, 'staffScope') === 'none') return bad(res, 'Ei oikeutta.', 403);
+  const id = Number(req.params.id);
+  const u = db.prepare('SELECT id, name, email, role, recorder_role, active, is_test, last_login_at, created_at FROM users WHERE id = ?').get(id);
+  const f = staffFilters(req);
+  const visible = u && (scope(req.user, 'staffScope') === 'all' || staffUserIds(req).includes(id) ||
+    db.prepare(`SELECT 1 FROM encounters e WHERE e.created_by = ? AND ${staffScopeSql(req).sql} LIMIT 1`).get(id, ...staffScopeSql(req).params));
+  if (!visible) return bad(res, 'Työntekijää ei löydy.', 404);
+  const where = `e.created_by = ? AND ${f.sql}`; const params = [id, ...f.params];
+  const wr = ratingQ('tyontekijan_arvio'), cr = ratingQ('asiakkaan_arvio');
+  const kpi = db.prepare(`SELECT COUNT(*) rows, COALESCE(SUM(e.encounter_count), 0) encounters,
+      COALESCE(SUM(e.encounter_type = 'yksilo'), 0) yksilo_rows, COALESCE(SUM(e.encounter_type = 'ryhma'), 0) ryhma_rows,
+      COALESCE(SUM(CASE WHEN e.encounter_type = 'ryhma' THEN e.encounter_count END), 0) ryhma_encounters,
+      COALESCE(SUM(CASE WHEN e.encounter_type = 'ryhma' THEN e.person_count END), 0) ryhma_persons,
+      COUNT(DISTINCT e.encounter_date) active_days, MIN(e.encounter_date) first_date, MAX(e.encounter_date) last_date,
+      COUNT(DISTINCT CASE WHEN e.pseudonym IS NOT NULL THEN lower(e.pseudonym) END) distinct_pseudonyms,
+      AVG(CAST(w.value AS REAL)) worker_rating, AVG(CAST(c.value AS REAL)) client_rating, COUNT(c.value) client_rating_n,
+      AVG(julianday(e.created_at) - julianday(e.encounter_date)) avg_delay_days
+    FROM encounters e
+    LEFT JOIN encounter_answers w ON w.encounter_id = e.id AND w.question_id = ?
+    LEFT JOIN encounter_answers c ON c.encounter_id = e.id AND c.question_id = ?
+    WHERE ${where}`).get(wr, cr, ...params);
+  const monthly = db.prepare(`SELECT substr(e.encounter_date, 1, 7) month, COUNT(*) rows, SUM(e.encounter_count) encounters,
+      COALESCE(SUM(CASE WHEN e.encounter_type = 'yksilo' THEN e.encounter_count END), 0) yksilo,
+      COALESCE(SUM(CASE WHEN e.encounter_type = 'ryhma' THEN e.encounter_count END), 0) ryhma
+    FROM encounters e WHERE ${where} GROUP BY month ORDER BY month`).all(...params);
+  const byProject = db.prepare(`SELECT p.name, COUNT(*) rows, SUM(e.encounter_count) encounters
+    FROM encounters e JOIN projects p ON p.id = e.project_id WHERE ${where} GROUP BY p.id ORDER BY encounters DESC`).all(...params);
+  const workerRatings = db.prepare(`SELECT w.value rating, COUNT(*) n FROM encounters e JOIN encounter_answers w ON w.encounter_id = e.id AND w.question_id = ?
+    WHERE ${where} GROUP BY w.value ORDER BY w.value`).all(wr, ...params);
+  const byLocation = db.prepare(`SELECT a.value name, COUNT(*) rows, SUM(e.encounter_count) encounters FROM encounters e
+    JOIN encounter_answers a ON a.encounter_id = e.id AND a.question_id = (SELECT id FROM questions WHERE key = 'sijainti')
+    WHERE ${where} GROUP BY a.value ORDER BY encounters DESC`).all(...params);
+  res.json({ user: { ...u, roleLabel: ROLES[u.role].label }, kpi, monthly, byProject, workerRatings, byLocation });
 });
 
 // ---------------------------------------------------------------------------
@@ -505,6 +594,24 @@ app.post('/api/questions/reorder', requireAuth, requirePerm('manageQuestions'), 
   res.json({ ok: true });
 });
 
+// ---------------------------------------------------------------------------
+// Ylläpito: testidata (vain admin)
+// ---------------------------------------------------------------------------
+app.get('/api/admin/demo-data', requireAuth, requirePerm('manageUsers'), (req, res) => res.json(demo.demoCount()));
+app.post('/api/admin/demo-data', requireAuth, requirePerm('manageUsers'), (req, res) => {
+  const count = Math.min(Math.max(parseInt(req.body.count, 10) || 40, 1), 500);
+  try {
+    const created = demo.createDemoData({ count, userId: req.user.id, validate: validateEncounter, user: req.user, projectIds: req.projectIds });
+    audit(req.user.id, 'demo_create', 'encounter', null, { created });
+    res.status(201).json({ created, ...demo.demoCount() });
+  } catch (e) { bad(res, e.message); }
+});
+app.delete('/api/admin/demo-data', requireAuth, requirePerm('manageUsers'), (req, res) => {
+  const deleted = demo.deleteDemoData();
+  audit(req.user.id, 'demo_delete', 'encounter', null, { deleted });
+  res.json({ deleted });
+});
+
 app.get('/api/audit', requireAuth, requirePerm('manageUsers'), (req, res) => {
   res.json({ rows: db.prepare(`SELECT a.*, u.name user_name FROM audit_log a LEFT JOIN users u ON u.id = a.user_id ORDER BY a.id DESC LIMIT 200`).all() });
 });
@@ -529,3 +636,4 @@ if (require.main === module) {
 }
 
 module.exports = app;
+module.exports.validateEncounter = validateEncounter;

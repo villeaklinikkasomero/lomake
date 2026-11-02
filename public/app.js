@@ -74,10 +74,13 @@ const ROUTES = [
   { re: /^#\/kirjaukset\/([\w-]+)$/, view: viewDetail, perm: (p) => p.viewScope !== 'none' },
   { re: /^#\/kirjaukset\/([\w-]+)\/muokkaa$/, view: viewEdit, perm: (p) => p.editScope !== 'none' },
   { re: /^#\/vienti$/, view: viewExport, perm: (p) => p.exportScope !== 'none' },
+  { re: /^#\/tyontekijat$/, view: viewStaff, perm: (p) => p.staffScope !== 'none' },
+  { re: /^#\/tyontekijat\/(\d+)$/, view: viewStaffDetail, perm: (p) => p.staffScope !== 'none' },
   { re: /^#\/hallinta\/kayttajat$/, view: viewUsers, perm: (p) => p.manageUsers },
   { re: /^#\/hallinta\/hankkeet$/, view: viewProjects, perm: (p) => p.manageProjects },
   { re: /^#\/hallinta\/kysymykset$/, view: viewQuestions, perm: (p) => p.manageQuestions },
   { re: /^#\/hallinta\/loki$/, view: viewAudit, perm: (p) => p.manageUsers },
+  { re: /^#\/hallinta\/testidata$/, view: viewDemo, perm: (p) => p.manageUsers },
 ];
 
 async function route() {
@@ -109,10 +112,10 @@ function renderNav(hash) {
   nav.replaceChildren(...[
     link('#/kirjaa', 'Uusi kirjaus'),
     p.viewScope !== 'none' ? link('#/kirjaukset', p.viewScope === 'own' ? 'Omat kirjaukset' : 'Kirjaukset') : null,
+    p.staffScope !== 'none' ? link('#/tyontekijat', 'Työntekijät') : null,
     p.exportScope !== 'none' ? link('#/vienti', 'Excel-vienti') : null,
     adminHref ? h('a', { href: adminHref, class: hash.startsWith('#/hallinta') ? 'active' : null }, 'Hallinta') : null,
-    h('span', { class: 'who' }, `${state.me.user.name} · ${state.me.user.roleLabel}`),
-    h('a', { href: '#/salasana' }, 'Salasana'),
+    h('a', { href: '#/salasana', class: 'who' + (hash === '#/salasana' ? ' active' : ''), title: 'Vaihda salasana' }, state.me.user.name, h('small', null, state.me.user.roleLabel)),
     h('button', { type: 'button', onclick: logout }, 'Kirjaudu ulos'),
   ].filter(Boolean));
   nav.classList.remove('open');
@@ -217,7 +220,7 @@ function showSaved(payload, id) {
       h('button', { class: 'btn btn-primary btn-lg', type: 'button', onclick: () => { route(); } }, 'Kirjaa seuraava'),
       h('button', { class: 'btn btn-secondary', type: 'button', onclick: () => { state.lastBasics = null; route(); } }, 'Tyhjä lomake'),
       state.me.permissions.viewScope !== 'none' ? h('a', { class: 'btn btn-secondary', href: `#/kirjaukset/${id}` }, 'Näytä kirjaus') : null),
-    h('p', { class: 'small muted' }, '”Kirjaa seuraava” säilyttää hankkeen, päivämäärän, roolin ja kirjauksen tyypin.'),
+    h('p', { class: 'small muted' }, '”Kirjaa seuraava” säilyttää hankkeen, päivämäärän ja kirjauksen tyypin.'),
   )));
 }
 
@@ -249,7 +252,7 @@ function renderEncounterForm(opts) {
 
   const projectField = projects.length === 1
     ? h('div', { class: 'field' }, h('div', { class: 'label' }, 'Hanke'), h('p', null, h('strong', null, projects[0].name)))
-    : h('div', { class: 'field' }, h('label', { for: 'f-project' }, 'Hanke', h('span', { class: 'req' }, '*')),
+    : h('div', { class: 'field', id: 'fw-project' }, h('label', { for: 'f-project' }, 'Hanke', h('span', { class: 'req' }, '*')),
         h('select', { id: 'f-project', required: true, onchange: (e) => { s.project_id = Number(e.target.value) || null; renderDynamic(); } },
           h('option', { value: '' }, '– Valitse hanke –'),
           projects.map(p => h('option', { value: p.id, selected: p.id === s.project_id }, p.name))));
@@ -257,7 +260,7 @@ function renderEncounterForm(opts) {
   // Kirjaajan rooli tulee käyttäjäprofiilista (korjattaessa säilyy alkuperäinen).
   const roleField = h('p', { class: 'small muted' }, 'Kirjaaja: ', h('strong', null, init.id ? init.recorder_role : me.user.recorderRole));
 
-  const typeField = h('div', { class: 'field' }, h('div', { class: 'label', id: 'l-type' }, 'Valitse, mitä raportoit', h('span', { class: 'req' }, '*')),
+  const typeField = h('div', { class: 'field', id: 'fw-type' }, h('div', { class: 'label', id: 'l-type' }, 'Valitse, mitä raportoit', h('span', { class: 'req' }, '*')),
     h('div', { class: 'segmented', role: 'radiogroup', 'aria-labelledby': 'l-type' },
       [['yksilo', 'Yksi kohtaaminen'], ['ryhma', 'Ryhmä tai useita kohtaamisia']].map(([v, t]) => h('label', { class: 'opt' },
         h('input', { type: 'radio', name: 'encounter_type', value: v, checked: s.encounter_type === v, onchange: () => { s.encounter_type = v; renderDynamic(); } }),
@@ -266,7 +269,7 @@ function renderEncounterForm(opts) {
   const basics = h('section', { class: 'card section' },
     h('div', { class: 'section-title' }, h('h2', null, 'Perustiedot')),
     roleField,
-    h('div', { class: 'field' },
+    h('div', { class: 'field', id: 'fw-date' },
       h('label', { for: 'f-date' }, 'Kohtaamisen ajankohta (tai alkamisajankohta)', h('span', { class: 'req' }, '*')),
       h('details', { class: 'define' }, h('summary', null, 'Mikä on kohtaaminen?'),
         h('p', null, 'Kohtaaminen on vuorovaikutustilanne, jossa kohderyhmään kuuluva henkilö tai kohderyhmään kuuluvien ryhmä on vuorovaikutuksessa ammattilaisen, koulutetun ohjaajan tai muun tukea tarjoavan kanssa. Kohtaamisessa tarjotaan hankkeen tavoitteiden mukaista tukea, ohjausta, neuvontaa, vertaistukea tai muuta kohderyhmälle suunnattua vuorovaikutteista palvelua.'),
@@ -281,24 +284,28 @@ function renderEncounterForm(opts) {
     if (s.encounter_type === 'ryhma') {
       parts.push(h('section', { class: 'card section' },
         h('div', { class: 'section-title' }, h('h2', null, 'Ryhmän tiedot')),
-        h('p', { class: 'help' }, 'Vuorovaikutustilanteeseen tai keskusteluketjuun osallistuneiden määrä = kohtaamisten määrä. Täysin passiivisia ei huomioida. Jos dialogi on luonteeltaan jatkuvaa, esim. verkkokeskustelualustalla, kohtaamisten määrä = viestien määrä (ohjaajat) tai aktiiviset päivät × osallistujien määrä, riippuen siitä kumpi kuvaa parhaiten erillisten vuorovaikutustilanteiden määrää.'),
+        h('details', { class: 'define' }, h('summary', null, 'Miten kohtaamiset lasketaan?'),
+          h('p', null, 'Vuorovaikutustilanteeseen tai keskusteluketjuun osallistuneiden määrä = kohtaamisten määrä. Täysin passiivisia ei huomioida.'),
+          h('p', null, 'Jos dialogi on luonteeltaan jatkuvaa, esim. verkkokeskustelualustalla, kohtaamisten määrä = viestien määrä (ohjaajat) tai aktiiviset päivät × osallistujien määrä, riippuen siitä kumpi kuvaa parhaiten erillisten vuorovaikutustilanteiden määrää.')),
         h('div', { class: 'row' },
-          h('div', { class: 'field' }, h('label', { for: 'f-count' }, 'Kohtaamisten määrä', h('span', { class: 'req' }, '*')),
+          h('div', { class: 'field', id: 'fw-count' }, h('label', { for: 'f-count' }, 'Kohtaamisten määrä', h('span', { class: 'req' }, '*')),
             h('p', { class: 'help' }, '1–9999'),
-            h('input', { type: 'number', id: 'f-count', inputmode: 'numeric', min: '1', max: '9999', step: '1', required: true, value: s.encounter_count,
+            h('input', { type: 'number', id: 'f-count', inputmode: 'numeric', enterkeyhint: 'next', min: '1', max: '9999', step: '1', required: true, value: s.encounter_count,
               oninput: (e) => { s.encounter_count = e.target.value; } })),
-          h('div', { class: 'field' }, h('label', { for: 'f-persons' }, 'Eri osallistujien määrä'),
+          h('div', { class: 'field', id: 'fw-persons' }, h('label', { for: 'f-persons' }, 'Eri osallistujien määrä'),
             h('p', { class: 'help' }, 'Jos ei tiedossa, jätä tyhjäksi. Älä laske työntekijöitä tai ohjaajia mukaan.'),
-            h('input', { type: 'number', id: 'f-persons', inputmode: 'numeric', min: '1', max: '9999', step: '1', value: s.person_count,
+            h('input', { type: 'number', id: 'f-persons', inputmode: 'numeric', enterkeyhint: 'next', min: '1', max: '9999', step: '1', value: s.person_count,
               oninput: (e) => { s.person_count = e.target.value; } })))));
     } else {
       const warn = h('div', { class: 'field-warn', hidden: true });
       parts.push(h('section', { class: 'card section' },
         h('div', { class: 'section-title' }, h('h2', null, 'Yksilökohtaamisen tiedot')),
-        h('p', { class: 'help' }, 'Yksi yhtenäinen keskustelu yhden kohderyhmään kuuluvan henkilön kanssa = yksi kohtaaminen. Jatkokysymys samassa keskustelussa kuuluu samaan kohtaamiseen. Jos dialogi on luonteeltaan jatkuvaa (esim. tukihenkilötyöskentely), kohtaamiseksi lasketaan ne päivät, jolloin vuorovaikutusta on tapahtunut. Digialustalla yksi kysymys–vastaus-kokonaisuus jatkokysymyksineen = yksi kohtaaminen.'),
+        h('details', { class: 'define' }, h('summary', null, 'Mikä lasketaan yhdeksi kohtaamiseksi?'),
+          h('p', null, 'Yksi yhtenäinen keskustelu yhden kohderyhmään kuuluvan henkilön kanssa = yksi kohtaaminen. Jatkokysymys samassa keskustelussa kuuluu samaan kohtaamiseen.'),
+          h('p', null, 'Jos dialogi on luonteeltaan jatkuvaa (esim. tukihenkilötyöskentely), kohtaamiseksi lasketaan ne päivät, jolloin vuorovaikutusta on tapahtunut. Digialustalla yksi kysymys–vastaus-kokonaisuus jatkokysymyksineen = yksi kohtaaminen.')),
         h('div', { class: 'field' }, h('label', { for: 'f-pseudo' }, 'Kohdatun mahdollinen nimimerkki tai muu tunniste'),
-          h('p', { class: 'help' }, 'Jos ei tiedossa tai tietoa ei kerätä, jätä tyhjäksi. Älä kirjoita oikeita nimiä. Nimimerkkiä käytetään vain eri henkilöiden määrän arviointiin, eikä se näy Excel-viennissä.'),
-          h('input', { type: 'text', id: 'f-pseudo', maxlength: '60', autocomplete: 'off', class: 'input-narrow', value: s.pseudonym,
+          h('p', { class: 'help' }, 'Jos ei tiedossa tai tietoa ei kerätä, jätä tyhjäksi. Älä kirjoita oikeita nimiä. Ei näy Excel-viennissä.'),
+          h('input', { type: 'text', id: 'f-pseudo', maxlength: '60', autocomplete: 'off', autocapitalize: 'off', spellcheck: 'false', enterkeyhint: 'next', class: 'input-narrow', value: s.pseudonym,
             oninput: (e) => { s.pseudonym = e.target.value; const hit = sensitiveHit(e.target.value); warn.hidden = !hit; if (hit) warn.textContent = `Teksti näyttää ${hit}. Älä kirjaa tunnistetietoja.`; } }),
           warn)));
     }
@@ -324,8 +331,9 @@ function renderEncounterForm(opts) {
   const submitBtn = h('button', { class: 'btn btn-primary btn-lg', type: 'submit' }, opts.submitLabel || 'Tallenna kirjaus');
   const form = h('form', { novalidate: true, onsubmit: async (e) => {
     e.preventDefault(); errBox.hidden = true;
+    clearFieldErrors(form);
     const problem = clientValidate();
-    if (problem) { errBox.textContent = problem; errBox.hidden = false; errBox.scrollIntoView({ behavior: 'smooth', block: 'center' }); return; }
+    if (problem) { showFieldError(problem[1], problem[0], errBox); return; }
     const visible = (q) => (q.applies_to === 'kaikki' || q.applies_to === s.encounter_type) && (q.project_id == null || q.project_id === s.project_id);
     const answers = {};
     for (const q of qs) if (visible(q) && s.answers[q.key] != null && s.answers[q.key] !== '') answers[q.key] = s.answers[q.key];
@@ -336,38 +344,60 @@ function renderEncounterForm(opts) {
     try { await opts.onSubmit(payload); }
     catch (ex) { errBox.textContent = ex.message; errBox.hidden = false; errBox.scrollIntoView({ behavior: 'smooth', block: 'center' }); }
     finally { submitBtn.disabled = false; }
-  } },
+  }, oninput: (e) => clearFieldError(e.target), onchange: (e) => clearFieldError(e.target) },
     h('div', { class: 'notice info small' }, 'Älä kirjaa lomakkeelle asiakkaan nimeä, yhteystietoja, terveystietoja tai muita tunnistetietoja.'),
     basics, dynamic, errBox,
     h('div', { class: 'sticky-actions actions' }, submitBtn,
       opts.onCancel ? h('button', { class: 'btn btn-secondary', type: 'button', onclick: opts.onCancel }, 'Peruuta') : null));
 
+  // Palauttaa [virheilmoitus, kentän kääreen id] tai null.
   function clientValidate() {
-    if (!s.encounter_date) return 'Anna kohtaamisen ajankohta.';
-    if (s.encounter_date > me.today) return 'Kohtaamisen ajankohta ei voi olla tulevaisuudessa.';
-    if (!s.project_id) return 'Valitse hanke.';
-    if (!s.encounter_type) return 'Valitse, mitä raportoit.';
+    if (!s.encounter_date) return ['Anna kohtaamisen ajankohta.', 'fw-date'];
+    if (s.encounter_date > me.today) return ['Kohtaamisen ajankohta ei voi olla tulevaisuudessa.', 'fw-date'];
+    if (!s.project_id) return ['Valitse hanke.', 'fw-project'];
+    if (!s.encounter_type) return ['Valitse, mitä raportoit.', 'fw-type'];
     if (s.encounter_type === 'ryhma') {
       const n = Number(s.encounter_count);
-      if (!Number.isInteger(n) || n < 1 || n > 9999) return 'Kohtaamisten määrä on oltava 1–9999.';
-      if (s.person_count !== '' && s.person_count != null) { const p = Number(s.person_count); if (!Number.isInteger(p) || p < 1 || p > 9999) return 'Osallistujien määrä on oltava 1–9999 tai tyhjä.'; }
+      if (!Number.isInteger(n) || n < 1 || n > 9999) return ['Kohtaamisten määrä on oltava 1–9999.', 'fw-count'];
+      if (s.person_count !== '' && s.person_count != null) { const p = Number(s.person_count); if (!Number.isInteger(p) || p < 1 || p > 9999) return ['Osallistujien määrä on oltava 1–9999 tai tyhjä.', 'fw-persons']; }
     }
     for (const q of qs) {
       if (!(q.applies_to === 'kaikki' || q.applies_to === s.encounter_type) || !(q.project_id == null || q.project_id === s.project_id)) continue;
       const v = s.answers[q.key];
       const empty = v == null || v === '' || (Array.isArray(v) && !v.length);
-      if (q.required && empty) return `Vastaa kysymykseen: ${q.label}`;
-      if (!empty && typeof v === 'string' && ['text', 'textarea'].includes(q.type)) { const hit = sensitiveHit(v); if (hit) return `Kenttä "${q.label}" näyttää sisältävän ${hit} näyttävää tietoa. Poista tunnistetiedot.`; }
+      if (q.required && empty) return [`Vastaa kysymykseen: ${q.label}`, 'fw-' + q.key];
+      if (!empty && typeof v === 'string' && ['text', 'textarea'].includes(q.type)) { const hit = sensitiveHit(v); if (hit) return [`Kenttä "${q.label}" näyttää sisältävän ${hit} näyttävää tietoa. Poista tunnistetiedot.`, 'fw-' + q.key]; }
     }
     return null;
   }
 
   $app.classList.add('container');
   $app.replaceChildren(h('div', { class: 'narrow' },
-    h('div', { class: 'page-head' }, h('div', null, h('h1', null, opts.title || 'Uusi kirjaus'),
-      h('p', { class: 'muted' }, 'Tähdellä (*) merkityt kohdat ovat pakollisia.'))),
+    h('div', { class: 'page-head form-head' }, h('div', null, h('h1', null, opts.title || 'Uusi kirjaus'),
+      h('p', { class: 'muted small' }, 'Tähdellä (*) merkityt kohdat ovat pakollisia.'))),
     form));
   renderDynamic();
+}
+
+// Kenttäkohtainen virhe: korostus, viesti kentän alle, vieritys ja fokus.
+function clearFieldErrors(root) {
+  root.querySelectorAll('.field.has-error').forEach(f => f.classList.remove('has-error'));
+  root.querySelectorAll('.field-error').forEach(e => e.remove());
+}
+function clearFieldError(target) {
+  const f = target && target.closest && target.closest('.field.has-error');
+  if (f) { f.classList.remove('has-error'); const e = f.querySelector('.field-error'); if (e) e.remove(); }
+}
+function showFieldError(fieldId, msg, fallbackBox) {
+  const f = document.getElementById(fieldId);
+  if (!f) { fallbackBox.textContent = msg; fallbackBox.hidden = false; fallbackBox.scrollIntoView({ behavior: 'smooth', block: 'center' }); return; }
+  f.classList.add('has-error');
+  const label = f.querySelector('.label, label');
+  const err = h('p', { class: 'field-error', role: 'alert' }, msg);
+  if (label) label.after(err); else f.prepend(err);
+  f.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  const input = f.querySelector('input:not([type=hidden]), select, textarea');
+  if (input) setTimeout(() => input.focus({ preventScroll: true }), 350);
 }
 
 function renderQuestion(q, answers) {
@@ -423,51 +453,59 @@ function renderQuestion(q, answers) {
       break;
     }
   }
-  return h('div', { class: 'field' }, label, help, control);
+  return h('div', { class: 'field', id: 'fw-' + q.key }, label, help, control);
 }
 
 // ---------------------------------------------------------------------------
 // Kirjausten selaus, tarkastelu, korjaus
 // ---------------------------------------------------------------------------
-const listState = { from: '', to: '', project_id: '', type: '', offset: 0 };
+const listState = { from: '', to: '', project_id: '', type: '', created_by: '', offset: 0 };
 
 async function viewList() {
   $app.classList.add('container');
   const me = state.me; const p = me.permissions;
   const PAGE = 50;
+  let staffSelect = null;
+  if (p.staffScope !== 'none') {
+    const { rows: staff } = await api('/staff');
+    staffSelect = h('select', { id: 'l-user' }, h('option', { value: '' }, 'Kaikki kirjaajat'),
+      staff.filter(s => s.rows > 0 || String(s.id) === listState.created_by).map(s => h('option', { value: s.id }, s.name)));
+  }
   const tableBox = h('div');
   const stats = h('div', { class: 'stats' });
   const pager = h('div', { class: 'pager' });
 
   const f = (key, el) => { el.value = listState[key]; el.addEventListener('change', () => { listState[key] = el.value; listState.offset = 0; load(); }); return el; };
-  const filters = h('div', { class: 'card' }, h('div', { class: 'filters' },
+  const filters = h('details', { class: 'card filter-card', open: window.matchMedia('(min-width: 641px)').matches ? true : null },
+    h('summary', null, 'Rajaa kirjauksia'), h('div', { class: 'filters' },
     h('div', { class: 'field' }, h('label', { for: 'l-from' }, 'Alkaen'), f('from', h('input', { type: 'date', id: 'l-from' }))),
     h('div', { class: 'field' }, h('label', { for: 'l-to' }, 'Päättyen'), f('to', h('input', { type: 'date', id: 'l-to' }))),
     me.projects.length > 1 ? h('div', { class: 'field' }, h('label', { for: 'l-proj' }, 'Hanke'),
       f('project_id', h('select', { id: 'l-proj' }, h('option', { value: '' }, 'Kaikki hankkeet'), me.projects.map(x => h('option', { value: x.id }, x.name))))) : null,
     h('div', { class: 'field' }, h('label', { for: 'l-type' }, 'Tyyppi'),
       f('type', h('select', { id: 'l-type' }, h('option', { value: '' }, 'Kaikki'), h('option', { value: 'yksilo' }, 'Yksi kohtaaminen'), h('option', { value: 'ryhma' }, 'Ryhmä')))),
+    staffSelect ? h('div', { class: 'field' }, h('label', { for: 'l-user' }, 'Kirjaaja'), f('created_by', staffSelect)) : null,
   ));
 
   async function load() {
     tableBox.replaceChildren(h('div', { class: 'loading' }, 'Ladataan…'));
     const qs = new URLSearchParams({ limit: PAGE, offset: listState.offset });
-    for (const k of ['from', 'to', 'project_id', 'type']) if (listState[k]) qs.set(k, listState[k]);
+    for (const k of ['from', 'to', 'project_id', 'type', 'created_by']) if (listState[k]) qs.set(k, listState[k]);
     const r = await api('/encounters?' + qs);
     stats.replaceChildren(
       h('div', { class: 'stat' }, h('b', null, fmtNum(r.totalEncounters)), h('span', null, 'kohtaamista')),
       h('div', { class: 'stat' }, h('b', null, fmtNum(r.total)), h('span', null, 'kirjausta (lomaketallennusta)')));
     if (!r.rows.length) { tableBox.replaceChildren(h('div', { class: 'card empty' }, 'Ei kirjauksia valituilla rajauksilla.')); pager.replaceChildren(); return; }
-    tableBox.replaceChildren(h('div', { class: 'table-wrap' }, h('table', null,
-      h('thead', null, h('tr', null, h('th', null, 'Ajankohta'), h('th', null, 'Hanke'), h('th', null, 'Tyyppi'),
+    tableBox.replaceChildren(h('div', { class: 'table-wrap' }, h('table', { class: 'cards-mobile' },
+      h('thead', null, h('tr', null, h('th', null, 'Ajankohta · hanke'), h('th', null, 'Tyyppi'),
         h('th', { class: 'num' }, 'Kohtaamisia'), h('th', { class: 'num' }, 'Henkilöitä'), p.viewScope !== 'own' ? h('th', null, 'Kirjaaja') : null, h('th', null, 'Tallennettu'))),
       h('tbody', null, r.rows.map(row => h('tr', { class: 'clickable', tabindex: '0', onclick: () => go('#/kirjaukset/' + row.id),
         onkeydown: (e) => { if (e.key === 'Enter') go('#/kirjaukset/' + row.id); } },
-        h('td', null, fmtDate(row.encounter_date)), h('td', null, row.project_name),
-        h('td', null, h('span', { class: 'badge ' + (row.encounter_type === 'ryhma' ? 'blue' : '') }, typeLabel(row.encounter_type))),
-        h('td', { class: 'num' }, fmtNum(row.encounter_count)), h('td', { class: 'num' }, row.person_count == null ? '–' : fmtNum(row.person_count)),
-        p.viewScope !== 'own' ? h('td', null, row.created_by_name) : null,
-        h('td', { class: 'small muted' }, fmtDateTime(row.created_at), row.updated_at ? h('span', { class: 'badge grey' }, ' korjattu') : null)))))));
+        h('td', { class: 'cell-title' }, h('strong', null, fmtDate(row.encounter_date)), ' · ', row.project_name, row.is_test ? [' ', h('span', { class: 'badge grey' }, 'testi')] : null),
+        h('td', { 'data-label': 'Tyyppi' }, h('span', { class: 'badge ' + (row.encounter_type === 'ryhma' ? 'blue' : '') }, typeLabel(row.encounter_type))),
+        h('td', { class: 'num', 'data-label': 'Kohtaamisia' }, fmtNum(row.encounter_count)), h('td', { class: 'num', 'data-label': 'Henkilöitä' }, row.person_count == null ? '–' : fmtNum(row.person_count)),
+        p.viewScope !== 'own' ? h('td', { 'data-label': 'Kirjaaja' }, row.created_by_name) : null,
+        h('td', { class: 'small muted', 'data-label': 'Tallennettu' }, fmtDateTime(row.created_at), row.updated_at ? h('span', { class: 'badge grey' }, ' korjattu') : null)))))));
     const end = Math.min(listState.offset + PAGE, r.total);
     pager.replaceChildren(h('span', { class: 'small muted' }, `Näytetään ${listState.offset + 1}–${end} / ${r.total}`),
       h('div', { class: 'actions' },
@@ -530,6 +568,187 @@ async function viewEdit(id) {
 }
 
 // ---------------------------------------------------------------------------
+// Työntekijäkohtainen seuranta
+// ---------------------------------------------------------------------------
+const staffState = { from: '', to: '', project_id: '', sort: 'encounters', dir: -1 };
+const fmtAvg = (v) => (v == null ? '–' : Number(v).toLocaleString('fi-FI', { minimumFractionDigits: 1, maximumFractionDigits: 1 }));
+const fmtMonth = (m) => { const [y, mm] = m.split('-'); return ['tammi', 'helmi', 'maalis', 'huhti', 'touko', 'kesä', 'heinä', 'elo', 'syys', 'loka', 'marras', 'joulu'][+mm - 1] + ' ' + y.slice(2); };
+const roleBadge = (u) => [h('span', { class: 'badge blue' }, state.me.roles[u.role] || u.role),
+  u.is_test ? [' ', h('span', { class: 'badge grey' }, 'testi')] : null, !u.active && !u.is_test ? [' ', h('span', { class: 'badge grey' }, 'suljettu')] : null];
+
+function staffFilterBar(onChange) {
+  if (!staffState.from) { staffState.from = state.me.today.slice(0, 4) + '-01-01'; staffState.to = state.me.today; }
+  const f = (key, el) => { el.value = staffState[key]; el.addEventListener('change', () => { staffState[key] = el.value; onChange(); }); return el; };
+  const presets = [['Tämä vuosi', () => [state.me.today.slice(0, 4) + '-01-01', state.me.today]],
+    ['30 pv', () => [isoDaysAgo(29), state.me.today]], ['Tämä kk', () => [state.me.today.slice(0, 8) + '01', state.me.today]]];
+  const fromEl = f('from', h('input', { type: 'date', id: 's-from' })), toEl = f('to', h('input', { type: 'date', id: 's-to' }));
+  return h('div', { class: 'card' }, h('div', { class: 'filters' },
+    h('div', { class: 'field' }, h('label', { for: 's-from' }, 'Alkaen'), fromEl),
+    h('div', { class: 'field' }, h('label', { for: 's-to' }, 'Päättyen'), toEl),
+    state.me.projects.length > 1 ? h('div', { class: 'field' }, h('label', { for: 's-proj' }, 'Hanke'),
+      f('project_id', h('select', { id: 's-proj' }, h('option', { value: '' }, 'Kaikki hankkeet'), state.me.projects.map(x => h('option', { value: x.id }, x.name))))) : null),
+    h('div', { class: 'actions presets' }, presets.map(([label, fn]) => h('button', { type: 'button', class: 'btn btn-secondary btn-sm', onclick: () => {
+      [staffState.from, staffState.to] = fn(); fromEl.value = staffState.from; toEl.value = staffState.to; onChange(); } }, label))));
+}
+function isoDaysAgo(n) { const d = new Date(state.me.today + 'T12:00:00'); d.setDate(d.getDate() - n); return d.toISOString().slice(0, 10); }
+function staffQuery() {
+  const q = new URLSearchParams();
+  for (const k of ['from', 'to', 'project_id']) if (staffState[k]) q.set(k, staffState[k]);
+  return q.toString();
+}
+
+async function viewStaff() {
+  const p = state.me.permissions;
+  const box = h('div');
+  const COLS = [
+    ['name', 'Työntekijä', false], ['encounters', 'Kohtaamisia', true], ['rows', 'Kirjauksia', true], ['yksilo_rows', 'Yksilö', true],
+    ['ryhma_rows', 'Ryhmiä', true], ['active_days', 'Aktiivipäiviä', true], ['per_day', 'Kohtaamisia / aktiivipäivä', true],
+    ['worker_rating', 'Työntekijän arvio ka.', true], ['client_rating', 'Asiakkaan arvio ka.', true], ['last_date', 'Viimeisin kohtaaminen', false],
+  ];
+  async function load() {
+    box.replaceChildren(h('div', { class: 'loading' }, 'Ladataan…'));
+    const { rows, totals } = await api('/staff?' + staffQuery());
+    rows.forEach(r => { r.per_day = r.active_days ? r.encounters / r.active_days : null; });
+    const sorted = [...rows].sort((a, b) => {
+      const k = staffState.sort; const va = a[k], vb = b[k];
+      if (va == null && vb == null) return 0; if (va == null) return 1; if (vb == null) return -1;
+      return (typeof va === 'string' ? va.localeCompare(vb, 'fi') : va - vb) * staffState.dir;
+    });
+    const noRecords = rows.filter(r => r.rows === 0).length;
+    box.replaceChildren(
+      h('div', { class: 'stats' },
+        h('div', { class: 'stat' }, h('b', null, fmtNum(totals.encounters)), h('span', null, 'kohtaamista')),
+        h('div', { class: 'stat' }, h('b', null, fmtNum(totals.rows)), h('span', null, 'kirjausta')),
+        h('div', { class: 'stat' }, h('b', null, fmtNum(rows.length - noRecords)), h('span', null, `kirjaajaa${noRecords ? ` · ${noRecords} ilman kirjauksia` : ''}`))),
+      !rows.length ? h('div', { class: 'card empty' }, 'Ei työntekijöitä valituilla rajauksilla.') :
+      h('div', { class: 'table-wrap' }, h('table', { class: 'cards-mobile staff-table' },
+        h('thead', null, h('tr', null, COLS.map(([k, label, num]) => h('th', { class: num ? 'num' : null, 'aria-sort': staffState.sort === k ? (staffState.dir > 0 ? 'ascending' : 'descending') : null },
+          h('button', { type: 'button', class: 'sort-btn' + (staffState.sort === k ? ' active' : ''), onclick: () => {
+            if (staffState.sort === k) staffState.dir *= -1; else { staffState.sort = k; staffState.dir = num ? -1 : 1; } load(); } },
+            label, staffState.sort === k ? (staffState.dir > 0 ? ' ▲' : ' ▼') : ''))))),
+        h('tbody', null, sorted.map(r => h('tr', { class: 'clickable' + (r.rows ? '' : ' dim'), tabindex: '0', onclick: () => go('#/tyontekijat/' + r.id),
+          onkeydown: (e) => { if (e.key === 'Enter') go('#/tyontekijat/' + r.id); } },
+          h('td', { class: 'cell-title' }, h('strong', null, r.name), ' ', roleBadge(r)),
+          h('td', { class: 'num', 'data-label': 'Kohtaamisia' }, h('strong', null, fmtNum(r.encounters))),
+          h('td', { class: 'num', 'data-label': 'Kirjauksia' }, fmtNum(r.rows)),
+          h('td', { class: 'num hide-m', 'data-label': 'Yksilö' }, fmtNum(r.yksilo_rows)),
+          h('td', { class: 'num hide-m', 'data-label': 'Ryhmiä' }, fmtNum(r.ryhma_rows)),
+          h('td', { class: 'num', 'data-label': 'Aktiivipäiviä' }, fmtNum(r.active_days)),
+          h('td', { class: 'num hide-m', 'data-label': 'Kohtaamisia / aktiivipäivä' }, fmtAvg(r.per_day)),
+          h('td', { class: 'num', 'data-label': 'Työntekijän arvio ka.' }, fmtAvg(r.worker_rating)),
+          h('td', { class: 'num', 'data-label': 'Asiakkaan arvio ka.' }, r.client_rating == null ? '–' : `${fmtAvg(r.client_rating)} (${r.client_rating_n})`),
+          h('td', { 'data-label': 'Viimeisin kohtaaminen' }, r.last_date ? fmtDate(r.last_date) : h('span', { class: 'muted' }, 'ei kirjauksia'))))))));
+  }
+  $app.replaceChildren(
+    h('div', { class: 'page-head' }, h('div', null, h('h1', null, 'Työntekijät'),
+      h('p', { class: 'muted' }, p.staffScope === 'all' ? 'Kirjaukset työntekijöittäin kaikista hankkeista.' : 'Kirjaukset työntekijöittäin hankkeistasi. Luvut sisältävät vain hankkeidesi kirjaukset.'))),
+    staffFilterBar(load), box);
+  await load();
+}
+
+async function viewStaffDetail(id) {
+  const box = h('div');
+  const head = h('div');
+  async function load() {
+    box.replaceChildren(h('div', { class: 'loading' }, 'Ladataan…'));
+    const d = await api(`/staff/${id}?` + staffQuery());
+    const k = d.kpi;
+    head.replaceChildren(h('p', null, h('a', { href: '#/tyontekijat' }, '← Kaikki työntekijät')),
+      h('div', { class: 'page-head' }, h('div', null, h('h1', null, d.user.name), h('p', { class: 'muted' }, roleBadge(d.user), ' ', d.user.recorder_role)),
+        state.me.permissions.viewScope !== 'none' ? h('button', { class: 'btn btn-secondary', type: 'button', onclick: () => {
+          Object.assign(listState, { from: staffState.from, to: staffState.to, project_id: staffState.project_id, type: '', created_by: String(id), offset: 0 });
+          go('#/kirjaukset'); } }, 'Näytä kirjaukset') : null));
+    if (!k.rows) { box.replaceChildren(h('div', { class: 'card empty' }, 'Ei kirjauksia valitulla aikavälillä.')); return; }
+    const tile = (v, label, sub) => h('div', { class: 'stat' }, h('b', null, v), h('span', null, label), sub ? h('small', null, sub) : null);
+    box.replaceChildren(
+      h('div', { class: 'stats stats-grid' },
+        tile(fmtNum(k.encounters), 'kohtaamista', `${fmtNum(k.rows)} kirjausta`),
+        tile(fmtNum(k.active_days), 'aktiivipäivää', `${fmtAvg(k.encounters / k.active_days)} kohtaamista / päivä`),
+        tile(fmtNum(k.yksilo_rows), 'yksilökohtaamista', k.distinct_pseudonyms ? `${fmtNum(k.distinct_pseudonyms)} eri nimimerkkiä` : null),
+        tile(fmtNum(k.ryhma_rows), 'ryhmää', k.ryhma_rows ? `${fmtNum(k.ryhma_encounters)} kohtaamista, ${fmtNum(k.ryhma_persons)} osallistujaa` : null),
+        tile(fmtAvg(k.worker_rating), 'oma arvio hyödystä ka.', 'asteikko 1–5'),
+        tile(fmtAvg(k.client_rating), 'asiakkaan arvio ka.', k.client_rating_n ? `${fmtNum(k.client_rating_n)} arviota` : 'ei arvioita'),
+        tile(k.avg_delay_days == null ? '–' : fmtAvg(Math.max(0, k.avg_delay_days)), 'pv kirjausviive ka.', 'kohtaamisesta tallennukseen'),
+        tile(fmtDate(k.last_date), 'viimeisin kohtaaminen', `ensimmäinen ${fmtDate(k.first_date)}`)),
+      h('div', { class: 'card' }, h('h2', null, 'Kohtaamiset kuukausittain'), monthChart(fillMonths(d.monthly, staffState.from || k.first_date, staffState.to || k.last_date))),
+      h('div', { class: 'grid-2' },
+        h('div', { class: 'card' }, h('h2', null, 'Hankkeittain'), hBars(d.byProject.map(x => ({ label: x.name, value: x.encounters, sub: `${fmtNum(x.rows)} kirjausta` })))),
+        h('div', { class: 'card' }, h('h2', null, 'Kohtaamisen sijainti'), d.byLocation.length ? hBars(d.byLocation.map(x => ({ label: x.name, value: x.encounters, sub: `${fmtNum(x.rows)} kirjausta` }))) : h('p', { class: 'muted' }, 'Ei tietoa.')),
+        h('div', { class: 'card' }, h('h2', null, 'Oma arvio kohtaamisen hyödystä'),
+          hBars([1, 2, 3, 4, 5].map(v => ({ label: String(v), value: (d.workerRatings.find(r => Number(r.rating) === v) || { n: 0 }).n, sub: 'kirjausta' })), { keepOrder: true, unit: 'kirjausta', compact: true }))));
+  }
+  $app.replaceChildren(head, staffFilterBar(load), box);
+  await load();
+}
+
+// Täydentää puuttuvat kuukaudet nollilla (enintään 36 kk)
+function fillMonths(rows, from, to) {
+  const map = new Map(rows.map(r => [r.month, r]));
+  const out = []; let [y, m] = from.slice(0, 7).split('-').map(Number); const end = to.slice(0, 7);
+  for (let i = 0; i < 36; i++) {
+    const key = `${y}-${String(m).padStart(2, '0')}`;
+    out.push(map.get(key) || { month: key, rows: 0, encounters: 0, yksilo: 0, ryhma: 0 });
+    if (key >= end) break; m++; if (m > 12) { m = 1; y++; }
+  }
+  return out;
+}
+
+// Pylväskaavio (yksi sarja), SVG + hover-tooltip + taulukkonäkymä
+function monthChart(data) {
+  const NS = 'http://www.w3.org/2000/svg';
+  const s = (tag, attrs) => { const el = document.createElementNS(NS, tag); for (const [k, v] of Object.entries(attrs || {})) el.setAttribute(k, v); return el; };
+  const narrow = window.matchMedia('(max-width: 640px)').matches;
+  const W = narrow ? 340 : 720, H = narrow ? 200 : 240, L = narrow ? 30 : 40, R = 6, T = 12, B = 26;
+  const max = Math.max(1, ...data.map(d => d.encounters));
+  const step = niceStep(max); const top = Math.ceil(max / step) * step;
+  const svg = s('svg', { viewBox: `0 0 ${W} ${H}`, class: 'chart', role: 'img', 'aria-label': 'Kohtaamiset kuukausittain' });
+  const y = (v) => T + (H - T - B) * (1 - v / top);
+  for (let v = 0; v <= top; v += step) {
+    svg.append(s('line', { x1: L, x2: W - R, y1: y(v), y2: y(v), class: v === 0 ? 'axis' : 'grid' }));
+    const t = s('text', { x: L - 6, y: y(v) + 4, class: 'tick', 'text-anchor': 'end' }); t.textContent = fmtNum(v); svg.append(t);
+  }
+  const bw = (W - L - R) / data.length; const barW = Math.min(36, bw * 0.62);
+  const tip = h('div', { class: 'chart-tip', hidden: true });
+  const labelEvery = Math.max(1, Math.ceil(data.length / (narrow ? 4 : 8)));
+  data.forEach((d, i) => {
+    const cx = L + bw * i + bw / 2; const yy = y(d.encounters); const hgt = H - B - yy;
+    if (d.encounters > 0) {
+      const r = Math.min(4, barW / 2, hgt);
+      svg.append(s('path', { class: 'bar', d: `M${cx - barW / 2},${H - B} V${yy + r} Q${cx - barW / 2},${yy} ${cx - barW / 2 + r},${yy} H${cx + barW / 2 - r} Q${cx + barW / 2},${yy} ${cx + barW / 2},${yy + r} V${H - B} Z` }));
+    }
+    if (i % labelEvery === 0) { const t = s('text', { x: cx, y: H - 8, class: 'tick', 'text-anchor': 'middle' }); t.textContent = fmtMonth(d.month); svg.append(t); }
+    const hit = s('rect', { x: L + bw * i, y: T, width: bw, height: H - T - B, class: 'hit', tabindex: '0' });
+    const show = () => {
+      tip.replaceChildren(h('strong', null, fmtMonth(d.month)), h('div', null, `${fmtNum(d.encounters)} kohtaamista`),
+        h('div', { class: 'muted' }, `${fmtNum(d.rows)} kirjausta · yksilö ${fmtNum(d.yksilo)} · ryhmä ${fmtNum(d.ryhma)}`));
+      tip.hidden = false; tip.style.left = `${(cx / W) * 100}%`; tip.style.top = `${(yy / H) * 100}%`;
+      hit.classList.add('on');
+    };
+    const hide = () => { tip.hidden = true; hit.classList.remove('on'); };
+    hit.addEventListener('mouseenter', show); hit.addEventListener('focus', show);
+    hit.addEventListener('mouseleave', hide); hit.addEventListener('blur', hide);
+    hit.addEventListener('touchstart', show, { passive: true });
+    svg.append(hit);
+  });
+  const table = h('details', { class: 'chart-table' }, h('summary', null, 'Näytä taulukkona'),
+    h('div', { class: 'table-wrap' }, h('table', null, h('thead', null, h('tr', null, h('th', null, 'Kuukausi'), h('th', { class: 'num' }, 'Kohtaamisia'),
+      h('th', { class: 'num' }, 'Kirjauksia'), h('th', { class: 'num' }, 'Yksilö'), h('th', { class: 'num' }, 'Ryhmä'))),
+      h('tbody', null, data.map(d => h('tr', null, h('td', null, fmtMonth(d.month)), h('td', { class: 'num' }, fmtNum(d.encounters)),
+        h('td', { class: 'num' }, fmtNum(d.rows)), h('td', { class: 'num' }, fmtNum(d.yksilo)), h('td', { class: 'num' }, fmtNum(d.ryhma))))))));
+  return h('div', null, h('div', { class: 'chart-wrap' }, svg, tip), table);
+}
+function niceStep(max) { const raw = max / 4; const p = 10 ** Math.floor(Math.log10(raw)); const n = raw / p; return Math.max(1, (n <= 1 ? 1 : n <= 2 ? 2 : n <= 5 ? 5 : 10) * p); }
+
+// Vaakapylväät HTML:nä (yksi sarja, arvo tekstinä)
+function hBars(items, opts = {}) {
+  const max = Math.max(1, ...items.map(i => i.value));
+  return h('div', { class: 'hbars' + (opts.compact ? ' compact' : '') }, items.map(i => h('div', { class: 'hbar', title: `${i.label}: ${fmtNum(i.value)}${opts.unit ? ' ' + opts.unit : ''}` },
+    h('div', { class: 'hbar-label' }, i.label),
+    h('div', { class: 'hbar-track' }, i.value > 0 ? (() => { const el = h('div', { class: 'hbar-fill' }); el.style.width = `${(i.value / max) * 100}%`; return el; })() : null),
+    h('div', { class: 'hbar-value' }, fmtNum(i.value)))));
+}
+
+// ---------------------------------------------------------------------------
 // Excel-vienti
 // ---------------------------------------------------------------------------
 async function viewExport() {
@@ -574,6 +793,7 @@ function adminTabs(active) {
     p.manageQuestions ? t('#/hallinta/kysymykset', 'Kysymykset') : null,
     p.manageProjects ? t('#/hallinta/hankkeet', 'Hankkeet') : null,
     p.manageUsers ? t('#/hallinta/kayttajat', 'Käyttäjät') : null,
+    p.manageUsers ? t('#/hallinta/testidata', 'Testidata') : null,
     p.manageUsers ? t('#/hallinta/loki', 'Tapahtumaloki') : null));
 }
 
@@ -791,13 +1011,49 @@ async function viewQuestions() {
     ...projects.map(p => groupBlock(p.name + (p.active ? '' : ' (ei käytössä)'), p.id, questions.filter(q => q.project_id === p.id))));
 }
 
+// --- Testidata
+async function viewDemo() {
+  const c = await api('/admin/demo-data');
+  const count = h('input', { type: 'number', id: 'd-count', class: 'input-narrow', min: '1', max: '500', value: 40 });
+  const msg = h('div', { class: 'notice', hidden: true });
+  const show = (cls, text) => { msg.className = 'notice ' + cls; msg.textContent = text; msg.hidden = false; };
+  const createBtn = h('button', { class: 'btn btn-primary', type: 'button', onclick: async () => {
+    createBtn.disabled = true;
+    try { const r = await api('/admin/demo-data', { method: 'POST', body: { count: Number(count.value) } });
+      toast(`Luotiin ${r.created} testikirjausta.`); viewDemo(); }
+    catch (ex) { show('err', ex.message); createBtn.disabled = false; }
+  } }, 'Luo testikirjaukset');
+  const delBtn = h('button', { class: 'btn btn-danger', type: 'button', disabled: !c.rows, onclick: async (ev) => {
+    const b = ev.currentTarget;
+    if (!b.classList.contains('confirming')) { b.classList.add('confirming'); b.textContent = 'Vahvista: poista kaikki testikirjaukset';
+      setTimeout(() => { b.classList.remove('confirming'); b.textContent = 'Poista kaikki testidata'; }, 4000); return; }
+    try { const r = await api('/admin/demo-data', { method: 'DELETE' }); toast(`Poistettiin ${r.deleted} testikirjausta.`); viewDemo(); }
+    catch (ex) { show('err', ex.message); }
+  } }, 'Poista kaikki testidata');
+
+  $app.replaceChildren(adminTabs('#/hallinta/testidata'),
+    h('div', { class: 'stats' },
+      h('div', { class: 'stat' }, h('b', null, fmtNum(c.rows)), h('span', null, 'testikirjausta')),
+      h('div', { class: 'stat' }, h('b', null, fmtNum(c.encounters)), h('span', null, 'kohtaamista niissä'))),
+    h('div', { class: 'card' },
+      h('h2', null, 'Luo testikirjauksia'),
+      h('p', { class: 'muted' }, 'Luo vaihtelevia kirjauksia kaikkiin käytössä oleviin hankkeisiin kuluvan vuoden ajalle: yksilö- ja ryhmäkohtaamisia, toistuvia nimimerkkejä, eri kirjaajarooleja, kaupunkeja, arvioita ja vapaatekstejä. Myös myöhemmin lisättyihin hankekohtaisiin kysymyksiin vastataan.'),
+      h('p', { class: 'muted' }, 'Testikirjaukset näkyvät listassa merkinnällä ”testi” ja Excel-viennissä sarakkeessa ”Testidata”.'),
+      h('div', { class: 'field' }, h('label', { for: 'd-count' }, 'Määrä'), count),
+      msg, h('div', { class: 'actions' }, createBtn)),
+    h('div', { class: 'card' },
+      h('h2', null, 'Poista testidata'),
+      h('p', { class: 'muted' }, 'Poistaa pysyvästi kaikki testikirjaukset. Oikeisiin kirjauksiin ei kosketa. Tee tämä ennen varsinaista käyttöönottoa.'),
+      delBtn));
+}
+
 // --- Tapahtumaloki
 async function viewAudit() {
   $app.classList.add('container');
   const { rows } = await api('/audit');
   const LABELS = { login: 'Kirjautuminen', login_failed: 'Epäonnistunut kirjautuminen', password_changed: 'Salasana vaihdettu', encounter_create: 'Kirjaus luotu',
     encounter_update: 'Kirjaus korjattu', encounter_delete: 'Kirjaus poistettu', export: 'Excel-vienti', user_create: 'Käyttäjä luotu', user_update: 'Käyttäjä muokattu',
-    user_reset_password: 'Salasana nollattu', project_create: 'Hanke luotu', project_update: 'Hanke muokattu', question_create: 'Kysymys luotu', question_update: 'Kysymys muokattu' };
+    user_reset_password: 'Salasana nollattu', demo_create: 'Testidataa luotu', demo_delete: 'Testidata poistettu', project_create: 'Hanke luotu', project_update: 'Hanke muokattu', question_create: 'Kysymys luotu', question_update: 'Kysymys muokattu' };
   $app.replaceChildren(adminTabs('#/hallinta/loki'),
     h('p', { class: 'muted' }, '200 viimeisintä tapahtumaa.'),
     h('div', { class: 'table-wrap' }, h('table', null,

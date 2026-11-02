@@ -12,7 +12,7 @@ ADMIN_EMAIL=oma@osoite.fi SESSION_SECRET=pitka-satunnainen-merkkijono npm start
 
 Ensimmäisellä käynnistyksellä luodaan admin-käyttäjä. Väliaikainen salasana tulostuu konsoliin (tai sen voi antaa `ADMIN_PASSWORD`-muuttujalla), ja se vaihdetaan ensimmäisellä kirjautumisella. Muut asetukset löytyvät tiedostosta `.env.example`. Docker: `docker build -t kohtaamiset . && docker run -p 3000:3000 -v kohtaamiset:/data -e SESSION_SECRET=… kohtaamiset`.
 
-Testit: `npm test` (10 testiä: roolit, validointi, tunnistetietojen esto, Excel-vienti ja kysymysten versiointi).
+Testit: `npm test` (13 testiä: roolit, validointi, tunnistetietojen esto, Excel-vienti ja kysymysten versiointi).
 
 ## Roolit
 
@@ -22,6 +22,7 @@ Testit: `npm test` (10 testiä: roolit, validointi, tunnistetietojen esto, Excel
 | Selaa kirjauksia | kaikki | omien hankkeiden kaikki | vain omat | – |
 | Korjaa / poistaa kirjauksia | kaikki | omat hankkeet | – | – |
 | Excel-vienti | kaikki hankkeet | omat hankkeet | – | – |
+| Työntekijäseuranta | kaikki | omien hankkeiden kirjaukset | – | – |
 | Käyttäjät, hankkeet, kysymykset, loki | ✓ | – | – | – |
 
 Oikeudet on koottu yhteen tiedostoon, `src/permissions.js`. Jos esimerkiksi hanketyöntekijän halutaan voivan korjata omia kirjauksiaan, muutetaan sinne `editScope: 'own'`.
@@ -37,6 +38,18 @@ Oikeudet on koottu yhteen tiedostoon, `src/permissions.js`. Jos esimerkiksi hank
 ## Kysymysten ylläpito (admin)
 
 Kysymyksiä voi lisätä, muokata, järjestää ja ottaa pois käytöstä. Kysymyksiä **ei poisteta**, ja jokaisella kysymyksellä on pysyvä tunniste (`key`). Näin aiempien vuosien raportointi säilyy, vaikka lomake muuttuisi. Kysymyksen tyyppiä ei voi muuttaa sen jälkeen, kun kysymykseen on vastattu. Tyypit ovat lyhyt teksti, pitkä teksti, luku, valinta (yksi tai useita), arvio 1–5 ja päivämäärä.
+
+## Työntekijäseuranta (admin ja tiimivetäjä)
+
+**Työntekijät**-sivulla näkyy jokaisen kirjaajan yhteenveto valitulta aikaväliltä ja hankkeesta: kohtaamiset, kirjaukset, yksilö- ja ryhmäkirjaukset, aktiivipäivät, kohtaamiset aktiivipäivää kohden sekä työntekijän ja asiakkaan arvioiden keskiarvot. Sarakkeen otsikkoa klikkaamalla taulukko järjestyy kyseisen sarakkeen mukaan. Listalla näkyvät myös työntekijät, jotka eivät ole vielä kirjanneet mitään.
+
+Työntekijän omalla sivulla ovat tunnusluvut (mm. eri nimimerkit ja keskimääräinen kirjausviive), kuukausikaavio sekä jakaumat hankkeittain, sijainneittain ja oman arvion mukaan. **Näytä kirjaukset** avaa kirjauslistan valmiiksi rajattuna tähän työntekijään. Kirjauslistalla voi myös itse rajata kirjaajan mukaan.
+
+Tiimivetäjä näkee vain omien hankkeidensa kirjaukset, vaikka työntekijä kirjaisi myös muihin hankkeisiin.
+
+## Testidata (admin)
+
+Hallinta → **Testidata** luo halutun määrän (oletuksena 40) vaihtelevia testikirjauksia. Kirjaukset jaetaan viidelle testityöntekijälle (suljettuja tunnuksia, joilla ei voi kirjautua), jotta työntekijäseurantaa voi testata. Kirjauksia tulee kaikkiin käytössä oleviin hankkeisiin kuluvan vuoden ajalle, ja mukana on yksilö- ja ryhmäkohtaamisia, toistuvia nimimerkkejä, eri kirjaajarooleja, kaupunkeja, arvioita ja vapaatekstejä. Ne tallennetaan samalla tarkistuksella kuin lomakkeelta tulevat kirjaukset. Testikirjaukset on merkitty (`is_test`): listassa ne näkyvät merkinnällä ”testi” ja Excelissä sarakkeessa ”Testidata”. **Poista kaikki testidata** -painike poistaa vain testikirjaukset ja testityöntekijät. Tee poisto ennen varsinaista käyttöönottoa.
 
 ## Excel-vienti
 

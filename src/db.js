@@ -188,6 +188,14 @@ if (!db.prepare("PRAGMA table_info(users)").all().some(c => c.name === 'recorder
 db.prepare(`UPDATE users SET recorder_role = CASE role WHEN 'tuntityontekija' THEN ? ELSE ? END WHERE recorder_role IS NULL`)
   .run(RECORDER_ROLES[1], RECORDER_ROLES[0]);
 
+// Migraatio: testidatan merkintä
+if (!db.prepare("PRAGMA table_info(encounters)").all().some(c => c.name === 'is_test')) {
+  db.exec('ALTER TABLE encounters ADD COLUMN is_test INTEGER NOT NULL DEFAULT 0');
+}
+if (!db.prepare("PRAGMA table_info(users)").all().some(c => c.name === 'is_test')) {
+  db.exec('ALTER TABLE users ADD COLUMN is_test INTEGER NOT NULL DEFAULT 0');
+}
+
 function audit(userId, action, entity, entityId, details) {
   db.prepare('INSERT INTO audit_log (user_id, action, entity, entity_id, details) VALUES (?,?,?,?,?)')
     .run(userId ?? null, action, entity ?? null, entityId == null ? null : String(entityId), details ? JSON.stringify(details) : null);

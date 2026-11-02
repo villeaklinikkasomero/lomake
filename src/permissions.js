@@ -15,22 +15,23 @@ const ROLES = {
 //  editScope     – mitä kirjauksia voi korjata: 'all' | 'projects' | 'own' | 'none'
 //  deleteScope   – mitä kirjauksia voi poistaa: 'all' | 'projects' | 'none'
 //  exportScope   – Excel-vienti: 'all' | 'projects' | 'none'
+//  staffScope    – työntekijäkohtainen seuranta: 'all' | 'projects' | 'none'
 //  manageUsers / manageProjects / manageQuestions – ylläpito
 const PERMISSIONS = {
   admin: {
-    record: true, viewScope: 'all', editScope: 'all', deleteScope: 'all', exportScope: 'all',
+    record: true, viewScope: 'all', editScope: 'all', deleteScope: 'all', exportScope: 'all', staffScope: 'all',
     manageUsers: true, manageProjects: true, manageQuestions: true,
   },
   tiimivetaja: {
-    record: true, viewScope: 'projects', editScope: 'projects', deleteScope: 'projects', exportScope: 'projects',
+    record: true, viewScope: 'projects', editScope: 'projects', deleteScope: 'projects', exportScope: 'projects', staffScope: 'projects',
     manageUsers: false, manageProjects: false, manageQuestions: false,
   },
   hanketyontekija: {
-    record: true, viewScope: 'own', editScope: 'none', deleteScope: 'none', exportScope: 'none',
+    record: true, viewScope: 'own', editScope: 'none', deleteScope: 'none', exportScope: 'none', staffScope: 'none',
     manageUsers: false, manageProjects: false, manageQuestions: false,
   },
   tuntityontekija: {
-    record: true, viewScope: 'none', editScope: 'none', deleteScope: 'none', exportScope: 'none',
+    record: true, viewScope: 'none', editScope: 'none', deleteScope: 'none', exportScope: 'none', staffScope: 'none',
     manageUsers: false, manageProjects: false, manageQuestions: false,
   },
 };

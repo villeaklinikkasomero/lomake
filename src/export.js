@@ -69,6 +69,7 @@ function buildWorkbook({ from, to, projectIds }) {
   const tail = [
     { header: 'Tallennettu', key: 'created_at', width: 18, style: { numFmt: 'd.m.yyyy h:mm' } },
     { header: 'Muokattu', key: 'updated_at', width: 18, style: { numFmt: 'd.m.yyyy h:mm' } },
+    { header: 'Testidata', key: 'is_test', width: 10 },
   ];
   ws.columns = [...base, ...qCols, ...tail];
 
@@ -84,6 +85,7 @@ function buildWorkbook({ from, to, projectIds }) {
       person_count: e.encounter_type === 'ryhma' ? e.person_count : null,
       created_at: utcToLocalDate(e.created_at),
       updated_at: utcToLocalDate(e.updated_at),
+      is_test: e.is_test ? 'kyllä' : 'ei',
     };
     const ans = answers.get(e.id) || {};
     for (const q of questions) {
