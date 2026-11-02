@@ -1,5 +1,6 @@
 'use strict';
 const path = require('path');
+const fs = require('fs');
 const crypto = require('crypto');
 const express = require('express');
 const session = require('express-session');
@@ -619,8 +620,22 @@ app.get('/api/audit', requireAuth, requirePerm('manageUsers'), (req, res) => {
 // ---------------------------------------------------------------------------
 // Staattinen käyttöliittymä
 // ---------------------------------------------------------------------------
-app.use(express.static(path.join(__dirname, '..', 'public'), { index: 'index.html', maxAge: IS_PROD ? '1h' : 0 }));
-app.get(/^\/(?!api\/).*/, (req, res) => res.sendFile(path.join(__dirname, '..', 'public', 'index.html')));
+// Välimuisti: index.html haetaan aina uudelleen ja se viittaa tiedostoihin
+// versiotunnisteella (?v=…), joka vaihtuu jokaisessa julkaisussa. Näin selain ei
+// koskaan näytä vanhaa käyttöliittymää uuden julkaisun jälkeen.
+const PUBLIC_DIR = path.join(__dirname, '..', 'public');
+const BUILD_ID = (process.env.RENDER_GIT_COMMIT || '').slice(0, 12) || Date.now().toString(36);
+const INDEX_HTML = fs.readFileSync(path.join(PUBLIC_DIR, 'index.html'), 'utf8')
+  .replace('href="/app.css"', `href="/app.css?v=${BUILD_ID}"`)
+  .replace('src="/app.js"', `src="/app.js?v=${BUILD_ID}"`);
+const sendIndex = (req, res) => { res.set('Cache-Control', 'no-cache, no-store, must-revalidate'); res.type('html').send(INDEX_HTML); };
+app.get(['/', '/index.html'], sendIndex);
+app.use(express.static(PUBLIC_DIR, { index: false, setHeaders: (res, filePath) => {
+  // Versioidut tiedostot: selain tarkistaa muutokset aina (ETag), joten päivitys näkyy heti.
+  res.setHeader('Cache-Control', 'no-cache');
+} }));
+app.get('/version', (req, res) => res.json({ build: BUILD_ID }));
+app.get(/^\/(?!api\/).*/, sendIndex);
 app.use('/api', (req, res) => bad(res, 'Ei löydy.', 404));
 app.use((err, req, res, next) => { console.error(err); bad(res, 'Palvelinvirhe.', 500); });
 
