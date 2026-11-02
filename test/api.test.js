@@ -79,7 +79,8 @@ test('ryhmäkirjaus ja hankekohtainen kysymys', async () => {
     answers: { tyontekijan_arvio: '5', ika: '18–29 vuotta', ak21_toimintamuoto: 'Selvä suunta -ryhmä' } }));
   assert.equal(r.status, 201, JSON.stringify(r.data));
   const d = await tv('GET', '/encounters/' + r.data.id);
-  assert.equal(d.data.encounter.pseudonym, null);
+  assert.equal(d.data.encounter.pseudonym, undefined);   // selväkielistä nimimerkkiä ei palauteta
+  assert.equal(d.data.encounter.client_linked, false);
   assert.equal(d.data.encounter.answers.ak21_toimintamuoto, 'Selvä suunta -ryhmä');
   assert.equal(d.data.encounter.answers.ika, undefined);     // ikä koskee vain yksilökohtaamisia
 });
@@ -256,4 +257,101 @@ test('testidata jakautuu testityöntekijöille ja poistuu heidän kanssaan', asy
   assert.ok(staff.data.rows.filter(r => r.is_test && r.rows > 0).length >= 4);
   await a('DELETE', '/admin/demo-data');
   assert.equal(db.prepare('SELECT COUNT(*) n FROM users WHERE is_test = 1').get().n, 0);
+});
+
+// ---------------------------------------------------------------------------
+// Asiakastunnisteet ja palveluohjaukset
+// ---------------------------------------------------------------------------
+test('asiakastunniste: tiiviste kannassa, yksilöllinen säätiötasolla, ohjaus seuraa hankkeesta toiseen', async () => {
+  const p = P(); const ht = users.hanketyontekija; const tv = users.tiimivetaja;
+  const svc = (await ht('GET', '/form')).data.referralServices;
+  assert.ok(svc.length >= 5);
+
+  // Uusi asiakas Katuklinikalla nimimerkillä, ohjaus päihdepalveluihin
+  let r = await ht('POST', '/clients/lookup', { ref: 'Revontuli 77', mode: 'new' });
+  assert.deepEqual(r.data, { available: true });
+  r = await ht('POST', '/encounters', basePayload(p.KATUKLINIKKA, { client_mode: 'new', client_ref: 'Revontuli 77', referrals: [svc[0].id] }));
+  assert.equal(r.status, 201, JSON.stringify(r.data));
+  const firstId = r.data.id;
+
+  // Selväkielistä tunnistetta ei ole missään taulussa
+  const dump = JSON.stringify([
+    db.prepare('SELECT * FROM clients').all(), db.prepare('SELECT * FROM encounters').all(),
+    db.prepare('SELECT * FROM audit_log').all(), db.prepare('SELECT * FROM referrals').all()]).toLowerCase();
+  assert.ok(!dump.includes('revontuli'), 'tunniste ei saa näkyä kannassa');
+  assert.match(db.prepare('SELECT ref_hash FROM clients ORDER BY id DESC LIMIT 1').get().ref_hash, /^[0-9a-f]{64}$/);
+
+  // Sama tunniste ei kelpaa uudelle asiakkaalle – myöskään eri kirjoitusasulla tai toisessa hankkeessa
+  r = await tv('POST', '/encounters', basePayload(p.AK21, { client_mode: 'new', client_ref: 'REVONTULI-77' }));
+  assert.equal(r.status, 400); assert.match(r.data.error, /jo toisen asiakkaan/);
+  r = await tv('POST', '/clients/lookup', { ref: 'revontuli77', mode: 'new' });
+  assert.equal(r.data.available, false);
+  // Tuntematon palaava asiakas
+  r = await tv('POST', '/encounters', basePayload(p.AK21, { client_mode: 'existing', client_ref: 'Ei Ole Olemassa' }));
+  assert.equal(r.status, 400);
+
+  // Palaava asiakas toisessa hankkeessa (AK21): avoin ohjaus näkyy ja sen voi kuitata
+  r = await tv('POST', '/clients/lookup', { ref: 'revontuli 77' });
+  assert.equal(r.data.found, true);
+  assert.equal(r.data.summary.encounters, 1);
+  assert.equal(r.data.summary.open_referrals.length, 1);
+  assert.equal(r.data.summary.open_referrals[0].service, svc[0].name);
+  assert.ok(!JSON.stringify(r.data).includes('Katuklinikka'), 'yhteenveto ei paljasta toisen hankkeen nimeä');
+  const refId = r.data.summary.open_referrals[0].id;
+  r = await tv('POST', '/encounters', basePayload(p.AK21, { client_mode: 'existing', client_ref: 'Revontuli77',
+    referral_updates: [{ id: refId, status: 'toteutui' }] }));
+  assert.equal(r.status, 201, JSON.stringify(r.data));
+  const ref = db.prepare('SELECT * FROM referrals WHERE id = ?').get(refId);
+  assert.equal(ref.status, 'toteutui'); assert.equal(ref.status_encounter_id, r.data.id);
+  // Samaa ohjausta ei voi kuitata uudelleen
+  r = await tv('POST', '/encounters', basePayload(p.AK21, { client_mode: 'existing', client_ref: 'Revontuli77', referral_updates: [{ id: refId, status: 'ei_toteutunut' }] }));
+  assert.equal(r.status, 400);
+
+  // Kirjauksen tiedot: ei tunnistetta, vain tieto linkityksestä ja ohjaukset
+  const det = await tv('GET', '/encounters/' + firstId);
+  assert.equal(det.data.encounter.client_linked, true);
+  assert.equal(det.data.encounter.client_id, undefined);
+  assert.equal(det.data.encounter.referrals[0].status, 'toteutui');
+
+  // Satunnaistunnus
+  const g = await ht('POST', '/clients/generate');
+  assert.match(g.data.code, /^[2-9A-Z]{3}-[2-9A-Z]{4}$/);
+  r = await ht('POST', '/encounters', basePayload(p.KATUKLINIKKA, { client_mode: 'new', client_ref: g.data.code, client_generated: true }));
+  assert.equal(r.status, 201);
+  // Tunniste ei saa näyttää henkilötunnukselta
+  r = await ht('POST', '/clients/lookup', { ref: '010190-123A', mode: 'new' });
+  assert.equal(r.status, 400);
+  // Ryhmäkirjaukseen ei liitetä asiakasta
+  r = await ht('POST', '/encounters', basePayload(p.KATUKLINIKKA, { encounter_type: 'ryhma', encounter_count: 4, client_mode: 'existing', client_ref: 'Revontuli77' }));
+  assert.equal(r.status, 201);
+  assert.equal(db.prepare('SELECT client_id FROM encounters WHERE id = ?').get(r.data.id).client_id, null);
+});
+
+test('asiakaspolut: koosteet adminille ja tiimivetäjälle, ei muille; Excel ilman tunnistetta', async () => {
+  const s = await users.admin('GET', '/paths');
+  assert.equal(s.status, 200, JSON.stringify(s.data));
+  assert.ok(s.data.clients.total >= 2);
+  assert.ok(s.data.referrals.total >= 1 && s.data.referrals.toteutui >= 1);
+  assert.equal((await users.tiimivetaja('GET', '/paths')).status, 200);
+  assert.equal((await users.hanketyontekija('GET', '/paths')).status, 403);
+  const ExcelJS = require('exceljs');
+  const res = await users.admin('GET', `/export?from=2020-01-01&to=${today}`, null, true);
+  const wb = new ExcelJS.Workbook(); await wb.xlsx.load(Buffer.from(await res.arrayBuffer()));
+  const ws = wb.getWorksheet('Kohtaamiset');
+  const headers = ws.getRow(1).values.slice(1);
+  assert.ok(headers.includes('Ohjattu palveluun') && headers.includes('Tunnistettu asiakas (yksilö)'));
+  let leak = false; ws.eachRow(row => row.values.forEach(v => { if (typeof v === 'string' && /revontuli/i.test(v)) leak = true; }));
+  assert.equal(leak, false);
+});
+
+test('säilytysaika katkaisee vanhan linkityksen', async () => {
+  const clients = require('../src/clients');
+  const p = P();
+  const r = await users.admin('POST', '/encounters', basePayload(p.JALMA, { encounter_date: '2020-01-02', client_mode: 'new', client_ref: 'Vanha Asiakas', referrals: [1] }));
+  assert.equal(r.status, 201, JSON.stringify(r.data));
+  assert.ok(clients.findClient('vanha asiakas'));
+  clients.applyRetention();
+  assert.equal(clients.findClient('vanha asiakas'), undefined);
+  assert.equal(db.prepare('SELECT client_id FROM encounters WHERE id = ?').get(r.data.id).client_id, null);
+  assert.equal(db.prepare('SELECT status FROM referrals WHERE encounter_id = ?').get(r.data.id).status, 'ei_seurattavissa');
 });

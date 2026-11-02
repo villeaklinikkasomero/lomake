@@ -21,6 +21,10 @@ services:
         value: /var/data/kohtaamiset.db
       - key: SESSION_SECRET
         generateValue: true
+      - key: PSEUDONYM_KEY        # asiakastunnisteiden suojausavain – ÄLÄ vaihda käytön aikana
+        generateValue: true
+      - key: CLIENT_RETENTION_MONTHS
+        value: "24"
       - key: SESSION_HOURS
         value: "10"
       - key: ADMIN_EMAIL

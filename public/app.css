@@ -333,3 +333,29 @@ svg.chart .hit.on { fill: rgba(26, 95, 180, .07); }
   .hbars.compact .hbar { grid-template-columns: 1.5rem 1fr auto; }
   .hbars.compact .hbar-label { grid-column: auto; }
 }
+
+/* ---------------------------------------------------------------------------
+   Asiakastunniste ja palveluohjaus
+   --------------------------------------------------------------------------- */
+.segmented.seg3 { grid-template-columns: repeat(3, 1fr); }
+.segmented.seg3 .opt span { font-size: .92rem; padding: .6rem .4rem; }
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; letter-spacing: .03em; }
+.client-row { flex-wrap: nowrap; align-items: stretch; margin-bottom: .5rem; }
+.client-row input { flex: 1; min-width: 0; max-width: 320px; }
+.client-row .btn { white-space: nowrap; }
+.client-status:empty { display: none; }
+.client-status.reserve { display: block; min-height: 1.9rem; }
+.client-status.reserve > p { margin: .25rem 0; line-height: 1.4; }
+.client-found { display: block; }
+.ok-text { color: var(--ok); font-weight: 600; margin: .25rem 0; }
+.code-big { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 1.35rem; letter-spacing: .08em; color: var(--navy); user-select: all; }
+.followups { margin-top: .75rem; }
+.followup { border-top: 1px solid var(--line); padding: .6rem 0 .2rem; }
+.followup p { margin: 0 0 .4rem; }
+.sub-head { margin: 1.25rem 0 .25rem; }
+@media (max-width: 640px) {
+  .client-row { flex-wrap: wrap; }
+  .client-row input { max-width: none; flex-basis: 100%; }
+  .client-row .btn { flex: 1; min-height: 48px; }
+  .segmented.seg3 .opt span { font-size: .85rem; min-height: 52px; }
+}

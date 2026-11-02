@@ -36,6 +36,14 @@ function buildWorkbook({ from, to, projectIds }) {
                                   WHERE a.question_id = q.id AND e.deleted_at IS NULL AND e.encounter_date BETWEEN ? AND ?))
     ORDER BY q.project_id IS NOT NULL, p.sort, q.sort, q.id`).all(...projectIds, from, to);
 
+  // Ohjaukset kirjauksittain (palveluiden nimet). Asiakastunnistetta ei viedä.
+  const refMap = new Map();
+  if (encounters.length) {
+    const rs = db.prepare(`SELECT r.encounter_id, group_concat(s.name, '; ') services FROM referrals r JOIN referral_services s ON s.id = r.service_id
+                           JOIN encounters e ON e.id = r.encounter_id
+                           WHERE e.deleted_at IS NULL AND e.encounter_date BETWEEN ? AND ? AND e.project_id IN (${ph}) GROUP BY r.encounter_id`).all(from, to, ...projectIds);
+    for (const r of rs) refMap.set(r.encounter_id, r.services);
+  }
   const answers = new Map();
   if (encounters.length) {
     const stmt = db.prepare(`SELECT a.encounter_id, a.question_id, a.value FROM encounter_answers a
@@ -61,6 +69,8 @@ function buildWorkbook({ from, to, projectIds }) {
     { header: 'Kirjauksen tyyppi', key: 'encounter_type', width: 16 },
     { header: 'Kohtaamisten määrä', key: 'encounter_count', width: 12 },
     { header: 'Eri henkilöiden määrä (ryhmä)', key: 'person_count', width: 14 },
+    { header: 'Tunnistettu asiakas (yksilö)', key: 'client_linked', width: 14 },
+    { header: 'Ohjattu palveluun', key: 'referrals', width: 36 },
   ];
   const qCols = questions.map(q => ({
     header: q.project_id ? `${q.project_name}: ${q.label}` : q.label,
@@ -83,6 +93,8 @@ function buildWorkbook({ from, to, projectIds }) {
       encounter_type: e.encounter_type === 'ryhma' ? 'Ryhmä' : 'Yksi kohtaaminen',
       encounter_count: e.encounter_count,
       person_count: e.encounter_type === 'ryhma' ? e.person_count : null,
+      client_linked: e.encounter_type === 'yksilo' ? (e.client_id ? 'kyllä' : 'ei') : null,
+      referrals: refMap.get(e.id) || null,
       created_at: utcToLocalDate(e.created_at),
       updated_at: utcToLocalDate(e.updated_at),
       is_test: e.is_test ? 'kyllä' : 'ei',
@@ -122,7 +134,7 @@ function buildWorkbook({ from, to, projectIds }) {
     applies: q.applies_to, active: q.active ? 'kyllä' : 'ei' }));
   info.addRow({});
   info.addRow({ header: `Aikaväli ${from} – ${to}. Rivejä ${encounters.length}, kohtaamisia yhteensä ${encounters.reduce((s, e) => s + e.encounter_count, 0)}.` });
-  info.addRow({ header: 'Yksilökohtaamisten nimimerkit eivät sisälly vientiin tietosuojasyistä.' });
+  info.addRow({ header: 'Asiakastunnisteet (nimimerkit) eivät sisälly vientiin tietosuojasyistä. Sarake ”Tunnistettu asiakas” kertoo vain, käytettiinkö tunnistetta.' });
 
   return wb;
 }

@@ -75,6 +75,8 @@ const ROUTES = [
   { re: /^#\/kirjaukset\/([\w-]+)\/muokkaa$/, view: viewEdit, perm: (p) => p.editScope !== 'none' },
   { re: /^#\/vienti$/, view: viewExport, perm: (p) => p.exportScope !== 'none' },
   { re: /^#\/tyontekijat$/, view: viewStaff, perm: (p) => p.staffScope !== 'none' },
+  { re: /^#\/asiakaspolut$/, view: viewPaths, perm: (p) => p.pathScope !== 'none' },
+  { re: /^#\/hallinta\/ohjauspalvelut$/, view: viewServices, perm: (p) => p.manageQuestions },
   { re: /^#\/tyontekijat\/(\d+)$/, view: viewStaffDetail, perm: (p) => p.staffScope !== 'none' },
   { re: /^#\/hallinta\/kayttajat$/, view: viewUsers, perm: (p) => p.manageUsers },
   { re: /^#\/hallinta\/hankkeet$/, view: viewProjects, perm: (p) => p.manageProjects },
@@ -113,6 +115,7 @@ function renderNav(hash) {
     link('#/kirjaa', 'Uusi kirjaus'),
     p.viewScope !== 'none' ? link('#/kirjaukset', p.viewScope === 'own' ? 'Omat kirjaukset' : 'Kirjaukset') : null,
     p.staffScope !== 'none' ? link('#/tyontekijat', 'Työntekijät') : null,
+    p.pathScope !== 'none' ? link('#/asiakaspolut', 'Asiakaspolut') : null,
     p.exportScope !== 'none' ? link('#/vienti', 'Excel-vienti') : null,
     adminHref ? h('a', { href: adminHref, class: hash.startsWith('#/hallinta') ? 'active' : null }, 'Hallinta') : null,
     h('a', { href: '#/salasana', class: 'who' + (hash === '#/salasana' ? ' active' : ''), title: 'Vaihda salasana' }, state.me.user.name, h('small', null, state.me.user.roleLabel)),
@@ -200,9 +203,9 @@ async function viewRecord() {
       h('div', { class: 'notice warn' }, 'Sinua ei ole vielä liitetty yhteenkään hankkeeseen. Ole yhteydessä tiimivetäjään tai pääkäyttäjään.')));
     return;
   }
-  const { questions } = await loadForm();
+  const { questions, referralServices, clientTracking } = await loadForm();
   const prefill = state.lastBasics || null;
-  renderEncounterForm({ questions, initial: prefill, onSubmit: async (payload) => {
+  renderEncounterForm({ questions, referralServices, clientTracking, allowClient: true, initial: prefill, onSubmit: async (payload) => {
     const r = await api('/encounters', { method: 'POST', body: payload });
     state.lastBasics = { project_id: payload.project_id, encounter_date: payload.encounter_date, encounter_type: payload.encounter_type };
     showSaved(payload, r.id);
@@ -238,8 +241,10 @@ function renderEncounterForm(opts) {
     encounter_type: init.encounter_type || null,
     encounter_count: init.encounter_count ?? '',
     person_count: init.person_count ?? '',
-    pseudonym: init.pseudonym || '',
     answers: { ...(init.answers || {}) },
+    // Asiakastunniste ja ohjaukset (vain uusi yksilökirjaus)
+    client: { mode: 'none', ref: '', generated: false, checkedRef: null, summary: null, available: null, updates: {} },
+    referrals: new Set(),
   };
   const qs = opts.questions;
 
@@ -303,11 +308,9 @@ function renderEncounterForm(opts) {
         h('details', { class: 'define' }, h('summary', null, 'Mikä lasketaan yhdeksi kohtaamiseksi?'),
           h('p', null, 'Yksi yhtenäinen keskustelu yhden kohderyhmään kuuluvan henkilön kanssa = yksi kohtaaminen. Jatkokysymys samassa keskustelussa kuuluu samaan kohtaamiseen.'),
           h('p', null, 'Jos dialogi on luonteeltaan jatkuvaa (esim. tukihenkilötyöskentely), kohtaamiseksi lasketaan ne päivät, jolloin vuorovaikutusta on tapahtunut. Digialustalla yksi kysymys–vastaus-kokonaisuus jatkokysymyksineen = yksi kohtaaminen.')),
-        h('div', { class: 'field' }, h('label', { for: 'f-pseudo' }, 'Kohdatun mahdollinen nimimerkki tai muu tunniste'),
-          h('p', { class: 'help' }, 'Jos ei tiedossa tai tietoa ei kerätä, jätä tyhjäksi. Älä kirjoita oikeita nimiä. Ei näy Excel-viennissä.'),
-          h('input', { type: 'text', id: 'f-pseudo', maxlength: '60', autocomplete: 'off', autocapitalize: 'off', spellcheck: 'false', enterkeyhint: 'next', class: 'input-narrow', value: s.pseudonym,
-            oninput: (e) => { s.pseudonym = e.target.value; const hit = sensitiveHit(e.target.value); warn.hidden = !hit; if (hit) warn.textContent = `Teksti näyttää ${hit}. Älä kirjaa tunnistetietoja.`; } }),
-          warn)));
+        opts.allowClient ? null : (init.client_linked || (init.referrals && init.referrals.length)
+          ? h('p', { class: 'help' }, 'Asiakastunnistetta ja palveluohjauksia ei muuteta korjauksessa.') : null)));
+      if (opts.allowClient) parts.push(renderClientSection(s, opts));
     }
 
     const visible = (q) => q.applies_to === 'kaikki' || q.applies_to === s.encounter_type;
@@ -339,7 +342,20 @@ function renderEncounterForm(opts) {
     for (const q of qs) if (visible(q) && s.answers[q.key] != null && s.answers[q.key] !== '') answers[q.key] = s.answers[q.key];
     const payload = { project_id: s.project_id, encounter_date: s.encounter_date, encounter_type: s.encounter_type,
       encounter_count: s.encounter_type === 'ryhma' ? s.encounter_count : 1, person_count: s.encounter_type === 'ryhma' ? s.person_count : null,
-      pseudonym: s.encounter_type === 'yksilo' ? s.pseudonym : null, answers };
+      answers };
+    if (opts.allowClient && s.encounter_type === 'yksilo') {
+      // Palaava asiakas: haetaan automaattisesti, jos hakua ei ole tehty
+      if (s.client.mode === 'existing' && s.client.checkedRef !== s.client.ref) {
+        try { await lookupClient(s); } catch (ex) { showFieldError('fw-client', ex.message, errBox); return; }
+      }
+      if (s.client.mode === 'existing' && !s.client.summary) { showFieldError('fw-client', 'Asiakastunnistetta ei löydy. Tarkista kirjoitusasu tai valitse ”Uusi asiakas”.', errBox); return; }
+      if (s.client.mode === 'new' && s.client.available === false && s.client.checkedRef === s.client.ref) { showFieldError('fw-client', 'Tunniste on jo toisen asiakkaan käytössä. Valitse toinen tunniste.', errBox); return; }
+      Object.assign(payload, {
+        client_mode: s.client.mode, client_ref: s.client.mode === 'none' ? '' : s.client.ref, client_generated: s.client.generated,
+        referrals: [...s.referrals],
+        referral_updates: Object.entries(s.client.updates).filter(([, st]) => st).map(([id, status]) => ({ id: Number(id), status })),
+      });
+    }
     submitBtn.disabled = true;
     try { await opts.onSubmit(payload); }
     catch (ex) { errBox.textContent = ex.message; errBox.hidden = false; errBox.scrollIntoView({ behavior: 'smooth', block: 'center' }); }
@@ -352,6 +368,11 @@ function renderEncounterForm(opts) {
 
   // Palauttaa [virheilmoitus, kentän kääreen id] tai null.
   function clientValidate() {
+    if (opts.allowClient && s.encounter_type === 'yksilo' && s.client.mode !== 'none') {
+      const n = normalizeRef(s.client.ref);
+      if (n.length < 3) return ['Anna asiakkaan tunniste (vähintään 3 kirjainta tai numeroa) tai valitse ”Ei tunnistetta”.', 'fw-client'];
+      if (sensitiveHit(s.client.ref)) return ['Tunniste näyttää sisältävän tunnistetietoja. Älä käytä oikeaa nimeä tai yhteystietoja.', 'fw-client'];
+    }
     if (!s.encounter_date) return ['Anna kohtaamisen ajankohta.', 'fw-date'];
     if (s.encounter_date > me.today) return ['Kohtaamisen ajankohta ei voi olla tulevaisuudessa.', 'fw-date'];
     if (!s.project_id) return ['Valitse hanke.', 'fw-project'];
@@ -377,6 +398,112 @@ function renderEncounterForm(opts) {
       h('p', { class: 'muted small' }, 'Tähdellä (*) merkityt kohdat ovat pakollisia.'))),
     form));
   renderDynamic();
+}
+
+// ---------------------------------------------------------------------------
+// Asiakastunniste ja palveluohjaus (lomakkeen osio)
+// ---------------------------------------------------------------------------
+const normalizeRef = (v) => String(v || '').normalize('NFKC').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '');
+async function lookupClient(s) {
+  const ref = s.client.ref;
+  const r = await api('/clients/lookup', { method: 'POST', body: { ref, mode: s.client.mode === 'new' ? 'new' : 'existing' } });
+  s.client.checkedRef = ref;
+  if (s.client.mode === 'new') { s.client.available = r.available; s.client.summary = null; }
+  else { s.client.summary = r.found ? r.summary : null; s.client.available = null; s.client.updates = {}; }
+  return r;
+}
+
+function renderClientSection(s, opts) {
+  const c = s.client;
+  const body = h('div');
+  const services = opts.referralServices || [];
+
+  function modeChange(mode) { c.mode = mode; c.ref = ''; c.generated = false; c.checkedRef = null; c.summary = null; c.available = null; c.updates = {}; draw(); }
+
+  function draw(focusInput) {
+    const parts = [];
+    if (opts.clientTracking) {
+      const status = h('div', { class: 'client-status' + (c.mode === 'new' ? ' reserve' : ''), 'aria-live': 'polite' });
+      const input = h('input', { type: 'text', id: 'f-client', maxlength: '40', autocomplete: 'off', autocapitalize: 'off', spellcheck: 'false',
+        enterkeyhint: 'search', class: 'input-narrow mono', value: c.ref, placeholder: c.mode === 'new' ? 'esim. nimimerkki tai luotu tunnus' : 'nimimerkki tai tunnus',
+        oninput: (e) => { c.ref = e.target.value; c.generated = false; if (c.checkedRef !== c.ref) { c.summary = null; c.available = null; drawStatus(); } },
+        onkeydown: (e) => { if (e.key === 'Enter') { e.preventDefault(); check(); } },
+        // Vain uusi asiakas tarkistetaan automaattisesti; tulos kirjoitetaan varattuun riviin, joten sisältö ei hyppää
+        onblur: () => { if (c.mode === 'new' && c.ref && c.checkedRef !== c.ref && normalizeRef(c.ref).length >= 3) check(true); } });
+      async function check(quiet) {
+        clearFieldError(input);
+        if (normalizeRef(c.ref).length < 3) { status.replaceChildren(h('p', { class: 'field-error' }, 'Vähintään 3 kirjainta tai numeroa.')); return; }
+        if (sensitiveHit(c.ref)) { status.replaceChildren(h('p', { class: 'field-error' }, 'Älä käytä oikeaa nimeä, henkilötunnusta tai yhteystietoja.')); return; }
+        if (!quiet) status.replaceChildren(h('p', { class: 'muted small' }, 'Tarkistetaan…'));
+        try { await lookupClient(s); drawStatus(); } catch (ex) { status.replaceChildren(h('p', { class: 'field-error' }, ex.message)); }
+      }
+      function drawStatus() {
+        const out = [];
+        if (c.mode === 'existing' && c.checkedRef === c.ref && c.ref) {
+          if (!c.summary) out.push(h('p', { class: 'field-error' }, 'Tunnistetta ei löydy. Tarkista kirjoitusasu tai valitse ”Uusi asiakas”.'));
+          else {
+            const sm = c.summary;
+            out.push(h('div', { class: 'notice ok client-found' }, h('strong', null, '✓ Tunnistettu asiakas'),
+              h('span', null, ` · ${fmtNum(sm.encounters)} ${sm.encounters === 1 ? 'aiempi kohtaaminen' : 'aiempaa kohtaamista'} säätiön palveluissa`),
+              sm.first_month ? h('span', null, ` · ensimmäinen ${fmtMonth(sm.first_month)}`) : null));
+            if (sm.open_referrals.length) {
+              out.push(h('div', { class: 'followups' }, h('div', { class: 'label' }, 'Aiemmat ohjaukset – toteutuiko?'),
+                h('p', { class: 'help' }, 'Kysy asiakkaalta, jos tilanne sopii. Jätä ”Ei vielä tietoa”, jos et tiedä.'),
+                sm.open_referrals.map(ref => {
+                  const name = 'fu-' + ref.id;
+                  const opt = (val, label) => h('label', { class: 'opt' }, h('input', { type: 'radio', name, value: val, checked: (c.updates[ref.id] || '') === val,
+                    onchange: () => { c.updates[ref.id] = val; } }), h('span', null, label));
+                  return h('div', { class: 'followup' }, h('p', null, h('strong', null, ref.service), h('span', { class: 'muted' }, ` · ohjattu ${fmtDate(ref.referred_on)}`)),
+                    h('div', { class: 'seg3 segmented' }, opt('toteutui', 'Toteutui'), opt('ei_toteutunut', 'Ei toteutunut'), opt('', 'Ei vielä tietoa')));
+                })));
+            }
+          }
+        }
+        if (c.mode === 'new' && c.checkedRef === c.ref && c.ref) {
+          out.push(c.available ? h('p', { class: 'ok-text' }, '✓ Tunniste on vapaa.')
+            : h('p', { class: 'field-error' }, 'Tunniste on jo toisen asiakkaan käytössä. Valitse toinen tai luo satunnainen tunnus.'));
+        }
+        if (c.mode === 'new' && c.generated && c.ref) {
+          out.push(h('div', { class: 'notice info' }, h('p', null, 'Kerro tunnus asiakkaalle: ', h('strong', { class: 'code-big' }, c.ref)),
+            h('p', { class: 'small' }, 'Asiakas voi käyttää samaa tunnusta kaikissa säätiön palveluissa. Tunnusta ei voi hakea järjestelmästä myöhemmin.')));
+        }
+        status.replaceChildren(...out);
+      }
+      parts.push(h('div', { class: 'field', id: 'fw-client' },
+        h('div', { class: 'label', id: 'l-client' }, 'Asiakkaan tunniste'),
+        h('div', { class: 'segmented seg3', role: 'radiogroup', 'aria-labelledby': 'l-client' },
+          [['none', 'Ei tunnistetta'], ['existing', 'Palaava asiakas'], ['new', 'Uusi asiakas']].map(([v, t]) => h('label', { class: 'opt' },
+            h('input', { type: 'radio', name: 'client_mode', value: v, checked: c.mode === v, onchange: () => modeChange(v) }), h('span', null, t)))),
+        c.mode === 'none' ? h('p', { class: 'help' }, 'Ilman tunnistetta asiakkaan palveluihin ohjautumista ei voi seurata.') : [
+          h('p', { class: 'help' }, c.mode === 'existing' ? 'Kirjoita asiakkaan nimimerkki tai tunnus. Kirjainkoolla, välilyönneillä ja väliviivoilla ei ole väliä.'
+            : 'Keksi asiakkaan kanssa nimimerkki tai luo satunnainen tunnus. Älä käytä oikeaa nimeä.'),
+          h('div', { class: 'actions client-row' }, input,
+            c.mode === 'existing' ? h('button', { type: 'button', class: 'btn btn-secondary', onclick: check }, 'Hae')
+              : h('button', { type: 'button', class: 'btn btn-secondary', onclick: async () => {
+                  try { const r = await api('/clients/generate', { method: 'POST' }); c.ref = r.code; c.generated = true; c.checkedRef = r.code; c.available = true; draw(); }
+                  catch (ex) { toast(ex.message, true); } } }, 'Luo satunnainen tunnus')),
+          status]));
+      setTimeout(() => { drawStatus(); if (focusInput) input.focus(); }, 0);
+    } else {
+      parts.push(h('p', { class: 'help' }, 'Asiakastunnisteet eivät ole käytössä tässä ympäristössä. Ohjaukset kirjataan ilman seurantaa.'));
+    }
+    if (services.length) {
+      parts.push(h('div', { class: 'field', id: 'fw-referrals' },
+        h('div', { class: 'label', id: 'l-ref' }, 'Ohjattiinko asiakas palveluun?'),
+        h('p', { class: 'help' }, 'Valitse kaikki palvelut, joihin asiakas ohjattiin tai joihin häntä kehotettiin hakeutumaan. Jätä tyhjäksi, jos ohjausta ei tehty.'),
+        h('div', { class: 'options checks', role: 'group', 'aria-labelledby': 'l-ref' }, services.map(sv => h('label', { class: 'opt' },
+          h('input', { type: 'checkbox', checked: s.referrals.has(sv.id), onchange: (e) => { e.target.checked ? s.referrals.add(sv.id) : s.referrals.delete(sv.id); } }),
+          h('span', null, sv.name))))));
+    }
+    body.replaceChildren(...parts);
+  }
+  draw();
+  return h('section', { class: 'card section' },
+    h('div', { class: 'section-title' }, h('h2', null, 'Asiakkaan tunniste ja palveluohjaus')),
+    h('details', { class: 'define' }, h('summary', null, 'Miksi tunniste ja miten se suojataan?'),
+      h('p', null, 'Tunnisteella voidaan seurata, ohjautuuko asiakas palveluihin. Sama tunniste toimii kaikissa säätiön palveluissa, joten asiakkaalla on vain yksi tunniste.'),
+      h('p', null, 'Tunnistetta ei tallenneta selväkielisenä: järjestelmään jää vain salattu tiiviste, josta tunnistetta ei voi palauttaa. Tunniste ei näy kirjauksissa, raporteissa eikä Excel-viennissä.')),
+    body);
 }
 
 // Kenttäkohtainen virhe: korostus, viesti kentän alle, vieritys ja fokus.
@@ -550,7 +677,9 @@ async function viewDetail(id) {
       h('dt', null, 'Tyyppi'), h('dd', null, typeLabel(e.encounter_type)),
       h('dt', null, 'Kohtaamisten määrä'), h('dd', null, fmtNum(e.encounter_count)),
       e.encounter_type === 'ryhma' ? [h('dt', null, 'Eri osallistujien määrä'), h('dd', null, e.person_count == null ? 'Ei tiedossa' : fmtNum(e.person_count))] : null,
-      e.encounter_type === 'yksilo' && e.pseudonym ? [h('dt', null, 'Nimimerkki'), h('dd', null, e.pseudonym)] : null,
+      e.encounter_type === 'yksilo' ? [h('dt', null, 'Asiakkaan tunniste'), h('dd', null, e.client_linked ? 'Tunnistettu asiakas (tunniste suojattu)' : 'Ei tunnistetta')] : null,
+      e.referrals && e.referrals.length ? [h('dt', null, 'Ohjattu palveluun'), h('dd', null, e.referrals.map(r => h('div', null, r.service, ' ', referralBadge(r.status))))] : null,
+      e.referral_updates && e.referral_updates.length ? [h('dt', null, 'Kuitatut ohjaukset'), h('dd', null, e.referral_updates.map(r => h('div', null, `${r.service} (ohjattu ${fmtDate(r.referred_on)}) `, referralBadge(r.status))))] : null,
       h('dt', null, 'Kirjaajan rooli'), h('dd', null, e.recorder_role),
       h('dt', null, 'Tallennettu'), h('dd', null, fmtDateTime(e.created_at)),
       e.updated_at ? [h('dt', null, 'Korjattu'), h('dd', null, fmtDateTime(e.updated_at))] : null)),
@@ -558,6 +687,9 @@ async function viewDetail(id) {
     own.length ? h('div', { class: 'card' }, h('h2', null, 'Hankekohtaiset kysymykset'), h('dl', { class: 'kv' }, own)) : null,
   ));
 }
+
+const REF_STATUS = { avoin: ['Avoin', 'blue'], toteutui: ['Toteutui', 'green'], ei_toteutunut: ['Ei toteutunut', 'red'], ei_seurattavissa: ['Ei seurattavissa', 'grey'] };
+const referralBadge = (st) => h('span', { class: 'badge ' + (REF_STATUS[st] || ['', ''])[1] }, (REF_STATUS[st] || [st])[0]);
 
 async function viewEdit(id) {
   const [{ encounter: e }, { questions }] = await Promise.all([api('/encounters/' + id), loadForm()]);
@@ -576,7 +708,8 @@ const fmtMonth = (m) => { const [y, mm] = m.split('-'); return ['tammi', 'helmi'
 const roleBadge = (u) => [h('span', { class: 'badge blue' }, state.me.roles[u.role] || u.role),
   u.is_test ? [' ', h('span', { class: 'badge grey' }, 'testi')] : null, !u.active && !u.is_test ? [' ', h('span', { class: 'badge grey' }, 'suljettu')] : null];
 
-function staffFilterBar(onChange) {
+function staffFilterBar(onChange, st = staffState) {
+  const staffState = st;
   if (!staffState.from) { staffState.from = state.me.today.slice(0, 4) + '-01-01'; staffState.to = state.me.today; }
   const f = (key, el) => { el.value = staffState[key]; el.addEventListener('change', () => { staffState[key] = el.value; onChange(); }); return el; };
   const presets = [['Tämä vuosi', () => [state.me.today.slice(0, 4) + '-01-01', state.me.today]],
@@ -664,7 +797,7 @@ async function viewStaffDetail(id) {
       h('div', { class: 'stats stats-grid' },
         tile(fmtNum(k.encounters), 'kohtaamista', `${fmtNum(k.rows)} kirjausta`),
         tile(fmtNum(k.active_days), 'aktiivipäivää', `${fmtAvg(k.encounters / k.active_days)} kohtaamista / päivä`),
-        tile(fmtNum(k.yksilo_rows), 'yksilökohtaamista', k.distinct_pseudonyms ? `${fmtNum(k.distinct_pseudonyms)} eri nimimerkkiä` : null),
+        tile(fmtNum(k.yksilo_rows), 'yksilökohtaamista', k.distinct_pseudonyms ? `${fmtNum(k.distinct_pseudonyms)} eri tunnistettua asiakasta` : null),
         tile(fmtNum(k.ryhma_rows), 'ryhmää', k.ryhma_rows ? `${fmtNum(k.ryhma_encounters)} kohtaamista, ${fmtNum(k.ryhma_persons)} osallistujaa` : null),
         tile(fmtAvg(k.worker_rating), 'oma arvio hyödystä ka.', 'asteikko 1–5'),
         tile(fmtAvg(k.client_rating), 'asiakkaan arvio ka.', k.client_rating_n ? `${fmtNum(k.client_rating_n)} arviota` : 'ei arvioita'),
@@ -749,6 +882,91 @@ function hBars(items, opts = {}) {
 }
 
 // ---------------------------------------------------------------------------
+// Asiakaspolut ja palveluohjaukset (vain koosteita)
+// ---------------------------------------------------------------------------
+const pathState = { from: '', to: '', project_id: '' };
+const fmtPct = (v) => (v == null ? '–' : Math.round(v * 100) + ' %');
+const fmtSup = (n) => (n == null ? 'alle 3' : fmtNum(n));
+
+async function viewPaths() {
+  const box = h('div');
+  async function load() {
+    box.replaceChildren(h('div', { class: 'loading' }, 'Ladataan…'));
+    const q = new URLSearchParams(); for (const k of ['from', 'to', 'project_id']) if (pathState[k]) q.set(k, pathState[k]);
+    const d = await api('/paths?' + q);
+    const tile = (v, label, sub) => h('div', { class: 'stat' }, h('b', null, v), h('span', null, label), sub ? h('small', null, sub) : null);
+    const R = d.referrals;
+    box.replaceChildren(...[
+      !d.enabled ? h('div', { class: 'notice warn' }, 'Asiakastunnisteet eivät ole käytössä, koska palvelimelta puuttuu PSEUDONYM_KEY. Ohjaukset näkyvät, mutta niiden toteutumista ei voi seurata.') : null,
+      h('h2', { class: 'sub-head' }, 'Asiakkaat'),
+      h('div', { class: 'stats stats-grid' },
+        tile(fmtNum(d.clients.total), 'tunnistettua asiakasta', 'kohdattu valitulla aikavälillä'),
+        tile(fmtNum(d.clients.new), 'uutta asiakasta', 'ensimmäinen kohtaaminen aikavälillä'),
+        tile(fmtNum(d.clients.returning), 'palaavaa asiakasta', 'vähintään 2 kohtaamista'),
+        tile(fmtSup(d.clients.multi_service), 'useamman palvelun asiakasta', 'kohdattu vähintään kahdessa hankkeessa'),
+        tile(fmtPct(d.coverage.share), 'tunnisteen käyttöaste', `${fmtNum(d.coverage.with_client)} / ${fmtNum(d.coverage.yksilo_rows)} yksilökohtaamisesta`)),
+      h('h2', { class: 'sub-head' }, 'Palveluohjaukset'),
+      h('div', { class: 'stats stats-grid' },
+        tile(fmtNum(R.total), 'ohjausta', `${fmtNum(R.avoin)} avoinna`),
+        tile(fmtPct(R.rate), 'toteutumisaste', `${fmtNum(R.toteutui)} toteutui · ${fmtNum(R.ei_toteutunut)} ei toteutunut`),
+        tile(R.median_days == null ? '–' : fmtNum(Math.round(R.median_days)), 'päivää toteutumiseen', 'mediaani ohjauksesta kuittaukseen'),
+        tile(fmtNum(R.ei_seurattavissa), 'ei seurattavissa', 'ohjaus ilman asiakastunnistetta')),
+      h('div', { class: 'grid-2' },
+        h('div', { class: 'card' }, h('h2', null, 'Ohjausten tila'),
+          hBars([['Toteutui', R.toteutui], ['Ei toteutunut', R.ei_toteutunut], ['Avoin', R.avoin], ['Ei seurattavissa', R.ei_seurattavissa]]
+            .map(([label, value]) => ({ label, value })), { unit: 'ohjausta' })),
+        h('div', { class: 'card' }, h('h2', null, 'Kohtaamisia asiakasta kohden'), hBars(d.visitBuckets, { unit: 'asiakasta' }),
+          h('p', { class: 'help small' }, 'Kaikki asiakkaan kohtaamiset säätiön palveluissa loppupäivään asti.'))),
+      h('div', { class: 'card' }, h('h2', null, 'Ohjaukset palveluittain'),
+        d.services.length ? h('div', { class: 'table-wrap' }, h('table', { class: 'cards-mobile' },
+          h('thead', null, h('tr', null, h('th', null, 'Palvelu'), h('th', { class: 'num' }, 'Ohjauksia'), h('th', { class: 'num' }, 'Toteutui'),
+            h('th', { class: 'num' }, 'Ei toteutunut'), h('th', { class: 'num' }, 'Avoin'), h('th', { class: 'num' }, 'Ei seurattavissa'), h('th', { class: 'num' }, 'Toteutumisaste'))),
+          h('tbody', null, d.services.map(sv => h('tr', null, h('td', { class: 'cell-title' }, h('strong', null, sv.service)),
+            h('td', { class: 'num', 'data-label': 'Ohjauksia' }, fmtNum(sv.total)), h('td', { class: 'num', 'data-label': 'Toteutui' }, fmtNum(sv.toteutui)),
+            h('td', { class: 'num', 'data-label': 'Ei toteutunut' }, fmtNum(sv.ei_toteutunut)), h('td', { class: 'num', 'data-label': 'Avoin' }, fmtNum(sv.avoin)),
+            h('td', { class: 'num', 'data-label': 'Ei seurattavissa' }, fmtNum(sv.ei_seurattavissa)),
+            h('td', { class: 'num', 'data-label': 'Toteutumisaste' }, h('strong', null, fmtPct(sv.rate))))))))
+          : h('p', { class: 'muted' }, 'Ei ohjauksia valitulla aikavälillä.'),
+        h('p', { class: 'help small' }, 'Toteutumisaste = toteutuneet / (toteutuneet + ei toteutuneet). Avoimet ja seurannan ulkopuoliset eivät vaikuta osuuteen.')),
+      h('div', { class: 'card' }, h('h2', null, 'Samat asiakkaat useammassa palvelussa'),
+        d.overlap.length ? h('div', { class: 'table-wrap' }, h('table', { class: 'cards-mobile' },
+          h('thead', null, h('tr', null, h('th', null, 'Hankkeet'), h('th', { class: 'num' }, 'Yhteisiä asiakkaita'))),
+          h('tbody', null, d.overlap.map(o => h('tr', null, h('td', { class: 'cell-title' }, `${o.a} + ${o.b}`),
+            h('td', { class: 'num', 'data-label': 'Yhteisiä asiakkaita' }, o.clients == null ? h('span', { class: 'muted' }, 'alle 3') : h('strong', null, fmtNum(o.clients))))))))
+          : h('p', { class: 'muted' }, 'Ei yhteisiä asiakkaita valitulla aikavälillä.'),
+        h('p', { class: 'help small' }, 'Tietosuojasyistä alle kolmen asiakkaan määriä ei näytetä.'))].filter(Boolean));
+  }
+  $app.replaceChildren(
+    h('div', { class: 'page-head' }, h('div', null, h('h1', null, 'Asiakaspolut'),
+      h('p', { class: 'muted' }, 'Tunnistettujen asiakkaiden käyttämät palvelut ja palveluohjausten toteutuminen. Kaikki luvut ovat koosteita, eikä yksittäisiä asiakkaita näytetä.'))),
+    staffFilterBar(load, pathState), box);
+  await load();
+}
+
+// --- Ohjauspalveluiden ylläpito
+async function viewServices() {
+  const { services } = await api('/referral-services');
+  const name = h('input', { type: 'text', id: 'sv-new', placeholder: 'Uuden palvelun nimi', maxlength: '80' });
+  const msg = h('div', { class: 'notice err', hidden: true });
+  const save = async (sv, body) => { try { await api('/referral-services/' + sv.id, { method: 'PUT', body }); state.form = null; toast('Tallennettu.'); viewServices(); } catch (ex) { toast(ex.message, true); } };
+  $app.replaceChildren(adminTabs('#/hallinta/ohjauspalvelut'),
+    h('p', { class: 'muted' }, 'Palvelut, joihin asiakkaita ohjataan. Lista näkyy lomakkeella yksilökohtaamisissa. Käytössä olleita palveluita ei poisteta, vaan ne otetaan pois käytöstä.'),
+    h('div', { class: 'card' }, h('div', { class: 'actions' }, name, h('button', { class: 'btn btn-primary', type: 'button', onclick: async () => {
+      try { await api('/referral-services', { method: 'POST', body: { name: name.value } }); state.form = null; toast('Lisätty.'); viewServices(); }
+      catch (ex) { msg.textContent = ex.message; msg.hidden = false; } } }, '+ Lisää palvelu')), msg),
+    h('div', { class: 'q-group card' }, services.map((sv, i) => h('div', { class: 'q-item' + (sv.active ? '' : ' inactive') },
+      h('div', { class: 'q-main' }, h('strong', null, sv.name),
+        h('div', { class: 'q-meta' }, !sv.active ? h('span', { class: 'badge grey' }, 'Ei käytössä') : null, h('span', { class: 'badge grey' }, `${fmtNum(sv.referral_count)} ohjausta`))),
+      h('div', { class: 'q-ctrl' },
+        h('button', { class: 'btn btn-secondary btn-sm', type: 'button', disabled: i === 0, 'aria-label': 'Siirrä ylös', onclick: () => save(sv, { name: sv.name, active: !!sv.active, sort: services[i - 1].sort - 1 }) }, '↑'),
+        h('button', { class: 'btn btn-secondary btn-sm', type: 'button', onclick: () => {
+          const input = h('input', { type: 'text', value: sv.name, class: 'grow' });
+          const row = h('div', { class: 'actions grow' }, input, h('button', { class: 'btn btn-primary btn-sm', type: 'button', onclick: () => save(sv, { name: input.value, active: !!sv.active }) }, 'Tallenna'));
+          const item = document.querySelectorAll('.q-item')[i]; item.querySelector('.q-main').replaceChildren(row); input.focus(); } }, 'Nimeä'),
+        h('button', { class: 'btn btn-secondary btn-sm', type: 'button', onclick: () => save(sv, { name: sv.name, active: !sv.active }) }, sv.active ? 'Poista käytöstä' : 'Ota käyttöön'))))));
+}
+
+// ---------------------------------------------------------------------------
 // Excel-vienti
 // ---------------------------------------------------------------------------
 async function viewExport() {
@@ -791,6 +1009,7 @@ function adminTabs(active) {
   const t = (href, text) => h('a', { href, class: active === href ? 'active' : null }, text);
   return h('div', null, h('h1', null, 'Hallinta'), h('nav', { class: 'tabs' },
     p.manageQuestions ? t('#/hallinta/kysymykset', 'Kysymykset') : null,
+    p.manageQuestions ? t('#/hallinta/ohjauspalvelut', 'Ohjauspalvelut') : null,
     p.manageProjects ? t('#/hallinta/hankkeet', 'Hankkeet') : null,
     p.manageUsers ? t('#/hallinta/kayttajat', 'Käyttäjät') : null,
     p.manageUsers ? t('#/hallinta/testidata', 'Testidata') : null,

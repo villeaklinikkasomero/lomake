@@ -12,7 +12,7 @@ ADMIN_EMAIL=oma@osoite.fi SESSION_SECRET=pitka-satunnainen-merkkijono npm start
 
 Ensimmäisellä käynnistyksellä luodaan admin-käyttäjä. Väliaikainen salasana tulostuu konsoliin (tai sen voi antaa `ADMIN_PASSWORD`-muuttujalla), ja se vaihdetaan ensimmäisellä kirjautumisella. Muut asetukset löytyvät tiedostosta `.env.example`. Docker: `docker build -t kohtaamiset . && docker run -p 3000:3000 -v kohtaamiset:/data -e SESSION_SECRET=… kohtaamiset`.
 
-Testit: `npm test` (13 testiä: roolit, validointi, tunnistetietojen esto, Excel-vienti ja kysymysten versiointi).
+Testit: `npm test` (16 testiä: roolit, validointi, tunnistetietojen esto, Excel-vienti ja kysymysten versiointi).
 
 ## Roolit
 
@@ -24,6 +24,8 @@ Testit: `npm test` (13 testiä: roolit, validointi, tunnistetietojen esto, Excel
 | Korjaa / poistaa kirjauksia | kaikki | omat hankkeet | – | – |
 | Excel-vienti | kaikki hankkeet | omat hankkeet | – | – |
 | Työntekijäseuranta | kaikki | omien hankkeiden kirjaukset | – | – |
+| Asiakaspolut (koosteet) | kaikki | omien hankkeiden kirjaukset | – | – |
+| Asiakastunnisteen haku kirjatessa | ✓ | ✓ | ✓ | ✓ |
 | Käyttäjät, hankkeet, kysymykset, loki | ✓ | – | – | – |
 
 Oikeudet on koottu yhteen tiedostoon, `src/permissions.js`. Jos esimerkiksi hanketyöntekijän halutaan voivan korjata omia kirjauksiaan, muutetaan sinne `editScope: 'own'`.
@@ -47,6 +49,29 @@ Kysymyksiä voi lisätä, muokata, järjestää ja ottaa pois käytöstä. Kysym
 Työntekijän omalla sivulla ovat tunnusluvut (mm. eri nimimerkit ja keskimääräinen kirjausviive), kuukausikaavio sekä jakaumat hankkeittain, sijainneittain ja oman arvion mukaan. **Näytä kirjaukset** avaa kirjauslistan valmiiksi rajattuna tähän työntekijään. Kirjauslistalla voi myös itse rajata kirjaajan mukaan.
 
 Tiimivetäjä näkee vain omien hankkeidensa kirjaukset, vaikka työntekijä kirjaisi myös muihin hankkeisiin.
+
+## Asiakastunnisteet ja palveluohjaukset
+
+**Tarkoitus:** seurata, ohjautuvatko asiakkaat palveluihin, myös silloin kun he käyttävät useampaa säätiön palvelua.
+
+**Kirjaaminen** (yksilökohtaaminen):
+- **Ei tunnistetta / Palaava asiakas / Uusi asiakas.** Uudelle asiakkaalle keksitään nimimerkki tai luodaan satunnainen tunnus (esim. `88Y-C7QR`).
+- **Yksi tunniste koko säätiössä.** Sama tunniste ei voi kuulua kahdelle asiakkaalle. Kirjainkoko, välilyönnit ja väliviivat eivät vaikuta tunnistamiseen.
+- **Palaavan asiakkaan haku** näyttää kirjaajalle vain aiempien kohtaamisten määrän, ensimmäisen kohtaamisen kuukauden ja avoimet ohjaukset (palvelu ja päivämäärä). Avoimet ohjaukset voi kuitata: *toteutui* tai *ei toteutunut*. Muiden hankkeiden nimiä tai kirjauksia ei näytetä.
+- **Ohjattiinko asiakas palveluun?** Palvelulistaa ylläpidetään kohdassa Hallinta → Ohjauspalvelut. Ilman tunnistetta ohjauksen tila on *ei seurattavissa*.
+
+**Asiakaspolut-sivu** (admin ja tiimivetäjä): tunnistetut, uudet, palaavat ja useamman palvelun asiakkaat, tunnisteen käyttöaste, ohjaukset palveluittain, toteutumisaste, mediaaniaika toteutumiseen, kohtaamiset asiakasta kohden sekä hankkeiden yhteiset asiakkaat. Kaikki luvut ovat koosteita. Alle kolmen asiakkaan määrät piilotetaan.
+
+**Suojaus:**
+- Tunnistetta ei tallenneta selväkielisenä. Kantaan jää vain `HMAC-SHA256(PSEUDONYM_KEY, vakioitu tunniste)`. Avain on vain palvelimen ympäristömuuttujassa, joten tietokannasta tai sen varmuuskopiosta tunnisteita ei voi palauttaa eikä arvata.
+- Tunniste ei näy kirjauksissa, raporteissa, tapahtumalokissa eikä Excel-viennissä. Excelissä on vain sarakkeet ”Tunnistettu asiakas (kyllä/ei)” ja ”Ohjattu palveluun”.
+- Tunnistehakuja rajoitetaan käyttäjäkohtaisesti (oletus 60 / 15 min, `CLIENT_LOOKUP_LIMIT`), ja jokainen haku kirjataan lokiin ilman tunnistetta.
+- Säilytysaika: jos asiakasta ei ole kohdattu `CLIENT_RETENTION_MONTHS` kuukauteen (oletus 24), linkitys katkaistaan automaattisesti. Kirjaukset säilyvät tilastoissa, mutta niitä ei voi enää yhdistää samaan asiakkaaseen.
+- Aiemmat selväkieliset nimimerkit muutetaan tiivisteiksi ja poistetaan automaattisesti ensimmäisellä käynnistyksellä.
+
+**Käyttöönotto Renderissä:** lisää palvelun Environment-välilehdelle `PSEUDONYM_KEY`, joka on pitkä satunnainen merkkijono (esim. `openssl rand -base64 32`). Ota avaimesta kopio turvalliseen paikkaan, esimerkiksi salasanojen hallintaan. **Älä vaihda avainta käytön aikana:** vaihto katkaisee kaikki asiakaslinkitykset. Ilman avainta tunnisteominaisuus on pois päältä, ja muu sovellus toimii normaalisti.
+
+**Ennen tuotantokäyttöä:** linkitys koskee pseudonymisoituja henkilötietoja ja todennäköisesti terveystietoja. Käy käsittely läpi tietosuojavastaavan kanssa (vaikutustenarviointi, käsittelyperuste, säilytysaika, asiakkaille kerrottavat tiedot).
 
 ## Testidata (admin)
 

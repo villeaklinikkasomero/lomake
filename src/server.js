@@ -12,6 +12,7 @@ const { db, ensureAdmin, audit, RECORDER_ROLES } = require('./db');
 const { ROLES, PERMISSIONS, DEFAULT_RECORDER_ROLE_INDEX, can, scope, allowsEncounter } = require('./permissions');
 const { buildWorkbook } = require('./export');
 const demo = require('./demo');
+const clients = require('./clients');
 
 const PORT = Number(process.env.PORT || 3000);
 const IS_PROD = process.env.NODE_ENV === 'production';
@@ -133,11 +134,11 @@ function validateEncounter(body, user, projectIds) {
   const type = body.encounter_type;
   if (!['yksilo', 'ryhma'].includes(type)) return { error: 'Valitse, mitä raportoit.' };
 
-  let encounterCount, personCount, pseudonym = null;
+  // Selväkielistä nimimerkkiä ei tallenneta: asiakastunniste käsitellään clients.js:ssä tiivisteenä.
+  let encounterCount, personCount;
+  const pseudonym = null;
   if (type === 'yksilo') {
     encounterCount = 1; personCount = 1;
-    pseudonym = (body.pseudonym || '').toString().trim().slice(0, 60) || null;
-    if (pseudonym && sensitiveHit(pseudonym)) return { error: 'Nimimerkki näyttää sisältävän tunnistetietoja. Älä kirjoita oikeita nimiä tai yhteystietoja.' };
   } else {
     encounterCount = toInt(body.encounter_count);
     personCount = toInt(body.person_count);
@@ -222,6 +223,7 @@ app.get('/api/me', requireAuth, (req, res) => {
     roles: Object.fromEntries(Object.entries(ROLES).map(([k, v]) => [k, v.label])),
     roleDescriptions: Object.fromEntries(Object.entries(ROLES).map(([k, v]) => [k, v.description])),
     today: today(),
+    clientTracking: clients.ENABLED,
   });
 });
 
@@ -242,12 +244,15 @@ app.post('/api/me/password', requireAuth, (req, res) => {
 app.get('/api/form', requireAuth, (req, res) => {
   const qs = db.prepare(`SELECT * FROM questions WHERE active = 1 AND (project_id IS NULL OR project_id IN (${req.projectIds.map(() => '?').join(',') || 'NULL'}))
                          ORDER BY project_id IS NOT NULL, sort, id`).all(...req.projectIds).map(parseQ);
-  res.json({ questions: qs });
+  const services = db.prepare('SELECT id, name FROM referral_services WHERE active = 1 ORDER BY sort, name').all();
+  res.json({ questions: qs, referralServices: services, clientTracking: clients.ENABLED });
 });
 
 app.post('/api/encounters', requireAuth, requirePerm('record'), (req, res) => {
   const v = validateEncounter(req.body, req.user, req.projectIds);
   if (v.error) return bad(res, v.error);
+  const cp = clients.prepareClientPart(req.body, v.data.encounter_type, sensitiveHit);
+  if (cp.error) return bad(res, cp.error);
   const id = crypto.randomUUID();
   db.transaction(() => {
     db.prepare(`INSERT INTO encounters (id, project_id, encounter_date, encounter_type, encounter_count, person_count, pseudonym, recorder_role, created_by)
@@ -255,7 +260,9 @@ app.post('/api/encounters', requireAuth, requirePerm('record'), (req, res) => {
       .run({ id, ...v.data, recorder_role: RECORDER_ROLES[DEFAULT_RECORDER_ROLE_INDEX[req.user.role]], created_by: req.user.id });
     const ins = db.prepare('INSERT INTO encounter_answers (encounter_id, question_id, value) VALUES (?, ?, ?)');
     for (const a of v.answers) ins.run(id, a.question_id, a.value);
-    audit(req.user.id, 'encounter_create', 'encounter', id);
+    clients.applyClientPart(cp, { encounterId: id, encounterDate: v.data.encounter_date, userId: req.user.id });
+    audit(req.user.id, 'encounter_create', 'encounter', id, cp.client || cp.services.length || cp.updates.length
+      ? { client: cp.client ? cp.client.mode : 'none', referrals: cp.services.length, referral_updates: cp.updates.length } : null);
   })();
   res.status(201).json({ id });
 });
@@ -296,7 +303,12 @@ app.get('/api/encounters/:id', requireAuth, (req, res) => {
   for (const a of answers) ans[a.key] = a.type === 'multichoice' ? JSON.parse(a.value) : a.value;
   // Myös käytöstä poistettujen kysymysten vastaukset näytetään
   const allQs = db.prepare(`SELECT * FROM questions WHERE project_id IS NULL OR project_id = ? ORDER BY project_id IS NOT NULL, sort, id`).all(e.project_id).map(parseQ);
-  res.json({ encounter: { ...e, answers: ans,
+  const referralsMade = db.prepare(`SELECT rs.name service, r.status, r.status_on FROM referrals r JOIN referral_services rs ON rs.id = r.service_id
+                                    WHERE r.encounter_id = ? ORDER BY rs.sort`).all(e.id);
+  const referralUpdates = db.prepare(`SELECT rs.name service, r.status, r.referred_on FROM referrals r JOIN referral_services rs ON rs.id = r.service_id
+                                      WHERE r.status_encounter_id = ? ORDER BY r.referred_on`).all(e.id);
+  const { pseudonym, client_id, ...pub } = e;
+  res.json({ encounter: { ...pub, client_linked: !!client_id, referrals: referralsMade, referral_updates: referralUpdates, answers: ans,
     canEdit: allowsEncounter(req.user, 'editScope', e, req.projectIds), canDelete: allowsEncounter(req.user, 'deleteScope', e, req.projectIds) },
     questions: allQs });
 });
@@ -309,7 +321,7 @@ app.put('/api/encounters/:id', requireAuth, (req, res) => {
   if (v.error) return bad(res, v.error);
   db.transaction(() => {
     db.prepare(`UPDATE encounters SET project_id=@project_id, encounter_date=@encounter_date, encounter_type=@encounter_type,
-                encounter_count=@encounter_count, person_count=@person_count, pseudonym=@pseudonym,
+                encounter_count=@encounter_count, person_count=@person_count,
                 updated_by=@uid, updated_at=datetime('now') WHERE id=@id`).run({ ...v.data, uid: req.user.id, id: e.id });
     // Säilytetään käytöstä poistettujen kysymysten vastaukset, korvataan aktiivisten.
     db.prepare(`DELETE FROM encounter_answers WHERE encounter_id = ? AND question_id IN (SELECT id FROM questions WHERE active = 1)`).run(e.id);
@@ -394,7 +406,7 @@ app.get('/api/staff/:id', requireAuth, (req, res) => {
       COALESCE(SUM(CASE WHEN e.encounter_type = 'ryhma' THEN e.encounter_count END), 0) ryhma_encounters,
       COALESCE(SUM(CASE WHEN e.encounter_type = 'ryhma' THEN e.person_count END), 0) ryhma_persons,
       COUNT(DISTINCT e.encounter_date) active_days, MIN(e.encounter_date) first_date, MAX(e.encounter_date) last_date,
-      COUNT(DISTINCT CASE WHEN e.pseudonym IS NOT NULL THEN lower(e.pseudonym) END) distinct_pseudonyms,
+      COUNT(DISTINCT e.client_id) distinct_pseudonyms,
       AVG(CAST(w.value AS REAL)) worker_rating, AVG(CAST(c.value AS REAL)) client_rating, COUNT(c.value) client_rating_n,
       AVG(julianday(e.created_at) - julianday(e.encounter_date)) avg_delay_days
     FROM encounters e
@@ -413,6 +425,65 @@ app.get('/api/staff/:id', requireAuth, (req, res) => {
     JOIN encounter_answers a ON a.encounter_id = e.id AND a.question_id = (SELECT id FROM questions WHERE key = 'sijainti')
     WHERE ${where} GROUP BY a.value ORDER BY encounters DESC`).all(...params);
   res.json({ user: { ...u, roleLabel: ROLES[u.role].label }, kpi, monthly, byProject, workerRatings, byLocation });
+});
+
+// ---------------------------------------------------------------------------
+// Asiakastunnisteet (kaikki kirjaajat) – rajoitettu, ettei tunnisteita voi arvailla
+// ---------------------------------------------------------------------------
+const clientLimiter = rateLimit({ windowMs: 15 * 60 * 1000, limit: Number(process.env.CLIENT_LOOKUP_LIMIT || 60), standardHeaders: true, legacyHeaders: false,
+  keyGenerator: (req) => 'u' + req.session.userId, validate: false,
+  message: { error: 'Liian monta tunnistehakua. Odota hetki ja yritä uudelleen.' } });
+
+app.post('/api/clients/lookup', requireAuth, requirePerm('record'), clientLimiter, (req, res) => {
+  if (!clients.ENABLED) return bad(res, 'Asiakastunnisteet eivät ole käytössä.', 503);
+  const ref = String(req.body.ref || '');
+  const err = clients.validateRef(ref, sensitiveHit); if (err) return bad(res, err);
+  const c = clients.findClient(ref);
+  audit(req.user.id, 'client_lookup', 'client', null, { mode: req.body.mode === 'new' ? 'new' : 'existing', found: !!c });
+  if (req.body.mode === 'new') return res.json({ available: !c });
+  if (!c) return res.json({ found: false });
+  res.json({ found: true, summary: clients.clientSummary(c.id) });
+});
+app.post('/api/clients/generate', requireAuth, requirePerm('record'), clientLimiter, (req, res) => {
+  if (!clients.ENABLED) return bad(res, 'Asiakastunnisteet eivät ole käytössä.', 503);
+  res.json({ code: clients.generateUniqueCode() });
+});
+
+// ---------------------------------------------------------------------------
+// Asiakaspolut (admin: kaikki, tiimivetäjä: omien hankkeiden kirjaukset). Vain koosteita.
+// ---------------------------------------------------------------------------
+app.get('/api/paths', requireAuth, (req, res) => {
+  const s = scope(req.user, 'pathScope');
+  if (s === 'none') return bad(res, 'Ei oikeutta.', 403);
+  const projectIds = s === 'all' ? db.prepare('SELECT id FROM projects').all().map(r => r.id) : req.projectIds;
+  const projectId = req.query.project_id ? Number(req.query.project_id) : null;
+  if (projectId && !projectIds.includes(projectId)) return bad(res, 'Ei oikeutta.', 403);
+  res.json(clients.pathStats({ from: isDate(req.query.from) ? req.query.from : null, to: isDate(req.query.to) ? req.query.to : null, projectIds, projectId }));
+});
+
+// Ohjauspalveluiden ylläpito (admin)
+app.get('/api/referral-services', requireAuth, requirePerm('manageQuestions'), (req, res) => {
+  res.json({ services: db.prepare(`SELECT s.*, (SELECT COUNT(*) FROM referrals r WHERE r.service_id = s.id) referral_count
+                                   FROM referral_services s ORDER BY sort, name`).all() });
+});
+app.post('/api/referral-services', requireAuth, requirePerm('manageQuestions'), (req, res) => {
+  const name = String(req.body.name || '').trim();
+  if (name.length < 2) return bad(res, 'Anna palvelun nimi.');
+  if (db.prepare('SELECT 1 FROM referral_services WHERE name = ?').get(name)) return bad(res, 'Palvelu on jo listalla.');
+  const sort = (db.prepare('SELECT MAX(sort) m FROM referral_services').get().m || 0) + 10;
+  const id = db.prepare('INSERT INTO referral_services (name, sort) VALUES (?, ?)').run(name, sort).lastInsertRowid;
+  audit(req.user.id, 'referral_service_create', 'referral_service', id, { name });
+  res.status(201).json({ id });
+});
+app.put('/api/referral-services/:id', requireAuth, requirePerm('manageQuestions'), (req, res) => {
+  const name = String(req.body.name || '').trim();
+  if (name.length < 2) return bad(res, 'Anna palvelun nimi.');
+  if (db.prepare('SELECT 1 FROM referral_services WHERE name = ? AND id <> ?').get(name, Number(req.params.id))) return bad(res, 'Palvelu on jo listalla.');
+  const r = db.prepare('UPDATE referral_services SET name = ?, active = ?, sort = COALESCE(?, sort) WHERE id = ?')
+    .run(name, req.body.active === false ? 0 : 1, Number.isInteger(req.body.sort) ? req.body.sort : null, Number(req.params.id));
+  if (!r.changes) return bad(res, 'Palvelua ei löydy.', 404);
+  audit(req.user.id, 'referral_service_update', 'referral_service', req.params.id, { name, active: req.body.active !== false });
+  res.json({ ok: true });
 });
 
 // ---------------------------------------------------------------------------
@@ -648,6 +719,12 @@ if (require.main === module) {
     console.log(`Salasana:   ${created.password}   (vaihdettava ensimmäisellä kirjautumisella)\n`);
   }
   if (!process.env.SESSION_SECRET) console.warn('VAROITUS: SESSION_SECRET puuttuu – istunnot katkeavat uudelleenkäynnistyksessä.');
+  if (!clients.ENABLED) console.warn('VAROITUS: PSEUDONYM_KEY puuttuu (väh. 16 merkkiä) – asiakastunnisteet ja palveluohjausten seuranta eivät ole käytössä.');
+  else if (!process.env.PSEUDONYM_KEY) console.warn('HUOM: käytetään kehitysavainta asiakastunnisteille. Aseta PSEUDONYM_KEY tuotannossa.');
+  const migrated = clients.migratePlaintextPseudonyms();
+  if (migrated) console.log(`Selväkieliset nimimerkit muutettu tiivisteiksi: ${migrated} kirjausta.`);
+  clients.applyRetention();
+  setInterval(() => { try { clients.applyRetention(); } catch (e) { console.error(e); } }, 24 * 3600e3).unref();
   app.listen(PORT, () => console.log(`Kohtaamisten raportointi käynnissä: http://localhost:${PORT}`));
 }
 

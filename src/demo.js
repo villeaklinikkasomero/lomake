@@ -21,7 +21,6 @@ const CITIES = {
   Jyväskylä: ['Kauppakatu', 'Väinönkatu'],
   Lahti: ['Aleksanterinkatu', 'Rautatienkatu'],
 };
-const PSEUDONYMS = ['Kettu', 'Sininen', 'Mökö', 'Tähti', 'Jäkälä', 'Peikko', 'Kuura', 'Varis'];
 
 // Vapaatekstit: realistisia, ei tunnistetietoja (läpäisevät tunnistetietotarkistuksen).
 const NOTES = [
@@ -63,6 +62,14 @@ function generateDemoPayloads(count, seed = Date.now()) {
   const span = Math.max(1, Math.round((today - start) / 86400000));
   const fmt = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 
+  // Testiasiakkaat: kullakin 1–2 "kotihanketta"; osa käyttää useampaa palvelua.
+  const nClients = Math.max(8, Math.round(count / 5));
+  const clientPool = Array.from({ length: nClients }, (_, i) => {
+    const home = [projects[Math.floor(r() * projects.length)].id];
+    if (r() < 0.4) home.push(projects[Math.floor(r() * projects.length)].id);
+    return { idx: i, home: [...new Set(home)], weight: 1 + Math.floor(r() * 4) };
+  });
+
   const out = [];
   for (let i = 0; i < count; i++) {
     // Kierretään kaikki hankkeet läpi, jotta jokaisella on dataa
@@ -75,15 +82,17 @@ function generateDemoPayloads(count, seed = Date.now()) {
       encounter_type: type,
       encounter_count: type === 'ryhma' ? int(3, 40) : 1,
       person_count: null,
-      pseudonym: null,
       answers: {},
       _recorder_role: RECORDER_ROLES[0],   // admin = säätiön työntekijä
     };
     if (type === 'ryhma') {
       // Joskus osallistujamäärä ei ole tiedossa; muuten ≤ kohtaamisten määrä
       if (chance(0.75)) payload.person_count = Math.max(1, Math.round(payload.encounter_count * (0.3 + r() * 0.7)));
-    } else if (chance(0.55)) {
-      payload.pseudonym = pick(PSEUDONYMS);   // toistuvia nimimerkkejä → eri henkilöiden laskennan testaus
+    } else if (chance(0.65)) {
+      // Asiakastunniste: useimmiten hankkeen "oma" asiakas, joskus toisen palvelun asiakas
+      const own = clientPool.filter(c => c.home.includes(project.id)).flatMap(c => Array(c.weight).fill(c));
+      const c = own.length && chance(0.8) ? pick(own) : pick(clientPool.flatMap(x => Array(x.weight).fill(x)));
+      payload._client = c.idx;
     }
 
     const digital = chance(0.35);
@@ -115,7 +124,8 @@ function generateDemoPayloads(count, seed = Date.now()) {
     delete payload._city;
     out.push(payload);
   }
-  return out;
+  // Aikajärjestys, jotta ohjausten tila voidaan päivittää myöhemmissä kohtaamisissa
+  return out.sort((a, b) => a.encounter_date.localeCompare(b.encounter_date));
 }
 
 /**
@@ -150,12 +160,16 @@ function ensureDemoWorkers() {
 }
 
 function createDemoData({ count, userId, validate, user, projectIds }) {
-  const payloads = generateDemoPayloads(count);
+  const clients = require('./clients');
+  const seed = Date.now();
+  const payloads = generateDemoPayloads(count, seed);
+  const services = db.prepare('SELECT id FROM referral_services WHERE active = 1').all().map(s => s.id);
+  const clientIds = new Map();   // testiasiakkaan indeksi → clients.id
   const workers = ensureDemoWorkers();
   const pool = workers.flatMap(w => Array(w.weight).fill(w));
-  const insE = db.prepare(`INSERT INTO encounters (id, project_id, encounter_date, encounter_type, encounter_count, person_count, pseudonym,
+  const insE = db.prepare(`INSERT INTO encounters (id, project_id, encounter_date, encounter_type, encounter_count, person_count,
                              recorder_role, created_by, created_at, is_test)
-                           VALUES (@id, @project_id, @encounter_date, @encounter_type, @encounter_count, @person_count, @pseudonym,
+                           VALUES (@id, @project_id, @encounter_date, @encounter_type, @encounter_count, @person_count,
                              @recorder_role, @created_by, @created_at, 1)`);
   const insA = db.prepare('INSERT INTO encounter_answers (encounter_id, question_id, value) VALUES (?, ?, ?)');
   let created = 0;
@@ -170,9 +184,30 @@ function createDemoData({ count, userId, validate, user, projectIds }) {
       // Kirjaaja: testityöntekijä, jolla on kirjauksen hanke (painotettu), muuten admin
       const cands = pool.filter(w => w.projects.includes(p.project_id));
       const w = cands.length ? cands[Math.floor(Math.random() * cands.length)] : null;
-      insE.run({ id, ...v.data, recorder_role: w ? w.recorder_role : p._recorder_role, created_by: w ? w.id : userId,
+      const { pseudonym, ...data } = v.data;
+      insE.run({ id, ...data, recorder_role: w ? w.recorder_role : p._recorder_role, created_by: w ? w.id : userId,
         created_at: (created_at > now ? now : created_at).toISOString().slice(0, 19).replace('T', ' ') });
       for (const a of v.answers) insA.run(id, a.question_id, a.value);
+
+      // Asiakastunniste ja palveluohjaukset
+      if (p.encounter_type === 'yksilo') {
+        const part = { client: null, services: [], updates: [] };
+        if (p._client != null && clients.ENABLED) {
+          const known = clientIds.get(p._client);
+          part.client = known ? { mode: 'existing', id: known }
+            : { mode: 'new', hash: clients.hashRef(`testiasiakas-${seed}-${p._client}`), generated: 1 };
+          if (known) {
+            for (const ref of db.prepare("SELECT id FROM referrals WHERE client_id = ? AND status = 'avoin'").all(known)) {
+              if (Math.random() < 0.75) part.updates.push({ id: ref.id, status: Math.random() < 0.7 ? 'toteutui' : 'ei_toteutunut' });
+            }
+          }
+          if (services.length && Math.random() < 0.35) part.services.push(services[Math.floor(Math.random() * services.length)]);
+        } else if (services.length && Math.random() < 0.12) {
+          part.services.push(services[Math.floor(Math.random() * services.length)]);
+        }
+        const cid = clients.applyClientPart(part, { encounterId: id, encounterDate: p.encounter_date, userId: w ? w.id : userId, isTest: 1 });
+        if (cid && p._client != null) clientIds.set(p._client, cid);
+      }
       created++;
     }
   })();
@@ -182,6 +217,7 @@ function createDemoData({ count, userId, validate, user, projectIds }) {
 function deleteDemoData() {
   return db.transaction(() => {
     const n = db.prepare('DELETE FROM encounters WHERE is_test = 1').run().changes;
+    db.prepare('DELETE FROM clients WHERE is_test = 1 AND id NOT IN (SELECT client_id FROM encounters WHERE client_id IS NOT NULL)').run();
     // Testityöntekijät poistetaan, jos heillä ei ole muita kuin testikirjauksia
     db.prepare(`DELETE FROM users WHERE is_test = 1 AND id NOT IN (SELECT created_by FROM encounters)
                 AND id NOT IN (SELECT updated_by FROM encounters WHERE updated_by IS NOT NULL)
