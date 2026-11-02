@@ -1,0 +1,33 @@
+# Render Blueprint: New → Blueprint → valitse tämä repo.
+# SQLite-tietokanta tarvitsee pysyvän levyn (persistent disk), joka edellyttää
+# maksullista palvelutasoa (starter). Ilmaisella tasolla data katoaa jokaisessa
+# uudelleenkäynnistyksessä ja deployssa – sopii vain demoon.
+services:
+  - type: web
+    name: kohtaamisten-raportointi
+    runtime: node
+    region: frankfurt          # EU-alue
+    plan: starter
+    buildCommand: npm ci --omit=dev
+    startCommand: node src/server.js
+    healthCheckPath: /healthz
+    autoDeploy: true
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - key: NODE_ENV
+        value: production
+      - key: DB_PATH
+        value: /var/data/kohtaamiset.db
+      - key: SESSION_SECRET
+        generateValue: true
+      - key: SESSION_HOURS
+        value: "10"
+      - key: ADMIN_EMAIL
+        sync: false            # Render kysyy arvon Blueprintia luodessa
+      - key: ADMIN_PASSWORD
+        sync: false            # väliaikainen, vaihdetaan ensimmäisellä kirjautumisella
+    disk:
+      name: data
+      mountPath: /var/data
+      sizeGB: 1

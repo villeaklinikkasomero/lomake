@@ -1,0 +1,531 @@
+'use strict';
+const path = require('path');
+const crypto = require('crypto');
+const express = require('express');
+const session = require('express-session');
+const helmet = require('helmet');
+const rateLimit = require('express-rate-limit');
+const bcrypt = require('bcryptjs');
+
+const { db, ensureAdmin, audit, RECORDER_ROLES } = require('./db');
+const { ROLES, PERMISSIONS, DEFAULT_RECORDER_ROLE_INDEX, can, scope, allowsEncounter } = require('./permissions');
+const { buildWorkbook } = require('./export');
+
+const PORT = Number(process.env.PORT || 3000);
+const IS_PROD = process.env.NODE_ENV === 'production';
+const SESSION_SECRET = process.env.SESSION_SECRET || crypto.randomBytes(32).toString('hex');
+const SESSION_HOURS = Number(process.env.SESSION_HOURS || 10);
+
+// ---------------------------------------------------------------------------
+// Istuntovarasto SQLiteen (ei muistivuotoja, istunnot säilyvät uudelleenkäynnistyksessä)
+// ---------------------------------------------------------------------------
+class SqliteStore extends session.Store {
+  constructor() {
+    super();
+    this.getStmt = db.prepare('SELECT sess FROM sessions WHERE sid = ? AND expires > ?');
+    this.setStmt = db.prepare('INSERT OR REPLACE INTO sessions (sid, sess, expires) VALUES (?, ?, ?)');
+    this.delStmt = db.prepare('DELETE FROM sessions WHERE sid = ?');
+    setInterval(() => db.prepare('DELETE FROM sessions WHERE expires <= ?').run(Date.now()), 15 * 60 * 1000).unref();
+  }
+  get(sid, cb) { try { const r = this.getStmt.get(sid, Date.now()); cb(null, r ? JSON.parse(r.sess) : null); } catch (e) { cb(e); } }
+  set(sid, sess, cb) {
+    try {
+      const exp = sess.cookie && sess.cookie.expires ? new Date(sess.cookie.expires).getTime() : Date.now() + SESSION_HOURS * 3600e3;
+      this.setStmt.run(sid, JSON.stringify(sess), exp); cb && cb(null);
+    } catch (e) { cb && cb(e); }
+  }
+  destroy(sid, cb) { try { this.delStmt.run(sid); cb && cb(null); } catch (e) { cb && cb(e); } }
+  touch(sid, sess, cb) { this.set(sid, sess, cb); }
+}
+
+const app = express();
+app.disable('x-powered-by');
+if (IS_PROD) app.set('trust proxy', 1);
+app.use(helmet({
+  contentSecurityPolicy: { directives: { defaultSrc: ["'self'"], scriptSrc: ["'self'"], styleSrc: ["'self'"], imgSrc: ["'self'", 'data:'] } },
+}));
+app.use(express.json({ limit: '200kb' }));
+app.use(session({
+  name: 'kr.sid',
+  secret: SESSION_SECRET,
+  store: new SqliteStore(),
+  resave: false,
+  saveUninitialized: false,
+  rolling: true,
+  cookie: { httpOnly: true, sameSite: 'strict', secure: IS_PROD, maxAge: SESSION_HOURS * 3600e3 },
+}));
+
+// Terveystarkistus (Render health check)
+app.get('/healthz', (req, res) => { db.prepare('SELECT 1').get(); res.json({ ok: true }); });
+
+// Yksinkertainen CSRF-suoja: muuttavat pyynnöt vaativat oman otsakkeen,
+// jota selain ei lähetä ristiinsivustopyynnöissä ilman CORS-lupaa.
+app.use('/api', (req, res, next) => {
+  if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method) && req.get('X-Requested-With') !== 'kohtaamiset') {
+    return res.status(403).json({ error: 'Pyyntö hylätty.' });
+  }
+  next();
+});
+
+// ---------------------------------------------------------------------------
+// Apufunktiot
+// ---------------------------------------------------------------------------
+const bad = (res, msg, code = 400) => res.status(code).json({ error: msg });
+
+function loadUser(req) {
+  if (!req.session.userId) return null;
+  const u = db.prepare('SELECT id, email, name, role, active, must_change_password, recorder_role FROM users WHERE id = ?').get(req.session.userId);
+  return u && u.active ? u : null;
+}
+
+function userProjectIds(user) {
+  if (user.role === 'admin') return db.prepare('SELECT id FROM projects').all().map(r => r.id);
+  return db.prepare('SELECT project_id FROM user_projects WHERE user_id = ?').all(user.id).map(r => r.project_id);
+}
+
+function requireAuth(req, res, next) {
+  const user = loadUser(req);
+  if (!user) { req.session.destroy(() => {}); return bad(res, 'Kirjaudu sisään.', 401); }
+  req.user = user;
+  req.projectIds = userProjectIds(user);
+  if (user.must_change_password && !req.originalUrl.startsWith('/api/me')) return bad(res, 'Vaihda salasana ennen jatkamista.', 403);
+  next();
+}
+const requirePerm = (perm) => (req, res, next) => (can(req.user, perm) ? next() : bad(res, 'Ei oikeutta.', 403));
+
+const isDate = (s) => typeof s === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s) && !isNaN(Date.parse(s + 'T00:00:00Z'));
+const today = () => new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+const toInt = (v) => (v === '' || v == null ? null : Number.isInteger(Number(v)) ? Number(v) : NaN);
+
+// Henkilötunnus, sähköposti ja puhelinnumero – estetään vapaatekstikentissä.
+const SENSITIVE_PATTERNS = [
+  { re: /\b\d{6}[-+A-FU-Y]\d{3}[0-9A-FHJ-NPR-Y]\b/i, what: 'henkilötunnukselta' },
+  { re: /[^\s@]+@[^\s@]+\.[a-z]{2,}/i, what: 'sähköpostiosoitteelta' },
+  { re: /(\+358|\b0)\s?\d{1,3}[\s-]?\d{3}[\s-]?\d{3,4}\b/, what: 'puhelinnumerolta' },
+];
+function sensitiveHit(text) {
+  for (const p of SENSITIVE_PATTERNS) if (p.re.test(text)) return p.what;
+  return null;
+}
+
+function parseQ(q) { return { ...q, options: q.options ? JSON.parse(q.options) : null, required: !!q.required, active: !!q.active, free_text_warning: !!q.free_text_warning }; }
+
+function activeQuestionsFor(projectId, type) {
+  return db.prepare(`SELECT * FROM questions WHERE active = 1 AND (project_id IS NULL OR project_id = ?)
+                     AND applies_to IN ('kaikki', ?) ORDER BY project_id IS NOT NULL, sort, id`)
+    .all(projectId, type).map(parseQ);
+}
+
+// Validoi lomaketallennuksen. Palauttaa { data, answers } tai { error }.
+// Kirjaajan rooli tulee kirjautuneen käyttäjän profiilista, ei lomakkeelta.
+function validateEncounter(body, user, projectIds) {
+  const projectId = Number(body.project_id);
+  const project = db.prepare('SELECT * FROM projects WHERE id = ?').get(projectId);
+  if (!project || !project.active) return { error: 'Valitse hanke.' };
+  if (!projectIds.includes(projectId)) return { error: 'Sinulla ei ole oikeutta kirjata tähän hankkeeseen.' };
+
+  if (!isDate(body.encounter_date)) return { error: 'Anna kohtaamisen ajankohta.' };
+  if (body.encounter_date > today()) return { error: 'Kohtaamisen ajankohta ei voi olla tulevaisuudessa.' };
+  if (body.encounter_date < '2020-01-01') return { error: 'Tarkista kohtaamisen ajankohta.' };
+
+  const type = body.encounter_type;
+  if (!['yksilo', 'ryhma'].includes(type)) return { error: 'Valitse, mitä raportoit.' };
+
+  let encounterCount, personCount, pseudonym = null;
+  if (type === 'yksilo') {
+    encounterCount = 1; personCount = 1;
+    pseudonym = (body.pseudonym || '').toString().trim().slice(0, 60) || null;
+    if (pseudonym && sensitiveHit(pseudonym)) return { error: 'Nimimerkki näyttää sisältävän tunnistetietoja. Älä kirjoita oikeita nimiä tai yhteystietoja.' };
+  } else {
+    encounterCount = toInt(body.encounter_count);
+    personCount = toInt(body.person_count);
+    if (!Number.isInteger(encounterCount) || encounterCount < 1 || encounterCount > 9999) return { error: 'Kohtaamisten määrä on oltava 1–9999.' };
+    if (personCount !== null && (!Number.isInteger(personCount) || personCount < 1 || personCount > 9999)) return { error: 'Osallistujien määrä on oltava 1–9999 tai tyhjä.' };
+  }
+
+  const answers = [];
+  const given = body.answers && typeof body.answers === 'object' ? body.answers : {};
+  for (const q of activeQuestionsFor(projectId, type)) {
+    let v = given[q.key];
+    const empty = v == null || v === '' || (Array.isArray(v) && v.length === 0);
+    if (empty) { if (q.required) return { error: `Vastaa kysymykseen: ${q.label}` }; continue; }
+    switch (q.type) {
+      case 'text': case 'textarea': {
+        v = String(v).trim().slice(0, q.type === 'text' ? 200 : 4000);
+        if (!v) { if (q.required) return { error: `Vastaa kysymykseen: ${q.label}` }; continue; }
+        const hit = sensitiveHit(v);
+        if (hit) return { error: `Kenttä "${q.label}" näyttää sisältävän ${hit} näyttävää tietoa. Älä kirjaa asiakkaan tunnistetietoja.` };
+        break;
+      }
+      case 'number': { const n = Number(v); if (!Number.isFinite(n)) return { error: `Anna luku: ${q.label}` }; v = String(n); break; }
+      case 'rating': { const n = Number(v); if (!q.options.map(Number).includes(n)) return { error: `Virheellinen arvio: ${q.label}` }; v = String(n); break; }
+      case 'choice': if (!q.options.includes(v)) return { error: `Virheellinen valinta: ${q.label}` }; break;
+      case 'multichoice': {
+        if (!Array.isArray(v) || !v.every(x => q.options.includes(x))) return { error: `Virheellinen valinta: ${q.label}` };
+        v = JSON.stringify(v); break;
+      }
+      case 'date': if (!isDate(v)) return { error: `Virheellinen päivämäärä: ${q.label}` }; break;
+    }
+    answers.push({ question_id: q.id, value: v });
+  }
+
+  return {
+    data: { project_id: projectId, encounter_date: body.encounter_date, encounter_type: type,
+            encounter_count: encounterCount, person_count: personCount, pseudonym },
+    answers,
+  };
+}
+
+function encounterVisibleWhere(user, projectIds) {
+  const s = scope(user, 'viewScope');
+  if (s === 'all') return { sql: '1=1', params: [] };
+  if (s === 'projects') return { sql: `e.project_id IN (${projectIds.map(() => '?').join(',') || 'NULL'})`, params: projectIds };
+  if (s === 'own') return { sql: 'e.created_by = ?', params: [user.id] };
+  return { sql: '0=1', params: [] };
+}
+
+// ---------------------------------------------------------------------------
+// Kirjautuminen
+// ---------------------------------------------------------------------------
+const loginLimiter = rateLimit({ windowMs: 15 * 60 * 1000, limit: Number(process.env.LOGIN_RATE_LIMIT || 10), standardHeaders: true, legacyHeaders: false,
+  message: { error: 'Liian monta kirjautumisyritystä. Yritä uudelleen 15 minuutin kuluttua.' } });
+
+const DUMMY_HASH = bcrypt.hashSync('dummy-password', 12);
+app.post('/api/login', loginLimiter, (req, res) => {
+  const email = String(req.body.email || '').trim();
+  const password = String(req.body.password || '');
+  const u = db.prepare('SELECT * FROM users WHERE email = ?').get(email);
+  const ok = bcrypt.compareSync(password, u ? u.password_hash : DUMMY_HASH);
+  if (!u || !ok || !u.active) { audit(u && u.id, 'login_failed', 'user', u && u.id, { email }); return bad(res, 'Virheellinen sähköposti tai salasana.', 401); }
+  req.session.regenerate((err) => {
+    if (err) return bad(res, 'Kirjautuminen epäonnistui.', 500);
+    req.session.userId = u.id;
+    db.prepare("UPDATE users SET last_login_at = datetime('now') WHERE id = ?").run(u.id);
+    audit(u.id, 'login', 'user', u.id);
+    res.json({ ok: true });
+  });
+});
+
+app.post('/api/logout', (req, res) => { req.session.destroy(() => { res.clearCookie('kr.sid'); res.json({ ok: true }); }); });
+
+app.get('/api/me', requireAuth, (req, res) => {
+  const projects = db.prepare(`SELECT id, code, name, active FROM projects WHERE id IN (${req.projectIds.map(() => '?').join(',') || 'NULL'}) ORDER BY sort, name`).all(...req.projectIds);
+  res.json({
+    user: { id: req.user.id, email: req.user.email, name: req.user.name, role: req.user.role, roleLabel: ROLES[req.user.role].label,
+            mustChangePassword: !!req.user.must_change_password, recorderRole: req.user.recorder_role },
+    permissions: PERMISSIONS[req.user.role],
+    projects,
+    recorderRoles: RECORDER_ROLES,
+    defaultRecorderRoles: Object.fromEntries(Object.keys(ROLES).map(r => [r, RECORDER_ROLES[DEFAULT_RECORDER_ROLE_INDEX[r]]])),
+    roles: Object.fromEntries(Object.entries(ROLES).map(([k, v]) => [k, v.label])),
+    today: today(),
+  });
+});
+
+app.post('/api/me/password', requireAuth, (req, res) => {
+  const { current, next: newPw } = req.body;
+  const u = db.prepare('SELECT password_hash FROM users WHERE id = ?').get(req.user.id);
+  if (!bcrypt.compareSync(String(current || ''), u.password_hash)) return bad(res, 'Nykyinen salasana on väärin.');
+  if (typeof newPw !== 'string' || newPw.length < 12) return bad(res, 'Uuden salasanan on oltava vähintään 12 merkkiä.');
+  if (newPw === current) return bad(res, 'Uusi salasana ei voi olla sama kuin vanha.');
+  db.prepare('UPDATE users SET password_hash = ?, must_change_password = 0 WHERE id = ?').run(bcrypt.hashSync(newPw, 12), req.user.id);
+  audit(req.user.id, 'password_changed', 'user', req.user.id);
+  res.json({ ok: true });
+});
+
+// ---------------------------------------------------------------------------
+// Lomake ja kirjaukset
+// ---------------------------------------------------------------------------
+app.get('/api/form', requireAuth, (req, res) => {
+  const qs = db.prepare(`SELECT * FROM questions WHERE active = 1 AND (project_id IS NULL OR project_id IN (${req.projectIds.map(() => '?').join(',') || 'NULL'}))
+                         ORDER BY project_id IS NOT NULL, sort, id`).all(...req.projectIds).map(parseQ);
+  res.json({ questions: qs });
+});
+
+app.post('/api/encounters', requireAuth, requirePerm('record'), (req, res) => {
+  const v = validateEncounter(req.body, req.user, req.projectIds);
+  if (v.error) return bad(res, v.error);
+  const id = crypto.randomUUID();
+  db.transaction(() => {
+    db.prepare(`INSERT INTO encounters (id, project_id, encounter_date, encounter_type, encounter_count, person_count, pseudonym, recorder_role, created_by)
+                VALUES (@id, @project_id, @encounter_date, @encounter_type, @encounter_count, @person_count, @pseudonym, @recorder_role, @created_by)`)
+      .run({ id, ...v.data, recorder_role: req.user.recorder_role || RECORDER_ROLES[DEFAULT_RECORDER_ROLE_INDEX[req.user.role]], created_by: req.user.id });
+    const ins = db.prepare('INSERT INTO encounter_answers (encounter_id, question_id, value) VALUES (?, ?, ?)');
+    for (const a of v.answers) ins.run(id, a.question_id, a.value);
+    audit(req.user.id, 'encounter_create', 'encounter', id);
+  })();
+  res.status(201).json({ id });
+});
+
+app.get('/api/encounters', requireAuth, (req, res) => {
+  if (scope(req.user, 'viewScope') === 'none') return bad(res, 'Ei oikeutta.', 403);
+  const w = encounterVisibleWhere(req.user, req.projectIds);
+  const where = ['e.deleted_at IS NULL', w.sql]; const params = [...w.params];
+  if (isDate(req.query.from)) { where.push('e.encounter_date >= ?'); params.push(req.query.from); }
+  if (isDate(req.query.to)) { where.push('e.encounter_date <= ?'); params.push(req.query.to); }
+  if (req.query.project_id) { where.push('e.project_id = ?'); params.push(Number(req.query.project_id)); }
+  if (['yksilo', 'ryhma'].includes(req.query.type)) { where.push('e.encounter_type = ?'); params.push(req.query.type); }
+  const limit = Math.min(Number(req.query.limit) || 50, 200);
+  const offset = Math.max(Number(req.query.offset) || 0, 0);
+  const whereSql = where.join(' AND ');
+  const totals = db.prepare(`SELECT COUNT(*) rows, COALESCE(SUM(encounter_count),0) encounters FROM encounters e WHERE ${whereSql}`).get(...params);
+  const rows = db.prepare(`SELECT e.id, e.encounter_date, e.encounter_type, e.encounter_count, e.person_count, e.created_at, e.updated_at,
+                                  e.project_id, e.created_by, p.name project_name, u.name created_by_name
+                           FROM encounters e JOIN projects p ON p.id = e.project_id JOIN users u ON u.id = e.created_by
+                           WHERE ${whereSql} ORDER BY e.encounter_date DESC, e.created_at DESC, e.rowid DESC LIMIT ? OFFSET ?`).all(...params, limit, offset);
+  for (const r of rows) {
+    r.canEdit = allowsEncounter(req.user, 'editScope', r, req.projectIds);
+    r.canDelete = allowsEncounter(req.user, 'deleteScope', r, req.projectIds);
+  }
+  res.json({ rows, total: totals.rows, totalEncounters: totals.encounters });
+});
+
+function loadEncounter(id) {
+  return db.prepare('SELECT * FROM encounters WHERE id = ? AND deleted_at IS NULL').get(String(id));
+}
+
+app.get('/api/encounters/:id', requireAuth, (req, res) => {
+  const e = loadEncounter(req.params.id);
+  if (!e || !allowsEncounter(req.user, 'viewScope', e, req.projectIds)) return bad(res, 'Kirjausta ei löydy.', 404);
+  const answers = db.prepare(`SELECT q.key, q.type, a.value FROM encounter_answers a JOIN questions q ON q.id = a.question_id WHERE a.encounter_id = ?`).all(e.id);
+  const ans = {};
+  for (const a of answers) ans[a.key] = a.type === 'multichoice' ? JSON.parse(a.value) : a.value;
+  // Myös käytöstä poistettujen kysymysten vastaukset näytetään
+  const allQs = db.prepare(`SELECT * FROM questions WHERE project_id IS NULL OR project_id = ? ORDER BY project_id IS NOT NULL, sort, id`).all(e.project_id).map(parseQ);
+  res.json({ encounter: { ...e, answers: ans,
+    canEdit: allowsEncounter(req.user, 'editScope', e, req.projectIds), canDelete: allowsEncounter(req.user, 'deleteScope', e, req.projectIds) },
+    questions: allQs });
+});
+
+app.put('/api/encounters/:id', requireAuth, (req, res) => {
+  const e = loadEncounter(req.params.id);
+  if (!e || !allowsEncounter(req.user, 'editScope', e, req.projectIds)) return bad(res, 'Ei oikeutta korjata tätä kirjausta.', 403);
+  // Korjaaja voi siirtää kirjauksen vain hankkeeseen, johon hänellä on oikeus.
+  const v = validateEncounter(req.body, req.user, req.projectIds);
+  if (v.error) return bad(res, v.error);
+  db.transaction(() => {
+    db.prepare(`UPDATE encounters SET project_id=@project_id, encounter_date=@encounter_date, encounter_type=@encounter_type,
+                encounter_count=@encounter_count, person_count=@person_count, pseudonym=@pseudonym,
+                updated_by=@uid, updated_at=datetime('now') WHERE id=@id`).run({ ...v.data, uid: req.user.id, id: e.id });
+    // Säilytetään käytöstä poistettujen kysymysten vastaukset, korvataan aktiivisten.
+    db.prepare(`DELETE FROM encounter_answers WHERE encounter_id = ? AND question_id IN (SELECT id FROM questions WHERE active = 1)`).run(e.id);
+    const ins = db.prepare('INSERT INTO encounter_answers (encounter_id, question_id, value) VALUES (?, ?, ?)');
+    for (const a of v.answers) ins.run(e.id, a.question_id, a.value);
+    audit(req.user.id, 'encounter_update', 'encounter', e.id);
+  })();
+  res.json({ ok: true });
+});
+
+app.delete('/api/encounters/:id', requireAuth, (req, res) => {
+  const e = loadEncounter(req.params.id);
+  if (!e || !allowsEncounter(req.user, 'deleteScope', e, req.projectIds)) return bad(res, 'Ei oikeutta poistaa tätä kirjausta.', 403);
+  db.prepare("UPDATE encounters SET deleted_at = datetime('now'), deleted_by = ? WHERE id = ?").run(req.user.id, e.id);
+  audit(req.user.id, 'encounter_delete', 'encounter', e.id);
+  res.json({ ok: true });
+});
+
+// ---------------------------------------------------------------------------
+// Excel-vienti
+// ---------------------------------------------------------------------------
+app.get('/api/export', requireAuth, async (req, res) => {
+  const s = scope(req.user, 'exportScope');
+  if (s === 'none') return bad(res, 'Ei oikeutta.', 403);
+  if (!isDate(req.query.from) || !isDate(req.query.to) || req.query.from > req.query.to) return bad(res, 'Anna kelvollinen aikaväli.');
+  const allowed = s === 'all' ? db.prepare('SELECT id FROM projects').all().map(r => r.id) : req.projectIds;
+  let ids = String(req.query.projects || '').split(',').filter(Boolean).map(Number);
+  if (ids.length === 0) ids = allowed;                       // "kaikki" = kaikki sallitut
+  if (!ids.every(id => allowed.includes(id))) return bad(res, 'Ei oikeutta valittuihin hankkeisiin.', 403);
+  if (ids.length === 0) return bad(res, 'Ei hankkeita vietäväksi.');
+  const wb = buildWorkbook({ from: req.query.from, to: req.query.to, projectIds: ids });
+  audit(req.user.id, 'export', 'encounter', null, { from: req.query.from, to: req.query.to, projects: ids });
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.setHeader('Content-Disposition', `attachment; filename="kohtaamiset_${req.query.from}_${req.query.to}.xlsx"`);
+  await wb.xlsx.write(res);
+  res.end();
+});
+
+// ---------------------------------------------------------------------------
+// Ylläpito: käyttäjät
+// ---------------------------------------------------------------------------
+const tempPassword = () => crypto.randomBytes(9).toString('base64url');
+
+app.get('/api/users', requireAuth, requirePerm('manageUsers'), (req, res) => {
+  const users = db.prepare('SELECT id, email, name, role, recorder_role, active, last_login_at, created_at FROM users ORDER BY name').all();
+  const links = db.prepare('SELECT user_id, project_id FROM user_projects').all();
+  for (const u of users) u.project_ids = links.filter(l => l.user_id === u.id).map(l => l.project_id);
+  res.json({ users });
+});
+
+function validateUserBody(b) {
+  if (!b.name || String(b.name).trim().length < 2) return 'Anna nimi.';
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(b.email || ''))) return 'Anna kelvollinen sähköpostiosoite.';
+  if (!ROLES[b.role]) return 'Valitse rooli.';
+  if (!Array.isArray(b.project_ids)) return 'Virheelliset hankkeet.';
+  if (b.recorder_role != null && !RECORDER_ROLES.includes(b.recorder_role)) return 'Valitse kirjaajan rooli.';
+  return null;
+}
+function recorderRoleFor(b) {
+  return RECORDER_ROLES.includes(b.recorder_role) ? b.recorder_role : RECORDER_ROLES[DEFAULT_RECORDER_ROLE_INDEX[b.role]];
+}
+function setUserProjects(userId, ids) {
+  db.prepare('DELETE FROM user_projects WHERE user_id = ?').run(userId);
+  const ins = db.prepare('INSERT OR IGNORE INTO user_projects (user_id, project_id) SELECT ?, id FROM projects WHERE id = ?');
+  for (const pid of ids) ins.run(userId, Number(pid));
+}
+
+app.post('/api/users', requireAuth, requirePerm('manageUsers'), (req, res) => {
+  const err = validateUserBody(req.body); if (err) return bad(res, err);
+  if (db.prepare('SELECT 1 FROM users WHERE email = ?').get(req.body.email)) return bad(res, 'Sähköpostiosoite on jo käytössä.');
+  const pw = tempPassword();
+  const id = db.transaction(() => {
+    const id = db.prepare('INSERT INTO users (email, name, password_hash, role, recorder_role) VALUES (?, ?, ?, ?, ?)')
+      .run(String(req.body.email).trim(), String(req.body.name).trim(), bcrypt.hashSync(pw, 12), req.body.role, recorderRoleFor(req.body)).lastInsertRowid;
+    setUserProjects(id, req.body.project_ids);
+    audit(req.user.id, 'user_create', 'user', id, { role: req.body.role });
+    return id;
+  })();
+  res.status(201).json({ id, temporaryPassword: pw });
+});
+
+app.put('/api/users/:id', requireAuth, requirePerm('manageUsers'), (req, res) => {
+  const id = Number(req.params.id);
+  const u = db.prepare('SELECT * FROM users WHERE id = ?').get(id);
+  if (!u) return bad(res, 'Käyttäjää ei löydy.', 404);
+  const err = validateUserBody(req.body); if (err) return bad(res, err);
+  const other = db.prepare('SELECT id FROM users WHERE email = ? AND id <> ?').get(req.body.email, id);
+  if (other) return bad(res, 'Sähköpostiosoite on jo käytössä.');
+  const active = req.body.active === false ? 0 : 1;
+  if (id === req.user.id && (req.body.role !== 'admin' || !active)) return bad(res, 'Et voi poistaa omaa admin-oikeuttasi.');
+  db.transaction(() => {
+    db.prepare('UPDATE users SET email = ?, name = ?, role = ?, recorder_role = ?, active = ? WHERE id = ?')
+      .run(String(req.body.email).trim(), String(req.body.name).trim(), req.body.role, recorderRoleFor(req.body), active, id);
+    setUserProjects(id, req.body.project_ids);
+    if (!active) db.prepare("DELETE FROM sessions WHERE json_extract(sess, '$.userId') = ?").run(id);
+    audit(req.user.id, 'user_update', 'user', id, { role: req.body.role, active });
+  })();
+  res.json({ ok: true });
+});
+
+app.post('/api/users/:id/reset-password', requireAuth, requirePerm('manageUsers'), (req, res) => {
+  const id = Number(req.params.id);
+  if (!db.prepare('SELECT 1 FROM users WHERE id = ?').get(id)) return bad(res, 'Käyttäjää ei löydy.', 404);
+  const pw = tempPassword();
+  db.prepare('UPDATE users SET password_hash = ?, must_change_password = 1 WHERE id = ?').run(bcrypt.hashSync(pw, 12), id);
+  db.prepare("DELETE FROM sessions WHERE json_extract(sess, '$.userId') = ?").run(id);
+  audit(req.user.id, 'user_reset_password', 'user', id);
+  res.json({ temporaryPassword: pw });
+});
+
+// ---------------------------------------------------------------------------
+// Ylläpito: hankkeet
+// ---------------------------------------------------------------------------
+app.get('/api/projects', requireAuth, requirePerm('manageProjects'), (req, res) => {
+  res.json({ projects: db.prepare(`SELECT p.*, (SELECT COUNT(*) FROM encounters e WHERE e.project_id = p.id AND e.deleted_at IS NULL) encounter_rows
+                                   FROM projects p ORDER BY sort, name`).all() });
+});
+app.post('/api/projects', requireAuth, requirePerm('manageProjects'), (req, res) => {
+  const code = String(req.body.code || '').trim().toUpperCase();
+  const name = String(req.body.name || '').trim();
+  if (!/^[A-Z0-9_]{2,20}$/.test(code)) return bad(res, 'Tunnus: 2–20 merkkiä, A–Z, 0–9 tai _.');
+  if (name.length < 2) return bad(res, 'Anna hankkeen nimi.');
+  if (db.prepare('SELECT 1 FROM projects WHERE code = ?').get(code)) return bad(res, 'Tunnus on jo käytössä.');
+  const sort = (db.prepare('SELECT MAX(sort) m FROM projects').get().m || 0) + 10;
+  const id = db.prepare('INSERT INTO projects (code, name, sort) VALUES (?, ?, ?)').run(code, name, sort).lastInsertRowid;
+  audit(req.user.id, 'project_create', 'project', id, { code, name });
+  res.status(201).json({ id });
+});
+app.put('/api/projects/:id', requireAuth, requirePerm('manageProjects'), (req, res) => {
+  const id = Number(req.params.id);
+  const name = String(req.body.name || '').trim();
+  if (name.length < 2) return bad(res, 'Anna hankkeen nimi.');
+  const r = db.prepare('UPDATE projects SET name = ?, active = ?, sort = COALESCE(?, sort) WHERE id = ?')
+    .run(name, req.body.active === false ? 0 : 1, Number.isInteger(req.body.sort) ? req.body.sort : null, id);
+  if (!r.changes) return bad(res, 'Hanketta ei löydy.', 404);
+  audit(req.user.id, 'project_update', 'project', id, req.body);
+  res.json({ ok: true });
+});
+
+// ---------------------------------------------------------------------------
+// Ylläpito: kysymykset
+// ---------------------------------------------------------------------------
+const Q_TYPES = ['text', 'textarea', 'number', 'choice', 'multichoice', 'rating', 'date'];
+function validateQuestion(b, isNew) {
+  if (String(b.label || '').trim().length < 2) return 'Anna kysymyksen teksti.';
+  if (!Q_TYPES.includes(b.type)) return 'Valitse kysymystyyppi.';
+  if (!['kaikki', 'yksilo', 'ryhma'].includes(b.applies_to)) return 'Valitse, mihin kirjauksiin kysymys liittyy.';
+  if (['choice', 'multichoice'].includes(b.type)) {
+    if (!Array.isArray(b.options) || b.options.filter(o => String(o).trim()).length < 2) return 'Anna vähintään kaksi vastausvaihtoehtoa.';
+  }
+  if (isNew && !/^[a-z0-9_]{2,40}$/.test(String(b.key || ''))) return 'Tunniste: 2–40 merkkiä, a–z, 0–9 tai _.';
+  if (b.project_id != null && !db.prepare('SELECT 1 FROM projects WHERE id = ?').get(Number(b.project_id))) return 'Hanketta ei löydy.';
+  return null;
+}
+function normalizeOptions(b) {
+  if (['choice', 'multichoice'].includes(b.type)) return JSON.stringify([...new Set(b.options.map(o => String(o).trim()).filter(Boolean))]);
+  if (b.type === 'rating') return JSON.stringify([1, 2, 3, 4, 5]);
+  return null;
+}
+
+app.get('/api/questions', requireAuth, requirePerm('manageQuestions'), (req, res) => {
+  const qs = db.prepare(`SELECT q.*, (SELECT COUNT(*) FROM encounter_answers a WHERE a.question_id = q.id) answer_count
+                         FROM questions q ORDER BY q.project_id IS NOT NULL, q.project_id, q.sort, q.id`).all()
+    .map(q => ({ ...parseQ(q), answer_count: q.answer_count }));
+  res.json({ questions: qs });
+});
+app.post('/api/questions', requireAuth, requirePerm('manageQuestions'), (req, res) => {
+  const b = req.body; const err = validateQuestion(b, true); if (err) return bad(res, err);
+  if (db.prepare('SELECT 1 FROM questions WHERE key = ?').get(b.key)) return bad(res, 'Tunniste on jo käytössä.');
+  const pid = b.project_id == null ? null : Number(b.project_id);
+  const sort = (db.prepare('SELECT MAX(sort) m FROM questions WHERE project_id IS ?').get(pid).m || 0) + 10;
+  const id = db.prepare(`INSERT INTO questions (key, project_id, label, help, type, options, required, applies_to, free_text_warning, sort)
+                         VALUES (?,?,?,?,?,?,?,?,?,?)`)
+    .run(b.key, pid, b.label.trim(), (b.help || '').trim() || null, b.type, normalizeOptions(b), b.required ? 1 : 0, b.applies_to,
+         ['text', 'textarea'].includes(b.type) ? 1 : 0, sort).lastInsertRowid;
+  audit(req.user.id, 'question_create', 'question', id, { key: b.key });
+  res.status(201).json({ id });
+});
+app.put('/api/questions/:id', requireAuth, requirePerm('manageQuestions'), (req, res) => {
+  const id = Number(req.params.id);
+  const q = db.prepare('SELECT * FROM questions WHERE id = ?').get(id);
+  if (!q) return bad(res, 'Kysymystä ei löydy.', 404);
+  const b = { ...req.body, project_id: q.project_id };     // hanke ja tunniste ovat pysyviä
+  const err = validateQuestion(b, false); if (err) return bad(res, err);
+  const answered = db.prepare('SELECT COUNT(*) n FROM encounter_answers WHERE question_id = ?').get(id).n;
+  if (answered && b.type !== q.type) return bad(res, 'Kysymystyyppiä ei voi muuttaa, kun kysymykseen on jo vastattu. Lisää uusi kysymys ja poista vanha käytöstä.');
+  db.prepare(`UPDATE questions SET label=?, help=?, type=?, options=?, required=?, applies_to=?, active=?, sort=COALESCE(?, sort), updated_at=datetime('now') WHERE id=?`)
+    .run(b.label.trim(), (b.help || '').trim() || null, b.type, normalizeOptions(b), b.required ? 1 : 0, b.applies_to,
+         b.active === false ? 0 : 1, Number.isInteger(b.sort) ? b.sort : null, id);
+  audit(req.user.id, 'question_update', 'question', id, { label: b.label, active: b.active });
+  res.json({ ok: true });
+});
+app.post('/api/questions/reorder', requireAuth, requirePerm('manageQuestions'), (req, res) => {
+  const ids = Array.isArray(req.body.ids) ? req.body.ids.map(Number) : [];
+  const upd = db.prepare('UPDATE questions SET sort = ? WHERE id = ?');
+  db.transaction(() => ids.forEach((id, i) => upd.run((i + 1) * 10, id)))();
+  res.json({ ok: true });
+});
+
+app.get('/api/audit', requireAuth, requirePerm('manageUsers'), (req, res) => {
+  res.json({ rows: db.prepare(`SELECT a.*, u.name user_name FROM audit_log a LEFT JOIN users u ON u.id = a.user_id ORDER BY a.id DESC LIMIT 200`).all() });
+});
+
+// ---------------------------------------------------------------------------
+// Staattinen käyttöliittymä
+// ---------------------------------------------------------------------------
+app.use(express.static(path.join(__dirname, '..', 'public'), { index: 'index.html', maxAge: IS_PROD ? '1h' : 0 }));
+app.get(/^\/(?!api\/).*/, (req, res) => res.sendFile(path.join(__dirname, '..', 'public', 'index.html')));
+app.use('/api', (req, res) => bad(res, 'Ei löydy.', 404));
+app.use((err, req, res, next) => { console.error(err); bad(res, 'Palvelinvirhe.', 500); });
+
+if (require.main === module) {
+  const created = ensureAdmin();
+  if (created) {
+    console.log('\n=== Ensimmäinen admin-käyttäjä luotu ===');
+    console.log(`Sähköposti: ${created.email}`);
+    console.log(`Salasana:   ${created.password}   (vaihdettava ensimmäisellä kirjautumisella)\n`);
+  }
+  if (!process.env.SESSION_SECRET) console.warn('VAROITUS: SESSION_SECRET puuttuu – istunnot katkeavat uudelleenkäynnistyksessä.');
+  app.listen(PORT, () => console.log(`Kohtaamisten raportointi käynnissä: http://localhost:${PORT}`));
+}
+
+module.exports = app;
