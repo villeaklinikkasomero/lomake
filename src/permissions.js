@@ -3,10 +3,10 @@
 // halutaan säätää (esim. sallia hanketyöntekijälle omien kirjausten korjaus).
 
 const ROLES = {
-  admin:           { label: 'Admin' },
-  tiimivetaja:     { label: 'Tiimivetäjä' },
-  hanketyontekija: { label: 'Hanketyöntekijä' },
-  tuntityontekija: { label: 'Tuntityöntekijä' },
+  admin:           { label: 'Admin',                      description: 'A-klinikkasäätiön työntekijä, pääkäyttäjä' },
+  tiimivetaja:     { label: 'Tiimivetäjä',                description: 'A-klinikkasäätiön työntekijä' },
+  hanketyontekija: { label: 'Hanketyöntekijä',            description: 'A-klinikkasäätiön työntekijä' },
+  tuntityontekija: { label: 'Tuntityöntekijä (avustaja)', description: 'Tuntityöntekijä tai avustaja' },
 };
 
 // Oikeudet:
@@ -36,7 +36,9 @@ const PERMISSIONS = {
   },
 };
 
-// Kirjaajan roolin oletusarvo lomakkeella käyttäjän roolin perusteella.
+// Kirjaajan rooli (lomakkeen "Olen"-tieto) määräytyy käyttöoikeusroolista:
+// admin, tiimivetäjä ja hanketyöntekijä ovat A-klinikkasäätiön työntekijöitä,
+// tuntityöntekijä on avustaja. Indeksi viittaa db.js:n RECORDER_ROLES-listaan.
 const DEFAULT_RECORDER_ROLE_INDEX = { admin: 0, tiimivetaja: 0, hanketyontekija: 0, tuntityontekija: 1 };
 
 function can(user, perm) { return !!(user && PERMISSIONS[user.role] && PERMISSIONS[user.role][perm]); }

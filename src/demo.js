@@ -77,7 +77,7 @@ function generateDemoPayloads(count, seed = Date.now()) {
       person_count: null,
       pseudonym: null,
       answers: {},
-      _recorder_role: chance(0.7) ? RECORDER_ROLES[0] : chance(0.6) ? RECORDER_ROLES[1] : RECORDER_ROLES[2],
+      _recorder_role: RECORDER_ROLES[0],   // admin = säätiön työntekijä
     };
     if (type === 'ryhma') {
       // Joskus osallistujamäärä ei ole tiedossa; muuten ≤ kohtaamisten määrä
@@ -125,11 +125,12 @@ function generateDemoPayloads(count, seed = Date.now()) {
 // Testityöntekijät (suljettuja tunnuksia, eivät voi kirjautua). Kirjaukset jaetaan
 // heidän nimiinsä, jotta työntekijäkohtaista seurantaa voi testata.
 const DEMO_WORKERS = [
+  // rr = kirjaajan rooli: säätiön työntekijät 0, tuntityöntekijä (avustaja) 1
   { name: 'Testi Aino Aaltonen', role: 'hanketyontekija', rr: 0, weight: 5 },
   { name: 'Testi Mikko Laine', role: 'hanketyontekija', rr: 0, weight: 4 },
   { name: 'Testi Sanna Koski', role: 'tiimivetaja', rr: 0, weight: 2 },
   { name: 'Testi Joonas Heikkinen', role: 'tuntityontekija', rr: 1, weight: 3 },
-  { name: 'Testi Leena Virta', role: 'tuntityontekija', rr: 2, weight: 1 },
+  { name: 'Testi Leena Virta', role: 'tuntityontekija', rr: 1, weight: 2 },
 ];
 function ensureDemoWorkers() {
   const projects = db.prepare('SELECT id FROM projects WHERE active = 1 ORDER BY sort').all().map(p => p.id);
@@ -140,6 +141,7 @@ function ensureDemoWorkers() {
     const email = `testi${i + 1}@testidata.invalid`;
     let u = db.prepare('SELECT id FROM users WHERE email = ?').get(email);
     if (!u) u = { id: ins.run(email, w.name, w.role, RECORDER_ROLES[w.rr]).lastInsertRowid };
+    else db.prepare('UPDATE users SET role = ?, recorder_role = ? WHERE id = ?').run(w.role, RECORDER_ROLES[w.rr], u.id);
     // Jokainen testityöntekijä 2–3 hankkeeseen
     const own = [projects[i % projects.length], projects[(i + 2) % projects.length], projects[(i + 4) % projects.length]].slice(0, 2 + (i % 2));
     own.forEach(pid => link.run(u.id, pid));

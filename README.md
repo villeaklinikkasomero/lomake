@@ -16,8 +16,9 @@ Testit: `npm test` (13 testiä: roolit, validointi, tunnistetietojen esto, Excel
 
 ## Roolit
 
-| | Admin | Tiimivetäjä | Hanketyöntekijä | Tuntityöntekijä |
+| | Admin | Tiimivetäjä | Hanketyöntekijä | Tuntityöntekijä (avustaja) |
 |---|---|---|---|---|
+| Kuka | säätiön työntekijä | säätiön työntekijä | säätiön työntekijä | tuntityöntekijä / avustaja |
 | Kirjaa kohtaamisia | kaikki hankkeet | omat hankkeet | omat hankkeet | omat hankkeet |
 | Selaa kirjauksia | kaikki | omien hankkeiden kaikki | vain omat | – |
 | Korjaa / poistaa kirjauksia | kaikki | omat hankkeet | – | – |
@@ -29,7 +30,7 @@ Oikeudet on koottu yhteen tiedostoon, `src/permissions.js`. Jos esimerkiksi hank
 
 ## Lomake
 
-- **Perustiedot**: ajankohta, hanke (näkyy vain käyttäjän omat hankkeet) sekä valinta yksi kohtaaminen / ryhmä. *Olen*-tietoa (kirjaajan rooli) ei kysytä lomakkeella. Se tulee käyttäjän profiilista, ja oletusarvo määräytyy käyttöoikeusroolista. Admin voi vaihtaa sen esimerkiksi vertaiselle. Kun kirjausta korjataan, alkuperäisen kirjaajan rooli säilyy.
+- **Perustiedot**: ajankohta, hanke (näkyy vain käyttäjän omat hankkeet) sekä valinta yksi kohtaaminen / ryhmä. *Olen*-tietoa (kirjaajan rooli) ei kysytä lomakkeella, vaan se määräytyy käyttäjän roolista: admin, tiimivetäjä ja hanketyöntekijä ovat A-klinikkasäätiön työntekijöitä (”A-klinikkasäätiön asiantuntija tai ohjaaja”), ja tuntityöntekijä on avustaja (”Tuntityöntekijä tai ulkopuolinen asiantuntija, ohjaaja, avustaja…”). Rooli tallentuu kirjaukseen, eikä se muutu, vaikka kirjausta korjataan.
 - **Yksi kohtaaminen**: kohtaamisten määrä on 1, ja lisäksi voi antaa valinnaisen nimimerkin. **Ryhmä**: kohtaamisten määrä (1–9999, pakollinen) ja eri osallistujien määrä (valinnainen).
 - **Yhteiset kysymykset** ja **hankekohtaiset kysymykset** näytetään valitun hankkeen ja kirjaustyypin mukaan (”Näytetään: kaikki / vain yksilö / vain ryhmä”).
 - Vapaatekstikentissä muistutetaan tunnistetiedoista. Henkilötunnukselta, sähköpostiosoitteelta tai puhelinnumerolta näyttävä teksti estetään sekä selaimessa että palvelimella.

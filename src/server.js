@@ -214,12 +214,13 @@ app.get('/api/me', requireAuth, (req, res) => {
   const projects = db.prepare(`SELECT id, code, name, active FROM projects WHERE id IN (${req.projectIds.map(() => '?').join(',') || 'NULL'}) ORDER BY sort, name`).all(...req.projectIds);
   res.json({
     user: { id: req.user.id, email: req.user.email, name: req.user.name, role: req.user.role, roleLabel: ROLES[req.user.role].label,
-            mustChangePassword: !!req.user.must_change_password, recorderRole: req.user.recorder_role },
+            mustChangePassword: !!req.user.must_change_password, recorderRole: RECORDER_ROLES[DEFAULT_RECORDER_ROLE_INDEX[req.user.role]] },
     permissions: PERMISSIONS[req.user.role],
     projects,
     recorderRoles: RECORDER_ROLES,
     defaultRecorderRoles: Object.fromEntries(Object.keys(ROLES).map(r => [r, RECORDER_ROLES[DEFAULT_RECORDER_ROLE_INDEX[r]]])),
     roles: Object.fromEntries(Object.entries(ROLES).map(([k, v]) => [k, v.label])),
+    roleDescriptions: Object.fromEntries(Object.entries(ROLES).map(([k, v]) => [k, v.description])),
     today: today(),
   });
 });
@@ -251,7 +252,7 @@ app.post('/api/encounters', requireAuth, requirePerm('record'), (req, res) => {
   db.transaction(() => {
     db.prepare(`INSERT INTO encounters (id, project_id, encounter_date, encounter_type, encounter_count, person_count, pseudonym, recorder_role, created_by)
                 VALUES (@id, @project_id, @encounter_date, @encounter_type, @encounter_count, @person_count, @pseudonym, @recorder_role, @created_by)`)
-      .run({ id, ...v.data, recorder_role: req.user.recorder_role || RECORDER_ROLES[DEFAULT_RECORDER_ROLE_INDEX[req.user.role]], created_by: req.user.id });
+      .run({ id, ...v.data, recorder_role: RECORDER_ROLES[DEFAULT_RECORDER_ROLE_INDEX[req.user.role]], created_by: req.user.id });
     const ins = db.prepare('INSERT INTO encounter_answers (encounter_id, question_id, value) VALUES (?, ?, ?)');
     for (const a of v.answers) ins.run(id, a.question_id, a.value);
     audit(req.user.id, 'encounter_create', 'encounter', id);
@@ -451,11 +452,11 @@ function validateUserBody(b) {
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(b.email || ''))) return 'Anna kelvollinen sähköpostiosoite.';
   if (!ROLES[b.role]) return 'Valitse rooli.';
   if (!Array.isArray(b.project_ids)) return 'Virheelliset hankkeet.';
-  if (b.recorder_role != null && !RECORDER_ROLES.includes(b.recorder_role)) return 'Valitse kirjaajan rooli.';
   return null;
 }
+// Kirjaajan rooli johdetaan aina käyttöoikeusroolista, sitä ei valita erikseen.
 function recorderRoleFor(b) {
-  return RECORDER_ROLES.includes(b.recorder_role) ? b.recorder_role : RECORDER_ROLES[DEFAULT_RECORDER_ROLE_INDEX[b.role]];
+  return RECORDER_ROLES[DEFAULT_RECORDER_ROLE_INDEX[b.role]];
 }
 function setUserProjects(userId, ids) {
   db.prepare('DELETE FROM user_projects WHERE user_id = ?').run(userId);

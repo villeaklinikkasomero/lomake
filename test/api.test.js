@@ -113,11 +113,14 @@ test('kirjaajan rooli tulee profiilista eikä muutu korjauksessa', async () => {
   const upd = await users.tiimivetaja('PUT', '/encounters/' + rows[0].id, basePayload(P().KATUKLINIKKA));
   assert.equal(upd.status, 200, JSON.stringify(upd.data));
   assert.equal(db.prepare('SELECT recorder_role FROM encounters WHERE id = ?').get(rows[0].id).recorder_role, TT);
-  // Admin voi asettaa vertaisen roolin käyttäjälle
-  const VERT = 'Vertainen, kokemusasiantuntija tai vapaaehtoinen';
-  const r = await users.admin('POST', '/users', { name: 'Vertainen', email: 'v@t.fi', role: 'tuntityontekija', recorder_role: VERT, project_ids: [] });
+  // Kirjaajan rooli johdetaan aina käyttöoikeusroolista, lähetetty arvo ohitetaan
+  const SAATIO = 'A-klinikkasäätiön asiantuntija tai ohjaaja';
+  const r = await users.admin('POST', '/users', { name: 'Avustaja', email: 'v@t.fi', role: 'tuntityontekija', recorder_role: SAATIO, project_ids: [] });
   assert.equal(r.status, 201);
-  assert.equal(db.prepare("SELECT recorder_role FROM users WHERE email='v@t.fi'").get().recorder_role, VERT);
+  assert.equal(db.prepare("SELECT recorder_role FROM users WHERE email='v@t.fi'").get().recorder_role, TT);
+  const vid = db.prepare("SELECT id FROM users WHERE email='v@t.fi'").get().id;
+  await users.admin('PUT', '/users/' + vid, { name: 'Avustaja', email: 'v@t.fi', role: 'tiimivetaja', project_ids: [] });
+  assert.equal(db.prepare('SELECT recorder_role FROM users WHERE id = ?').get(vid).recorder_role, SAATIO);
 });
 
 test('tiimivetäjä näkee hankkeidensa kaikki, korjaa ja poistaa', async () => {

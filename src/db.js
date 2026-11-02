@@ -185,7 +185,8 @@ seed();
 if (!db.prepare("PRAGMA table_info(users)").all().some(c => c.name === 'recorder_role')) {
   db.exec('ALTER TABLE users ADD COLUMN recorder_role TEXT');
 }
-db.prepare(`UPDATE users SET recorder_role = CASE role WHEN 'tuntityontekija' THEN ? ELSE ? END WHERE recorder_role IS NULL`)
+// Kirjaajan rooli seuraa aina käyttöoikeusroolia (tuntityöntekijä = avustaja, muut = säätiön työntekijä)
+db.prepare(`UPDATE users SET recorder_role = CASE role WHEN 'tuntityontekija' THEN ? ELSE ? END`)
   .run(RECORDER_ROLES[1], RECORDER_ROLES[0]);
 
 // Migraatio: testidatan merkintä

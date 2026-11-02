@@ -807,43 +807,38 @@ async function viewUsers() {
 
   function openEditor(u) {
     const isNew = !u;
-    u = u || { name: '', email: '', role: 'hanketyontekija', recorder_role: null, active: 1, project_ids: [] };
+    u = u || { name: '', email: '', role: 'hanketyontekija', active: 1, project_ids: [] };
     const name = h('input', { type: 'text', id: 'u-name', value: u.name });
     const email = h('input', { type: 'email', id: 'u-email', value: u.email });
     const role = h('select', { id: 'u-role' }, Object.entries(roles).map(([k, v]) => h('option', { value: k, selected: k === u.role }, v)));
     const active = h('input', { type: 'checkbox', checked: !!u.active });
-    const defaults = state.me.defaultRecorderRoles;
-    const recRole = h('select', { id: 'u-recrole' }, state.me.recorderRoles.map(r => h('option', { value: r, selected: r === (u.recorder_role || defaults[u.role]) }, r)));
-    let recTouched = !isNew && u.recorder_role && u.recorder_role !== defaults[u.role];
-    recRole.addEventListener('change', () => { recTouched = true; });
-    role.addEventListener('change', () => { if (!recTouched) recRole.value = defaults[role.value]; });
     const pboxes = projects.map(p => ({ id: p.id, el: h('input', { type: 'checkbox', checked: u.project_ids.includes(p.id) }) }));
     const msg = h('div', { class: 'notice', hidden: true });
     const roleHelp = h('p', { class: 'help' });
     const ROLE_HELP = {
-      admin: 'Kaikki oikeudet: kirjaukset, Excel-vienti, käyttäjien, hankkeiden ja kysymysten ylläpito. Hankevalinnat eivät rajoita adminia.',
-      tiimivetaja: 'Kirjaa, selaa, korjaa ja poistaa valittujen hankkeiden kirjauksia sekä lataa niiden Excel-viennin.',
+      admin: 'Kaikki oikeudet: kirjaukset, työntekijäseuranta, Excel-vienti, käyttäjien, hankkeiden ja kysymysten ylläpito. Hankevalinnat eivät rajoita adminia.',
+      tiimivetaja: 'Kirjaa, selaa, korjaa ja poistaa valittujen hankkeiden kirjauksia, näkee työntekijäseurannan ja lataa Excel-viennin.',
       hanketyontekija: 'Kirjaa valittuihin hankkeisiin ja selaa omia kirjauksiaan.',
       tuntityontekija: 'Kirjaa valittuihin hankkeisiin. Ei kirjausten selausta.',
     };
-    const syncHelp = () => { roleHelp.textContent = ROLE_HELP[role.value]; };
+    const syncHelp = () => {
+      roleHelp.replaceChildren(h('strong', null, state.me.roleDescriptions[role.value]), '. ', ROLE_HELP[role.value], ' ',
+        h('span', { class: 'muted' }, `Kirjauksiin tallentuu: ”${state.me.defaultRecorderRoles[role.value]}”.`));
+    };
     role.addEventListener('change', syncHelp); syncHelp();
 
     editorBox.replaceChildren(h('div', { class: 'card editor' },
       h('h2', null, isNew ? 'Uusi käyttäjä' : 'Muokkaa käyttäjää'),
       h('div', { class: 'row' }, h('div', { class: 'field' }, h('label', { for: 'u-name' }, 'Nimi'), name),
         h('div', { class: 'field' }, h('label', { for: 'u-email' }, 'Sähköposti (käyttäjätunnus)'), email)),
-      h('div', { class: 'row' },
-        h('div', { class: 'field' }, h('label', { for: 'u-role' }, 'Käyttöoikeusrooli'), roleHelp, role),
-        h('div', { class: 'field' }, h('label', { for: 'u-recrole' }, 'Kirjaajan rooli raportoinnissa'),
-          h('p', { class: 'help' }, 'Tallentuu jokaiseen käyttäjän kirjaukseen (lomakkeen ”Olen”-tieto). Vertaisille ja vapaaehtoisille valitse kolmas vaihtoehto.'), recRole)),
+      h('div', { class: 'field' }, h('label', { for: 'u-role' }, 'Rooli'), roleHelp, role),
       h('div', { class: 'field' }, h('div', { class: 'label' }, 'Hankkeet'), h('div', { class: 'checks' },
         pboxes.map(b => h('label', { class: 'opt' }, b.el, h('span', null, pname(b.id)))))),
       !isNew ? h('div', { class: 'field' }, h('label', { class: 'switch' }, active, 'Tunnus käytössä')) : null,
       msg,
       h('div', { class: 'actions' },
         h('button', { class: 'btn btn-primary', type: 'button', onclick: async () => {
-          const body = { name: name.value, email: email.value, role: role.value, recorder_role: recRole.value, active: active.checked, project_ids: pboxes.filter(b => b.el.checked).map(b => b.id) };
+          const body = { name: name.value, email: email.value, role: role.value, active: active.checked, project_ids: pboxes.filter(b => b.el.checked).map(b => b.id) };
           try {
             if (isNew) {
               const r = await api('/users', { method: 'POST', body });
