@@ -95,7 +95,7 @@ function generateDemoPayloads(count, seed = Date.now()) {
       payload._client = c.idx;
     }
 
-    const digital = chance(0.35);
+    const digital = project.digital ? true : chance(0.3);
     for (const q of questions) {
       if (q.project_id != null && q.project_id !== project.id) continue;
       if (q.applies_to !== 'kaikki' && q.applies_to !== type) continue;

@@ -149,6 +149,13 @@ function validateEncounter(body, user, projectIds) {
   const answers = [];
   const given = body.answers && typeof body.answers === 'object' ? body.answers : {};
   for (const q of activeQuestionsFor(projectId, type)) {
+    // Digipalvelu: piilotettuja kysymyksiä ei tallenneta, vakioarvo asetetaan palvelimella
+    if (project.digital && q.digital_mode === 'hide') continue;
+    if (project.digital && q.digital_mode === 'fixed' && q.digital_value) {
+      if (q.type === 'choice' && !q.options.includes(q.digital_value)) continue;
+      answers.push({ question_id: q.id, value: q.type === 'multichoice' ? JSON.stringify([q.digital_value]) : q.digital_value });
+      continue;
+    }
     let v = given[q.key];
     const empty = v == null || v === '' || (Array.isArray(v) && v.length === 0);
     if (empty) { if (q.required) return { error: `Vastaa kysymykseen: ${q.label}` }; continue; }
@@ -212,7 +219,7 @@ app.post('/api/login', loginLimiter, (req, res) => {
 app.post('/api/logout', (req, res) => { req.session.destroy(() => { res.clearCookie('kr.sid'); res.json({ ok: true }); }); });
 
 app.get('/api/me', requireAuth, (req, res) => {
-  const projects = db.prepare(`SELECT id, code, name, active FROM projects WHERE id IN (${req.projectIds.map(() => '?').join(',') || 'NULL'}) ORDER BY sort, name`).all(...req.projectIds);
+  const projects = db.prepare(`SELECT id, code, name, active, digital FROM projects WHERE id IN (${req.projectIds.map(() => '?').join(',') || 'NULL'}) ORDER BY sort, name`).all(...req.projectIds);
   res.json({
     user: { id: req.user.id, email: req.user.email, name: req.user.name, role: req.user.role, roleLabel: ROLES[req.user.role].label,
             mustChangePassword: !!req.user.must_change_password, recorderRole: RECORDER_ROLES[DEFAULT_RECORDER_ROLE_INDEX[req.user.role]] },
@@ -592,16 +599,16 @@ app.post('/api/projects', requireAuth, requirePerm('manageProjects'), (req, res)
   if (name.length < 2) return bad(res, 'Anna hankkeen nimi.');
   if (db.prepare('SELECT 1 FROM projects WHERE code = ?').get(code)) return bad(res, 'Tunnus on jo käytössä.');
   const sort = (db.prepare('SELECT MAX(sort) m FROM projects').get().m || 0) + 10;
-  const id = db.prepare('INSERT INTO projects (code, name, sort) VALUES (?, ?, ?)').run(code, name, sort).lastInsertRowid;
-  audit(req.user.id, 'project_create', 'project', id, { code, name });
+  const id = db.prepare('INSERT INTO projects (code, name, sort, digital) VALUES (?, ?, ?, ?)').run(code, name, sort, req.body.digital ? 1 : 0).lastInsertRowid;
+  audit(req.user.id, 'project_create', 'project', id, { code, name, digital: !!req.body.digital });
   res.status(201).json({ id });
 });
 app.put('/api/projects/:id', requireAuth, requirePerm('manageProjects'), (req, res) => {
   const id = Number(req.params.id);
   const name = String(req.body.name || '').trim();
   if (name.length < 2) return bad(res, 'Anna hankkeen nimi.');
-  const r = db.prepare('UPDATE projects SET name = ?, active = ?, sort = COALESCE(?, sort) WHERE id = ?')
-    .run(name, req.body.active === false ? 0 : 1, Number.isInteger(req.body.sort) ? req.body.sort : null, id);
+  const r = db.prepare('UPDATE projects SET name = ?, active = ?, digital = ?, sort = COALESCE(?, sort) WHERE id = ?')
+    .run(name, req.body.active === false ? 0 : 1, req.body.digital ? 1 : 0, Number.isInteger(req.body.sort) ? req.body.sort : null, id);
   if (!r.changes) return bad(res, 'Hanketta ei löydy.', 404);
   audit(req.user.id, 'project_update', 'project', id, req.body);
   res.json({ ok: true });
@@ -620,8 +627,15 @@ function validateQuestion(b, isNew) {
   }
   if (isNew && !/^[a-z0-9_]{2,40}$/.test(String(b.key || ''))) return 'Tunniste: 2–40 merkkiä, a–z, 0–9 tai _.';
   if (b.project_id != null && !db.prepare('SELECT 1 FROM projects WHERE id = ?').get(Number(b.project_id))) return 'Hanketta ei löydy.';
+  const dm = b.digital_mode || 'show';
+  if (!['show', 'hide', 'fixed'].includes(dm)) return 'Virheellinen digipalvelun asetus.';
+  if (dm === 'fixed') {
+    if (!['choice', 'multichoice'].includes(b.type)) return 'Automaattinen arvo on mahdollinen vain valintakysymyksissä.';
+    if (!(b.options || []).map(o => String(o).trim()).includes(String(b.digital_value || '').trim())) return 'Valitse digipalvelun automaattinen arvo vastausvaihtoehdoista.';
+  }
   return null;
 }
+const digitalCols = (b) => { const dm = b.digital_mode || 'show'; return [dm, dm === 'fixed' ? String(b.digital_value).trim() : null]; };
 function normalizeOptions(b) {
   if (['choice', 'multichoice'].includes(b.type)) return JSON.stringify([...new Set(b.options.map(o => String(o).trim()).filter(Boolean))]);
   if (b.type === 'rating') return JSON.stringify([1, 2, 3, 4, 5]);
@@ -639,10 +653,10 @@ app.post('/api/questions', requireAuth, requirePerm('manageQuestions'), (req, re
   if (db.prepare('SELECT 1 FROM questions WHERE key = ?').get(b.key)) return bad(res, 'Tunniste on jo käytössä.');
   const pid = b.project_id == null ? null : Number(b.project_id);
   const sort = (db.prepare('SELECT MAX(sort) m FROM questions WHERE project_id IS ?').get(pid).m || 0) + 10;
-  const id = db.prepare(`INSERT INTO questions (key, project_id, label, help, type, options, required, applies_to, free_text_warning, sort)
-                         VALUES (?,?,?,?,?,?,?,?,?,?)`)
+  const id = db.prepare(`INSERT INTO questions (key, project_id, label, help, type, options, required, applies_to, free_text_warning, sort, digital_mode, digital_value)
+                         VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`)
     .run(b.key, pid, b.label.trim(), (b.help || '').trim() || null, b.type, normalizeOptions(b), b.required ? 1 : 0, b.applies_to,
-         ['text', 'textarea'].includes(b.type) ? 1 : 0, sort).lastInsertRowid;
+         ['text', 'textarea'].includes(b.type) ? 1 : 0, sort, ...digitalCols(b)).lastInsertRowid;
   audit(req.user.id, 'question_create', 'question', id, { key: b.key });
   res.status(201).json({ id });
 });
@@ -650,13 +664,13 @@ app.put('/api/questions/:id', requireAuth, requirePerm('manageQuestions'), (req,
   const id = Number(req.params.id);
   const q = db.prepare('SELECT * FROM questions WHERE id = ?').get(id);
   if (!q) return bad(res, 'Kysymystä ei löydy.', 404);
-  const b = { ...req.body, project_id: q.project_id };     // hanke ja tunniste ovat pysyviä
+  const b = { digital_mode: q.digital_mode, digital_value: q.digital_value, ...req.body, project_id: q.project_id };     // hanke ja tunniste ovat pysyviä
   const err = validateQuestion(b, false); if (err) return bad(res, err);
   const answered = db.prepare('SELECT COUNT(*) n FROM encounter_answers WHERE question_id = ?').get(id).n;
   if (answered && b.type !== q.type) return bad(res, 'Kysymystyyppiä ei voi muuttaa, kun kysymykseen on jo vastattu. Lisää uusi kysymys ja poista vanha käytöstä.');
-  db.prepare(`UPDATE questions SET label=?, help=?, type=?, options=?, required=?, applies_to=?, active=?, sort=COALESCE(?, sort), updated_at=datetime('now') WHERE id=?`)
+  db.prepare(`UPDATE questions SET label=?, help=?, type=?, options=?, required=?, applies_to=?, active=?, digital_mode=?, digital_value=?, sort=COALESCE(?, sort), updated_at=datetime('now') WHERE id=?`)
     .run(b.label.trim(), (b.help || '').trim() || null, b.type, normalizeOptions(b), b.required ? 1 : 0, b.applies_to,
-         b.active === false ? 0 : 1, Number.isInteger(b.sort) ? b.sort : null, id);
+         b.active === false ? 0 : 1, ...digitalCols(b), Number.isInteger(b.sort) ? b.sort : null, id);
   audit(req.user.id, 'question_update', 'question', id, { label: b.label, active: b.active });
   res.json({ ok: true });
 });

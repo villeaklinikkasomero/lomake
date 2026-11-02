@@ -197,6 +197,20 @@ if (!db.prepare("PRAGMA table_info(users)").all().some(c => c.name === 'is_test'
   db.exec('ALTER TABLE users ADD COLUMN is_test INTEGER NOT NULL DEFAULT 0');
 }
 
+// Migraatio: digipalvelut. Digipalvelun hankkeissa sijainti täytetään automaattisesti
+// ("Digialustalla") ja kaupunki/kadunnimi piilotetaan. Käytös on kysymyskohtainen:
+//   digital_mode = 'show' (näytetään) | 'hide' (piilotetaan) | 'fixed' (täytetään arvolla digital_value)
+if (!db.prepare("PRAGMA table_info(projects)").all().some(c => c.name === 'digital')) {
+  db.exec('ALTER TABLE projects ADD COLUMN digital INTEGER NOT NULL DEFAULT 0');
+  db.prepare("UPDATE projects SET digital = 1 WHERE code IN ('AK21', 'DOPINGLINKKI', 'LASINEN')").run();
+}
+if (!db.prepare("PRAGMA table_info(questions)").all().some(c => c.name === 'digital_mode')) {
+  db.exec("ALTER TABLE questions ADD COLUMN digital_mode TEXT NOT NULL DEFAULT 'show'");
+  db.exec('ALTER TABLE questions ADD COLUMN digital_value TEXT');
+  db.prepare("UPDATE questions SET digital_mode = 'fixed', digital_value = 'Digialustalla' WHERE key = 'sijainti'").run();
+  db.prepare("UPDATE questions SET digital_mode = 'hide' WHERE key IN ('kaupunki', 'kadunnimi')").run();
+}
+
 function audit(userId, action, entity, entityId, details) {
   db.prepare('INSERT INTO audit_log (user_id, action, entity, entity_id, details) VALUES (?,?,?,?,?)')
     .run(userId ?? null, action, entity ?? null, entityId == null ? null : String(entityId), details ? JSON.stringify(details) : null);

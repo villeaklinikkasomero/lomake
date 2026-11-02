@@ -247,6 +247,9 @@ function renderEncounterForm(opts) {
     referrals: new Set(),
   };
   const qs = opts.questions;
+  // Digipalvelun hankkeessa osa kysymyksistä piilotetaan tai täytetään automaattisesti (palvelin asettaa arvon)
+  const isDigital = () => { const p = projects.find(x => x.id === s.project_id) || me.projects.find(x => x.id === s.project_id); return !!(p && p.digital); };
+  const digitalHidden = (q) => isDigital() && (q.digital_mode === 'hide' || q.digital_mode === 'fixed');
 
   const errBox = h('div', { class: 'notice err', hidden: true, role: 'alert' });
   const dynamic = h('div');
@@ -313,10 +316,13 @@ function renderEncounterForm(opts) {
       if (opts.allowClient) parts.push(renderClientSection(s, opts));
     }
 
-    const visible = (q) => q.applies_to === 'kaikki' || q.applies_to === s.encounter_type;
+    const visible = (q) => (q.applies_to === 'kaikki' || q.applies_to === s.encounter_type) && !digitalHidden(q);
     const common = qs.filter(q => q.project_id == null && visible(q));
+    const fixed = qs.filter(q => (q.applies_to === 'kaikki' || q.applies_to === s.encounter_type) && isDigital() && q.digital_mode === 'fixed' && q.digital_value);
     if (common.length) parts.push(h('section', { class: 'card section' },
       h('div', { class: 'section-title' }, h('h2', null, 'Yhteiset kysymykset')),
+      fixed.length ? h('p', { class: 'notice info small' }, 'Digipalvelu: ',
+        fixed.map((q, i) => [i ? ', ' : '', `${q.label.toLowerCase()} kirjataan automaattisesti (”${q.digital_value}”)`]), '.') : null,
       common.map(q => renderQuestion(q, s.answers))));
 
     if (s.project_id) {
@@ -337,7 +343,7 @@ function renderEncounterForm(opts) {
     clearFieldErrors(form);
     const problem = clientValidate();
     if (problem) { showFieldError(problem[1], problem[0], errBox); return; }
-    const visible = (q) => (q.applies_to === 'kaikki' || q.applies_to === s.encounter_type) && (q.project_id == null || q.project_id === s.project_id);
+    const visible = (q) => (q.applies_to === 'kaikki' || q.applies_to === s.encounter_type) && (q.project_id == null || q.project_id === s.project_id) && !digitalHidden(q);
     const answers = {};
     for (const q of qs) if (visible(q) && s.answers[q.key] != null && s.answers[q.key] !== '') answers[q.key] = s.answers[q.key];
     const payload = { project_id: s.project_id, encounter_date: s.encounter_date, encounter_type: s.encounter_type,
@@ -383,7 +389,7 @@ function renderEncounterForm(opts) {
       if (s.person_count !== '' && s.person_count != null) { const p = Number(s.person_count); if (!Number.isInteger(p) || p < 1 || p > 9999) return ['Osallistujien määrä on oltava 1–9999 tai tyhjä.', 'fw-persons']; }
     }
     for (const q of qs) {
-      if (!(q.applies_to === 'kaikki' || q.applies_to === s.encounter_type) || !(q.project_id == null || q.project_id === s.project_id)) continue;
+      if (!(q.applies_to === 'kaikki' || q.applies_to === s.encounter_type) || !(q.project_id == null || q.project_id === s.project_id) || digitalHidden(q)) continue;
       const v = s.answers[q.key];
       const empty = v == null || v === '' || (Array.isArray(v) && !v.length);
       if (q.required && empty) return [`Vastaa kysymykseen: ${q.label}`, 'fw-' + q.key];
@@ -1102,18 +1108,21 @@ async function viewProjects() {
     const code = h('input', { type: 'text', id: 'p-code', value: p ? p.code : '', disabled: !isNew, maxlength: '20' });
     const name = h('input', { type: 'text', id: 'p-name', value: p ? p.name : '' });
     const active = h('input', { type: 'checkbox', checked: p ? !!p.active : true });
+    const digital = h('input', { type: 'checkbox', checked: p ? !!p.digital : false });
     const msg = h('div', { class: 'notice err', hidden: true });
     editorBox.replaceChildren(h('div', { class: 'card editor' }, h('h2', null, isNew ? 'Uusi hanke' : 'Muokkaa hanketta'),
       h('div', { class: 'row' },
         h('div', { class: 'field' }, h('label', { for: 'p-code' }, 'Tunnus'), h('p', { class: 'help' }, 'Pysyvä, esim. KATUKLINIKKA. Ei voi muuttaa myöhemmin.'), code),
         h('div', { class: 'field' }, h('label', { for: 'p-name' }, 'Nimi lomakkeella'), h('p', { class: 'help' }, 'Näkyy kirjaajille ja raporteissa.'), name)),
+      h('div', { class: 'field' }, h('label', { class: 'switch' }, digital, 'Digipalvelu'),
+        h('p', { class: 'help' }, 'Kohtaamiset tapahtuvat digialustalla: sijainti kirjataan automaattisesti, eikä kaupunkia ja kadunnimeä kysytä. Kysymyskohtaisen käytöksen voi säätää Kysymykset-välilehdellä.')),
       !isNew ? h('div', { class: 'field' }, h('label', { class: 'switch' }, active, 'Käytössä (näkyy lomakkeella)'),
         h('p', { class: 'help' }, 'Käytöstä poistetun hankkeen vanhat kirjaukset säilyvät raporteissa.')) : null,
       msg, h('div', { class: 'actions' },
         h('button', { class: 'btn btn-primary', type: 'button', onclick: async () => {
           try {
-            if (isNew) await api('/projects', { method: 'POST', body: { code: code.value, name: name.value } });
-            else await api('/projects/' + p.id, { method: 'PUT', body: { name: name.value, active: active.checked } });
+            if (isNew) await api('/projects', { method: 'POST', body: { code: code.value, name: name.value, digital: digital.checked } });
+            else await api('/projects/' + p.id, { method: 'PUT', body: { name: name.value, active: active.checked, digital: digital.checked } });
             state.form = null; await loadMe(); toast('Tallennettu.'); viewProjects();
           } catch (ex) { msg.textContent = ex.message; msg.hidden = false; }
         } }, 'Tallenna'),
@@ -1127,7 +1136,7 @@ async function viewProjects() {
     h('div', { class: 'table-wrap' }, h('table', null,
       h('thead', null, h('tr', null, h('th', null, 'Hanke'), h('th', null, 'Tunnus'), h('th', { class: 'num' }, 'Kirjauksia'), h('th', null, 'Tila'))),
       h('tbody', null, projects.map(p => h('tr', { class: 'clickable', tabindex: '0', onclick: () => openEditor(p), onkeydown: (e) => { if (e.key === 'Enter') openEditor(p); } },
-        h('td', null, h('strong', null, p.name)), h('td', { class: 'small' }, p.code), h('td', { class: 'num' }, fmtNum(p.encounter_rows)),
+        h('td', null, h('strong', null, p.name), p.digital ? [' ', h('span', { class: 'badge blue' }, 'digipalvelu')] : null), h('td', { class: 'small' }, p.code), h('td', { class: 'num' }, fmtNum(p.encounter_rows)),
         h('td', null, p.active ? h('span', { class: 'badge green' }, 'Käytössä') : h('span', { class: 'badge grey' }, 'Ei käytössä'))))))));
 }
 
@@ -1151,6 +1160,19 @@ async function viewQuestions() {
     const type = h('select', { id: 'q-type', disabled: !isNew && q.answer_count > 0 }, Object.entries(QTYPES).map(([k, v]) => h('option', { value: k, selected: k === q.type }, v)));
     const applies = h('select', { id: 'q-applies' }, Object.entries(APPLIES).map(([k, v]) => h('option', { value: k, selected: k === q.applies_to }, v)));
     const required = h('input', { type: 'checkbox', checked: q.required });
+    const dmode = h('select', { id: 'q-dmode' }, [['show', 'Näytetään'], ['hide', 'Piilotetaan'], ['fixed', 'Täytetään automaattisesti']]
+      .map(([v, t]) => h('option', { value: v, selected: (q.digital_mode || 'show') === v }, t)));
+    const dvalue = h('select', { id: 'q-dvalue' });
+    const dvalueField = h('div', { class: 'field' }, h('label', { for: 'q-dvalue' }, 'Automaattinen arvo'), dvalue);
+    const syncDigital = () => {
+      const fixedOk = ['choice', 'multichoice'].includes(type.value);
+      dmode.querySelector('option[value=fixed]').disabled = !fixedOk;
+      if (!fixedOk && dmode.value === 'fixed') dmode.value = 'hide';
+      dvalueField.hidden = dmode.value !== 'fixed';
+      const cur = dvalue.value || q.digital_value;
+      dvalue.replaceChildren(...opts.filter(o => String(o).trim()).map(o => h('option', { value: o, selected: o === cur }, o)));
+    };
+    dmode.addEventListener('change', syncDigital); type.addEventListener('change', syncDigital);
     const active = h('input', { type: 'checkbox', checked: q.active });
     const optsBox = h('div', { class: 'options' });
     let opts = Array.isArray(q.options) && ['choice', 'multichoice'].includes(q.type) ? [...q.options] : ['', ''];
@@ -1162,6 +1184,7 @@ async function viewQuestions() {
         h('button', { type: 'button', class: 'btn btn-secondary btn-sm', disabled: i === 0, onclick: () => { [opts[i - 1], opts[i]] = [opts[i], opts[i - 1]]; renderOpts(); } }, '↑'),
         h('button', { type: 'button', class: 'btn btn-danger btn-sm', onclick: () => { opts.splice(i, 1); renderOpts(); } }, 'Poista'))),
         h('div', null, h('button', { type: 'button', class: 'btn btn-secondary btn-sm', onclick: () => { opts.push(''); renderOpts(); } }, '+ Lisää vaihtoehto')));
+      syncDigital();
     };
     const optField = h('div', { class: 'field' }, h('div', { class: 'label' }, 'Vastausvaihtoehdot'),
       q.answer_count ? h('p', { class: 'help' }, 'Vanhat vastaukset säilyvät sellaisinaan. Jos muutat vaihtoehdon tekstiä, aiemmat vastaukset jäävät vanhalle tekstille.') : null, optsBox);
@@ -1178,20 +1201,25 @@ async function viewQuestions() {
         h('div', { class: 'field' }, h('label', { for: 'q-applies' }, 'Näytetään'), applies),
         h('div', { class: 'field' }, h('label', { for: 'q-key' }, 'Pysyvä tunniste'), key, h('p', { class: 'help small' }, 'Raportoinnin sarakenimi. Ei muutu myöhemmin.'))),
       optField,
+      h('div', { class: 'row' },
+        h('div', { class: 'field' }, h('label', { for: 'q-dmode' }, 'Digipalvelun hankkeissa'),
+          h('p', { class: 'help' }, 'Esim. sijainti täytetään automaattisesti ja kaupunki piilotetaan.'), dmode), dvalueField),
       h('div', { class: 'actions field' }, h('label', { class: 'switch' }, required, 'Pakollinen'),
         !isNew ? h('label', { class: 'switch' }, active, 'Käytössä lomakkeella') : null),
       msg,
       h('div', { class: 'actions' },
         h('button', { class: 'btn btn-primary', type: 'button', onclick: async () => {
           const body = { key: key.value, project_id: q.project_id ?? null, label: label.value, help: help.value, type: type.value, applies_to: applies.value,
-            required: required.checked, active: active.checked, options: opts };
+            required: required.checked, active: active.checked, options: opts,
+            digital_mode: dmode.value, digital_value: dmode.value === 'fixed' ? dvalue.value : null };
           try {
             if (isNew) await api('/questions', { method: 'POST', body }); else await api('/questions/' + q.id, { method: 'PUT', body });
             state.form = null; toast('Tallennettu.'); viewQuestions();
           } catch (ex) { msg.textContent = ex.message; msg.hidden = false; }
         } }, 'Tallenna'),
         h('button', { class: 'btn btn-secondary', type: 'button', onclick: () => editorBox.replaceChildren() }, 'Peruuta'))));
-    renderOpts();
+    optsBox.addEventListener('input', syncDigital);
+    renderOpts(); syncDigital();
     editorBox.scrollIntoView({ behavior: 'smooth', block: 'start' });
     label.focus();
   }
@@ -1210,6 +1238,8 @@ async function viewQuestions() {
       h('div', { class: 'q-main' }, h('strong', null, q.label), q.required ? h('span', { class: 'req' }, ' *') : null,
         h('div', { class: 'q-meta' }, h('span', { class: 'badge' }, QTYPES[q.type]), q.applies_to !== 'kaikki' ? h('span', { class: 'badge blue' }, APPLIES[q.applies_to]) : null,
           !q.active ? h('span', { class: 'badge grey' }, 'Ei käytössä') : null, h('span', { class: 'badge grey' }, `${fmtNum(q.answer_count)} vastausta`),
+          q.digital_mode === 'hide' ? h('span', { class: 'badge' }, 'Digipalvelussa piilotettu') : null,
+          q.digital_mode === 'fixed' ? h('span', { class: 'badge' }, `Digipalvelussa: ${q.digital_value}`) : null,
           h('span', { class: 'small muted' }, q.key))),
       h('div', { class: 'q-ctrl' },
         h('button', { class: 'btn btn-secondary btn-sm', type: 'button', 'aria-label': 'Siirrä ylös', disabled: i === 0, onclick: () => move(list, i, -1) }, '↑'),
@@ -1218,7 +1248,7 @@ async function viewQuestions() {
       : h('p', { class: 'muted small' }, 'Ei hankekohtaisia kysymyksiä.'));
 
   $app.replaceChildren(adminTabs('#/hallinta/kysymykset'),
-    h('div', { class: 'notice info' }, 'Lomakkeen kiinteät perustiedot (ajankohta, hanke, kirjaajan rooli, yksilö/ryhmä, kohtaamisten ja osallistujien määrä sekä nimimerkki) ovat aina mukana. ',
+    h('div', { class: 'notice info' }, 'Lomakkeen kiinteät perustiedot (ajankohta, hanke, kirjaajan rooli, yksilö/ryhmä, kohtaamisten ja osallistujien määrä, asiakastunniste ja palveluohjaus) ovat aina mukana. Digipalvelun hankkeissa kysymys voidaan piilottaa tai täyttää automaattisesti (Hallinta → Hankkeet → Digipalvelu). ',
       'Kysymyksiä ei poisteta, vaan ne otetaan pois käytöstä – näin aiempien vuosien raportointi säilyy ehjänä.'),
     editorBox,
     groupBlock('Yhteiset kysymykset', null, questions.filter(q => q.project_id == null)),

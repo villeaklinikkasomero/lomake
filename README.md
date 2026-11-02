@@ -12,7 +12,7 @@ ADMIN_EMAIL=oma@osoite.fi SESSION_SECRET=pitka-satunnainen-merkkijono npm start
 
 Ensimmäisellä käynnistyksellä luodaan admin-käyttäjä. Väliaikainen salasana tulostuu konsoliin (tai sen voi antaa `ADMIN_PASSWORD`-muuttujalla), ja se vaihdetaan ensimmäisellä kirjautumisella. Muut asetukset löytyvät tiedostosta `.env.example`. Docker: `docker build -t kohtaamiset . && docker run -p 3000:3000 -v kohtaamiset:/data -e SESSION_SECRET=… kohtaamiset`.
 
-Testit: `npm test` (16 testiä: roolit, validointi, tunnistetietojen esto, Excel-vienti ja kysymysten versiointi).
+Testit: `npm test` (17 testiä: roolit, validointi, tunnistetietojen esto, Excel-vienti ja kysymysten versiointi).
 
 ## Roolit
 
@@ -37,6 +37,10 @@ Oikeudet on koottu yhteen tiedostoon, `src/permissions.js`. Jos esimerkiksi hank
 - **Yhteiset kysymykset** ja **hankekohtaiset kysymykset** näytetään valitun hankkeen ja kirjaustyypin mukaan (”Näytetään: kaikki / vain yksilö / vain ryhmä”).
 - Vapaatekstikentissä muistutetaan tunnistetiedoista. Henkilötunnukselta, sähköpostiosoitteelta tai puhelinnumerolta näyttävä teksti estetään sekä selaimessa että palvelimella.
 - ”Kirjaa seuraava” säilyttää hankkeen, päivän, roolin ja tyypin. Tämä nopeuttaa sarjakirjaamista esimerkiksi katutyössä. Lomake toimii myös puhelimella.
+
+## Digipalvelut
+
+Hankkeelle voi asettaa kohdassa Hallinta → Hankkeet asetuksen **Digipalvelu**. Asetus on oletuksena päällä hankkeilla Ak21 (Päihdelinkki ja Nuortenlinkki), Dopinglinkki ja Lasinen lapsuus. Digipalvelun kirjauksissa sijainniksi tallentuu automaattisesti ”Digialustalla”, eikä kaupunkia ja kadunnimeä kysytä. Käytöksen voi säätää kysymyskohtaisesti kohdassa Hallinta → Kysymykset → **Digipalvelun hankkeissa**: *Näytetään*, *Piilotetaan* tai *Täytetään automaattisesti*. Automaattisen arvon asettaa palvelin, joten lomakkeelta lähetetty arvo ei voi ohittaa sitä.
 
 ## Kysymysten ylläpito (admin)
 

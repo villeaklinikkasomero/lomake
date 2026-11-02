@@ -355,3 +355,27 @@ test('säilytysaika katkaisee vanhan linkityksen', async () => {
   assert.equal(db.prepare('SELECT client_id FROM encounters WHERE id = ?').get(r.data.id).client_id, null);
   assert.equal(db.prepare('SELECT status FROM referrals WHERE encounter_id = ?').get(r.data.id).status, 'ei_seurattavissa');
 });
+
+test('digipalvelu: sijainti automaattisesti, kaupunki ja katu eivät tallennu', async () => {
+  const p = P();
+  const digi = db.prepare('SELECT code FROM projects WHERE digital = 1 ORDER BY code').all().map(r => r.code);
+  assert.deepEqual(digi, ['AK21', 'DOPINGLINKKI', 'LASINEN']);
+  const r = await users.tiimivetaja('POST', '/encounters', basePayload(p.AK21, { answers: { tyontekijan_arvio: '4', sijainti: 'Kadulla tai muulla julkisella paikalla', kaupunki: 'Tampere', kadunnimi: 'Hämeenkatu' } }));
+  assert.equal(r.status, 201, JSON.stringify(r.data));
+  const d = await users.tiimivetaja('GET', '/encounters/' + r.data.id);
+  assert.equal(d.data.encounter.answers.sijainti, 'Digialustalla');
+  assert.equal(d.data.encounter.answers.kaupunki, undefined);
+  assert.equal(d.data.encounter.answers.kadunnimi, undefined);
+  // Ei-digitaalinen hanke: arvot tallentuvat normaalisti
+  const r2 = await users.tiimivetaja('POST', '/encounters', basePayload(p.KATUKLINIKKA, { answers: { tyontekijan_arvio: '4', sijainti: 'Kadulla tai muulla julkisella paikalla', kaupunki: 'Tampere' } }));
+  const d2 = await users.tiimivetaja('GET', '/encounters/' + r2.data.id);
+  assert.equal(d2.data.encounter.answers.kaupunki, 'Tampere');
+  // Kysymyksen muokkaus ilman digiasetusta ei nollaa sitä
+  const q = db.prepare("SELECT * FROM questions WHERE key = 'kaupunki'").get();
+  await users.admin('PUT', '/questions/' + q.id, { label: q.label, help: q.help, type: q.type, applies_to: q.applies_to, options: [] });
+  assert.equal(db.prepare("SELECT digital_mode FROM questions WHERE key = 'kaupunki'").get().digital_mode, 'hide');
+  // Automaattisen arvon on oltava vaihtoehtojen joukossa
+  const sq = db.prepare("SELECT * FROM questions WHERE key = 'sijainti'").get();
+  const bad = await users.admin('PUT', '/questions/' + sq.id, { label: sq.label, type: 'choice', applies_to: 'kaikki', options: JSON.parse(sq.options), digital_mode: 'fixed', digital_value: 'Kuussa' });
+  assert.equal(bad.status, 400);
+});
