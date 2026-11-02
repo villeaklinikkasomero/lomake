@@ -17,22 +17,23 @@ const ROLES = {
 //  exportScope   – Excel-vienti: 'all' | 'projects' | 'none'
 //  staffScope    – työntekijäkohtainen seuranta: 'all' | 'projects' | 'none'
 //  pathScope     – asiakaspolut ja palveluohjaukset (koosteet): 'all' | 'projects' | 'none'
+//  dashScope     – Tilastot-näkymä (koosteet): 'all' | 'projects' | 'none'
 //  manageUsers / manageProjects / manageQuestions – ylläpito
 const PERMISSIONS = {
   admin: {
-    record: true, viewScope: 'all', editScope: 'all', deleteScope: 'all', exportScope: 'all', staffScope: 'all', pathScope: 'all',
+    record: true, viewScope: 'all', editScope: 'all', deleteScope: 'all', exportScope: 'all', staffScope: 'all', pathScope: 'all', dashScope: 'all',
     manageUsers: true, manageProjects: true, manageQuestions: true,
   },
   tiimivetaja: {
-    record: true, viewScope: 'projects', editScope: 'projects', deleteScope: 'projects', exportScope: 'projects', staffScope: 'projects', pathScope: 'projects',
+    record: true, viewScope: 'projects', editScope: 'projects', deleteScope: 'projects', exportScope: 'projects', staffScope: 'projects', pathScope: 'projects', dashScope: 'projects',
     manageUsers: false, manageProjects: false, manageQuestions: false,
   },
   hanketyontekija: {
-    record: true, viewScope: 'own', editScope: 'none', deleteScope: 'none', exportScope: 'none', staffScope: 'none', pathScope: 'none',
+    record: true, viewScope: 'own', editScope: 'none', deleteScope: 'none', exportScope: 'none', staffScope: 'none', pathScope: 'none', dashScope: 'projects',
     manageUsers: false, manageProjects: false, manageQuestions: false,
   },
   tuntityontekija: {
-    record: true, viewScope: 'none', editScope: 'none', deleteScope: 'none', exportScope: 'none', staffScope: 'none', pathScope: 'none',
+    record: true, viewScope: 'none', editScope: 'none', deleteScope: 'none', exportScope: 'none', staffScope: 'none', pathScope: 'none', dashScope: 'none',
     manageUsers: false, manageProjects: false, manageQuestions: false,
   },
 };

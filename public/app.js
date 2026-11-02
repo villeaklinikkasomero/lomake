@@ -76,6 +76,7 @@ const ROUTES = [
   { re: /^#\/vienti$/, view: viewExport, perm: (p) => p.exportScope !== 'none' },
   { re: /^#\/tyontekijat$/, view: viewStaff, perm: (p) => p.staffScope !== 'none' },
   { re: /^#\/asiakaspolut$/, view: viewPaths, perm: (p) => p.pathScope !== 'none' },
+  { re: /^#\/tilastot$/, view: viewDashboard, perm: (p) => p.dashScope !== 'none' },
   { re: /^#\/hallinta\/ohjauspalvelut$/, view: viewServices, perm: (p) => p.manageQuestions },
   { re: /^#\/tyontekijat\/(\d+)$/, view: viewStaffDetail, perm: (p) => p.staffScope !== 'none' },
   { re: /^#\/hallinta\/kayttajat$/, view: viewUsers, perm: (p) => p.manageUsers },
@@ -113,6 +114,7 @@ function renderNav(hash) {
   const adminHref = p.manageQuestions ? '#/hallinta/kysymykset' : null;
   nav.replaceChildren(...[
     link('#/kirjaa', 'Uusi kirjaus'),
+    p.dashScope !== 'none' ? link('#/tilastot', 'Tilastot') : null,
     p.viewScope !== 'none' ? link('#/kirjaukset', p.viewScope === 'own' ? 'Omat kirjaukset' : 'Kirjaukset') : null,
     p.staffScope !== 'none' ? link('#/tyontekijat', 'Työntekijät') : null,
     p.pathScope !== 'none' ? link('#/asiakaspolut', 'Asiakaspolut') : null,
@@ -885,6 +887,215 @@ function hBars(items, opts = {}) {
     h('div', { class: 'hbar-label' }, i.label),
     h('div', { class: 'hbar-track' }, i.value > 0 ? (() => { const el = h('div', { class: 'hbar-fill' }); el.style.width = `${(i.value / max) * 100}%`; return el; })() : null),
     h('div', { class: 'hbar-value' }, fmtNum(i.value)))));
+}
+
+// ---------------------------------------------------------------------------
+// Tilastot (dashboard) – määrittelydokumentin mallin mukaan
+// ---------------------------------------------------------------------------
+const dashState = { from: '', to: '', project_id: '', types: ['yksilo', 'ryhma'], role: '', ika: '', sukupuoli: '' };
+const SERIES = [
+  { key: 'encounters', label: 'Kohtaamiset yhteensä', cls: 's1' },
+  { key: 'yksilo', label: 'Yksilökohtaaminen', cls: 's2' },
+  { key: 'ryhma', label: 'Ryhmä', cls: 's3' },
+];
+const svgEl = (tag, attrs) => { const el = document.createElementNS('http://www.w3.org/2000/svg', tag); for (const [k, v] of Object.entries(attrs || {})) el.setAttribute(k, v); return el; };
+const infoTip = (text) => h('details', { class: 'info' }, h('summary', { 'aria-label': 'Lisätietoa' }, 'i'), h('div', { class: 'info-body' }, text));
+function changeBadge(cur, prev) {
+  if (!prev) return h('p', { class: 'kpi-change muted' }, cur ? 'ei vertailutietoa edelliseltä jaksolta' : '');
+  const pct = Math.round(((cur - prev) / prev) * 100);
+  const dir = pct > 0 ? 'up' : pct < 0 ? 'down' : 'flat';
+  return h('p', { class: 'kpi-change ' + dir }, h('strong', null, `${pct > 0 ? '↑ +' : pct < 0 ? '↓ ' : '→ '}${pct} %`), h('span', null, ' edelliseen vertailujaksoon'));
+}
+
+async function viewDashboard() {
+  const me = state.me; const p = me.permissions;
+  if (!dashState.from) { dashState.from = me.today.slice(0, 4) + '-01-01'; dashState.to = me.today; }
+  const body = h('div', { class: 'dash-body' });
+  const updated = h('p', { class: 'dash-updated' });
+  let opts = null;
+  const filterBox = h('div', { class: 'card dash-filters' });
+  let filtersOpen = window.matchMedia('(min-width: 641px)').matches;
+
+  function query() {
+    const q = new URLSearchParams({ from: dashState.from, to: dashState.to, types: dashState.types.join(',') });
+    for (const k of ['project_id', 'role', 'ika', 'sukupuoli']) if (dashState[k]) q.set(k, dashState[k]);
+    return q;
+  }
+  function drawFilters() {
+    const sel = (key, id, label, items, allLabel) => h('div', { class: 'field' }, h('label', { for: id }, label),
+      (() => { const el = h('select', { id }, h('option', { value: '' }, allLabel), items.map(([v, t]) => h('option', { value: v, selected: String(dashState[key]) === String(v) }, t)));
+        el.addEventListener('change', () => { dashState[key] = el.value; load(); }); return el; })());
+    const date = (key, id, label) => h('div', { class: 'field' }, h('label', { for: id }, label),
+      (() => { const el = h('input', { type: 'date', id, value: dashState[key] }); el.addEventListener('change', () => { if (el.value) { dashState[key] = el.value; load(); } }); return el; })());
+    const y = me.today.slice(0, 4);
+    const presets = [['Tämä vuosi', `${y}-01-01`, me.today], ['Edellinen vuosi', `${+y - 1}-01-01`, `${+y - 1}-12-31`],
+      ['30 pv', isoDaysAgo(29), me.today], ['Tämä kk', me.today.slice(0, 8) + '01', me.today]];
+    const typeBox = (v, t) => { const el = h('input', { type: 'checkbox', checked: dashState.types.includes(v) });
+      el.addEventListener('change', () => { const set = new Set(dashState.types); el.checked ? set.add(v) : set.delete(v);
+        if (!set.size) { el.checked = true; return; } dashState.types = ['yksilo', 'ryhma'].filter(x => set.has(x)); load(); });
+      return h('label', { class: 'opt' }, el, h('span', null, t)); };
+    const active = ['project_id', 'role', 'ika', 'sukupuoli'].filter(k => dashState[k]).length + (dashState.types.length < 2 ? 1 : 0);
+    const det = h('details', { class: 'dash-filter-details', open: filtersOpen || null },
+      h('summary', null, `Rajaukset · ${fmtDate(dashState.from)}–${fmtDate(dashState.to)}${active ? ` · ${active} lisärajausta` : ''}`));
+    det.addEventListener('toggle', () => { filtersOpen = det.open; });
+    filterBox.replaceChildren(det);
+    det.append(
+      h('div', { class: 'filters dash-filter-grid' },
+        date('from', 'd-from', 'Alkaen'), date('to', 'd-to', 'Päättyen'),
+        me.projects.length > 1 ? sel('project_id', 'd-proj', 'Hanke', me.projects.map(x => [x.id, x.name]), 'Kaikki hankkeet') : null,
+        sel('role', 'd-role', 'Kirjaajan rooli', opts.roles.map(r => [r, r]), 'Kaikki'),
+        sel('ika', 'd-ika', 'Ikä (arvio)', opts.ika.map(r => [r, r]), 'Kaikki'),
+        sel('sukupuoli', 'd-sp', 'Sukupuoli', opts.sukupuoli.map(r => [r, r]), 'Kaikki')),
+      h('div', { class: 'dash-filter-row' },
+        h('div', { class: 'actions presets' }, presets.map(([t, f, to]) => h('button', { type: 'button',
+          class: 'btn btn-sm ' + (dashState.from === f && dashState.to === to ? 'btn-primary' : 'btn-secondary'),
+          onclick: () => { dashState.from = f; dashState.to = to; load(); } }, t))),
+        h('div', { class: 'type-checks', role: 'group', 'aria-label': 'Kohtaamisen tyyppi' }, h('span', { class: 'label' }, 'Kohtaamisen tyyppi'),
+          typeBox('yksilo', 'Yksilökohtaaminen'), typeBox('ryhma', 'Ryhmä')),
+        p.exportScope !== 'none' ? h('a', { class: 'btn btn-secondary', href: '/api/export?' + new URLSearchParams({ from: dashState.from, to: dashState.to, projects: dashState.project_id || '' }),
+          title: 'Raakadata valitulta aikaväliltä ja hankkeelta (muut rajaukset eivät koske vientiä)' }, '⤓ Lataa raakadata (Excel)') : null));
+  }
+
+  async function load() {
+    body.classList.add('refreshing');
+    let d;
+    try { d = await api('/dashboard?' + query()); } catch (ex) { body.classList.remove('refreshing'); toast(ex.message, true); return; }
+    opts = d.options; drawFilters();
+    updated.textContent = d.updated ? `Päivitetty viimeksi ${fmtDateTime(d.updated)}` : '';
+    const T = d.totals, P = d.previous;
+    const prevLabel = `${fmtDate(d.period.prevFrom)}–${fmtDate(d.period.prevTo)}`;
+    const kpi1 = h('div', { class: 'card kpi' }, h('div', { class: 'kpi-head' }, h('h2', null, 'Kohtaamiset yhteensä'),
+        infoTip(`Kaikkien kirjausten kohtaamisten summa (ryhmäkirjaukset mukaan lukien). ${fmtNum(T.rows)} lomaketallennusta. Vertailujakso ${prevLabel}: ${fmtNum(P.encounters)}.`)),
+      h('p', { class: 'kpi-value' }, fmtNum(T.encounters)), changeBadge(T.encounters, P.encounters));
+    const kpi2 = h('div', { class: 'card kpi kpi-alt' }, h('div', { class: 'kpi-head' }, h('h2', null, 'Eri henkilöiden määrä (arvio)'),
+        infoTip(`Arvio = tunnistetut asiakkaat (${fmtNum(T.identified)}) + ryhmien ilmoitetut osallistujat (${fmtNum(T.group_persons)}). Mukana eivät ole ilman tunnistetta kirjatut yksilökohtaamiset (${fmtNum(T.unidentified)}) eivätkä ryhmät, joiden osallistujamäärä puuttuu (${fmtNum(T.groups_without_count)}). Sama henkilö voi sisältyä useamman ryhmän lukuun. Vertailujakso ${prevLabel}: ${fmtNum(P.persons)}.`)),
+      h('p', { class: 'kpi-value' }, fmtNum(T.persons)), changeBadge(T.persons, P.persons),
+      T.unidentified ? h('p', { class: 'kpi-note' }, `+ ${fmtNum(T.unidentified)} yksilökohtaamista ilman tunnistetta`) : null);
+    const donutCard = h('div', { class: 'card' }, h('div', { class: 'kpi-head' }, h('h2', null, 'Kohtaamisen tyyppi'),
+      infoTip('Kohtaamisten määrä yksilö- ja ryhmäkirjauksissa.')), donut([{ label: 'Yksilökohtaaminen', value: T.yksilo, cls: 's1' }, { label: 'Ryhmä', value: T.ryhma, cls: 's2' }]));
+
+    const R = d.ratings;
+    const ratingBlock = (title, r) => h('div', { class: 'rating-sum' }, h('p', { class: 'kpi-value small-kpi' }, fmtAvg(r.avg)),
+      h('p', { class: 'muted small' }, `${title} · ${fmtNum(r.n)} arviota`), r.n ? hBars(r.dist.map(x => ({ label: String(x.value), value: x.n })), { compact: true, unit: 'arviota' }) : null);
+    body.replaceChildren(...[
+      !T.rows ? h('div', { class: 'notice info' }, 'Valituilla rajauksilla ei ole kirjauksia.') : null,
+      h('div', { class: 'dash-row r1' }, kpi1, kpi2, donutCard),
+      h('div', { class: 'dash-row r2' },
+        h('div', { class: 'card' }, h('div', { class: 'kpi-head' }, h('h2', null, 'Kohtaamisten määrä kuukausittain'),
+          infoTip('Kohtaamiset kohtaamisen ajankohdan mukaan. Vie osoitin kaavion päälle nähdäksesi kuukauden luvut.')),
+          lineChart(fillMonths(d.monthly, d.period.from, d.period.to), dashState.types)),
+        h('div', { class: 'card' }, h('div', { class: 'kpi-head' }, h('h2', null, 'Kohtaamiset hankkeittain'),
+          infoTip('Kohtaamisten määrä hankkeittain valituilla rajauksilla.')),
+          d.byProject.length ? hBars(d.byProject.map(x => ({ label: x.name, value: x.encounters })), { unit: 'kohtaamista' }) : h('p', { class: 'muted' }, 'Ei kirjauksia.'))),
+      h('div', { class: 'dash-row r3' },
+        h('div', { class: 'card' }, h('div', { class: 'kpi-head' }, h('h2', null, 'Arviot kohtaamisen hyödystä'),
+          infoTip('Asteikko 1–5 (1 = ei lainkaan hyötyä, 5 = erittäin hyödyllinen). Asiakkaan arvio vain, jos se on kysytty.')),
+          h('div', { class: 'grid-2 tight' }, ratingBlock('Työntekijän arvio, keskiarvo', R.worker), ratingBlock('Asiakkaan arvio, keskiarvo', R.client))),
+        h('div', { class: 'card' }, h('div', { class: 'kpi-head' }, h('h2', null, 'Palveluohjaukset'),
+          infoTip('Yksilökohtaamisissa tehdyt palveluohjaukset. Toteutumisaste = toteutuneet / (toteutuneet + ei toteutuneet).')),
+          h('p', { class: 'kpi-value small-kpi' }, fmtNum(d.referrals.total)), h('p', { class: 'muted small' }, 'ohjausta'),
+          h('p', null, h('strong', null, fmtPct(d.referrals.rate)), ' toteutumisaste', h('span', { class: 'muted' }, ` · ${fmtNum(d.referrals.toteutui)} toteutui, ${fmtNum(d.referrals.ei_toteutunut)} ei, ${fmtNum(d.referrals.avoin)} avoinna`)),
+          p.pathScope !== 'none' ? h('a', { href: '#/asiakaspolut' }, 'Asiakaspolut ja ohjaukset palveluittain →') : null)),
+      d.distributions.length ? h('h2', { class: 'sub-head' }, dashState.project_id ? 'Vastausjakaumat (yhteiset ja hankekohtaiset kysymykset)' : 'Vastausjakaumat (yhteiset kysymykset – valitse hanke nähdäksesi hankekohtaiset)') : null,
+      d.distributions.length ? h('div', { class: 'dist-grid' }, d.distributions.map(q => h('div', { class: 'card' },
+        h('h3', null, q.label, q.project ? h('span', { class: 'tag' }, ' hankekohtainen') : null),
+        h('p', { class: 'muted small' }, `${fmtNum(q.answered)} kirjausta vastannut${q.multiple ? ' · voi valita useita' : ''}`),
+        hBars(q.items, { keepOrder: true, unit: 'kirjausta' })))) : null,
+    ].filter(Boolean));
+    body.classList.remove('refreshing');
+  }
+
+  $app.replaceChildren(
+    h('div', { class: 'page-head dash-head' }, h('div', null, h('h1', null, `Kohtaamisten raportointi ${dashState.from.slice(0, 4)}`), h('p', { class: 'muted' }, 'A-klinikkasäätiö')), updated),
+    filterBox, body);
+  body.replaceChildren(h('div', { class: 'loading' }, 'Ladataan…'));
+  await load();
+}
+
+// Rengaskaavio (2 osaa): 2 px rako osien välissä, selite arvoineen
+function donut(parts) {
+  const total = parts.reduce((s, x) => s + x.value, 0);
+  const R = 70, r = 46, C = 90;
+  const svg = svgEl('svg', { viewBox: '0 0 180 180', class: 'donut', role: 'img', 'aria-label': parts.map(x => `${x.label} ${x.value}`).join(', ') });
+  let a0 = -Math.PI / 2;
+  const pt = (rad, a) => [C + rad * Math.cos(a), C + rad * Math.sin(a)];
+  if (total) parts.forEach(x => {
+    if (!x.value) return;
+    const a1 = a0 + (x.value / total) * Math.PI * 2;
+    const large = a1 - a0 > Math.PI ? 1 : 0;
+    const full = x.value === total;
+    const path = full
+      ? `M${C},${C - R} A${R},${R} 0 1 1 ${C - 0.01},${C - R} L${C - 0.01},${C - r} A${r},${r} 0 1 0 ${C},${C - r} Z`
+      : (() => { const [x0, y0] = pt(R, a0), [x1, y1] = pt(R, a1), [x2, y2] = pt(r, a1), [x3, y3] = pt(r, a0);
+          return `M${x0},${y0} A${R},${R} 0 ${large} 1 ${x1},${y1} L${x2},${y2} A${r},${r} 0 ${large} 0 ${x3},${y3} Z`; })();
+    const el = svgEl('path', { d: path, class: 'slice ' + x.cls, tabindex: '0' });
+    const t = svgEl('title'); t.textContent = `${x.label}: ${fmtNum(x.value)} (${Math.round(x.value / total * 100)} %)`; el.append(t);
+    svg.append(el); a0 = a1;
+  });
+  else svg.append(svgEl('circle', { cx: C, cy: C, r: (R + r) / 2, class: 'donut-empty' }));
+  const c1 = svgEl('text', { x: C, y: C + 2, class: 'donut-total', 'text-anchor': 'middle' }); c1.textContent = fmtNum(total);
+  const c2 = svgEl('text', { x: C, y: C + 20, class: 'donut-sub', 'text-anchor': 'middle' }); c2.textContent = 'kohtaamista';
+  svg.append(c1, c2);
+  return h('div', { class: 'donut-wrap' }, svg, h('ul', { class: 'legend' }, parts.map(x => h('li', null, h('span', { class: 'key-dot ' + x.cls }),
+    h('span', null, h('span', { class: 'legend-label' }, x.label), h('strong', null, total ? `${Math.round(x.value / total * 100)} %` : '–'), h('span', { class: 'muted' }, ` (${fmtNum(x.value)})`))))));
+}
+
+// Viivakaavio (1–3 sarjaa): tarkastelulinja + yksi tooltip kaikille sarjoille, suorat nimiöt, taulukkonäkymä
+function lineChart(data, types) {
+  const series = SERIES.filter(s => s.key === 'encounters' || (types.includes(s.key) && types.length > 1));
+  const narrow = window.matchMedia('(max-width: 640px)').matches;
+  const W = narrow ? 340 : 720, H = narrow ? 220 : 260, L = narrow ? 32 : 42, Rm = narrow ? 8 : 112, T = 14, B = 28;
+  const max = Math.max(1, ...data.flatMap(d => series.map(s => d[s.key])));
+  const step = niceStep(max), top = Math.ceil(max / step) * step;
+  const x = (i) => L + (data.length === 1 ? (W - L - Rm) / 2 : (i * (W - L - Rm)) / (data.length - 1));
+  const y = (v) => T + (H - T - B) * (1 - v / top);
+  const svg = svgEl('svg', { viewBox: `0 0 ${W} ${H}`, class: 'chart line-chart', role: 'img', 'aria-label': 'Kohtaamisten määrä kuukausittain' });
+  for (let v = 0; v <= top; v += step) {
+    svg.append(svgEl('line', { x1: L, x2: W - Rm, y1: y(v), y2: y(v), class: v === 0 ? 'axis' : 'grid' }));
+    const t = svgEl('text', { x: L - 6, y: y(v) + 4, class: 'tick', 'text-anchor': 'end' }); t.textContent = fmtNum(v); svg.append(t);
+  }
+  const every = Math.max(1, Math.ceil(data.length / (narrow ? 4 : 8)));
+  let lastTick = -Infinity;
+  data.forEach((d, i) => { if ((i % every === 0 || (i === data.length - 1 && data.length <= 12)) && i - lastTick >= every * 0.75) { lastTick = i;
+    const t = svgEl('text', { x: x(i), y: H - 8, class: 'tick', 'text-anchor': 'middle' }); t.textContent = fmtMonth(d.month).split(' ')[0]; svg.append(t); } });
+  for (const s of series) {
+    svg.append(svgEl('polyline', { points: data.map((d, i) => `${x(i)},${y(d[s.key])}`).join(' '), class: 'series ' + s.cls }));
+    if (data.length <= 24) data.forEach((d, i) => svg.append(svgEl('circle', { cx: x(i), cy: y(d[s.key]), r: 3.5, class: 'pt ' + s.cls })));
+  }
+  // Suorat nimiöt viimeisen pisteen kohdalle (työpöytä), päällekkäisyys estetään siirtämällä
+  if (!narrow) {
+    const last = data.length - 1;
+    // Alhaalta ylös: pidetään nimiöt piirtoalueella ja vähintään 14 px erillään
+    const labels = series.map(s => ({ s, y: y(data[last][s.key]) })).sort((a, b) => b.y - a.y);
+    labels.forEach((l, i) => { l.y = Math.min(l.y, H - B - 6); if (i && labels[i - 1].y - l.y < 14) l.y = labels[i - 1].y - 14; });
+    for (const l of labels) { const t = svgEl('text', { x: x(last) + 8, y: l.y + 4, class: 'direct-label' }); t.textContent = l.s.label.replace('Kohtaamiset yhteensä', 'Yhteensä'); svg.append(t); }
+  }
+  const cross = svgEl('line', { y1: T, y2: H - B, class: 'crosshair', visibility: 'hidden' }); svg.append(cross);
+  const tip = h('div', { class: 'chart-tip', hidden: true });
+  const hit = svgEl('rect', { x: L, y: T, width: W - L - Rm, height: H - T - B, class: 'hit', tabindex: '0' });
+  let idx = -1;
+  const show = (i) => {
+    idx = Math.max(0, Math.min(data.length - 1, i)); const d = data[idx];
+    cross.setAttribute('x1', x(idx)); cross.setAttribute('x2', x(idx)); cross.setAttribute('visibility', 'visible');
+    tip.replaceChildren(h('div', { class: 'tip-title' }, fmtMonth(d.month)), ...series.map(s => h('div', { class: 'tip-row' },
+      h('span', { class: 'key-line ' + s.cls }), h('strong', null, fmtNum(d[s.key])), h('span', { class: 'muted' }, ' ' + s.label))));
+    tip.hidden = false; tip.style.left = `${(x(idx) / W) * 100}%`; tip.style.top = `${(Math.min(...series.map(s => y(d[s.key]))) / H) * 100}%`;
+  };
+  const hide = () => { tip.hidden = true; cross.setAttribute('visibility', 'hidden'); };
+  const fromEvent = (ev) => { const r = svg.getBoundingClientRect(); const px = ((ev.clientX - r.left) / r.width) * W;
+    return data.length === 1 ? 0 : Math.round(((px - L) / (W - L - Rm)) * (data.length - 1)); };
+  hit.addEventListener('pointermove', (ev) => show(fromEvent(ev)));
+  hit.addEventListener('pointerdown', (ev) => show(fromEvent(ev)));
+  hit.addEventListener('pointerleave', hide);
+  hit.addEventListener('focus', () => show(idx < 0 ? data.length - 1 : idx));
+  hit.addEventListener('blur', hide);
+  hit.addEventListener('keydown', (ev) => { if (ev.key === 'ArrowLeft') { show(idx - 1); ev.preventDefault(); } if (ev.key === 'ArrowRight') { show(idx + 1); ev.preventDefault(); } });
+  svg.append(hit);
+  const legend = series.length > 1 ? h('ul', { class: 'legend legend-row' }, series.map(s => h('li', null, h('span', { class: 'key-line ' + s.cls }), s.label))) : null;
+  const table = h('details', { class: 'chart-table' }, h('summary', null, 'Näytä taulukkona'),
+    h('div', { class: 'table-wrap' }, h('table', null, h('thead', null, h('tr', null, h('th', null, 'Kuukausi'), series.map(s => h('th', { class: 'num' }, s.label)))),
+      h('tbody', null, data.map(d => h('tr', null, h('td', null, fmtMonth(d.month)), series.map(s => h('td', { class: 'num' }, fmtNum(d[s.key])))))))));
+  return h('div', null, legend, h('div', { class: 'chart-wrap' }, svg, tip), table);
 }
 
 // ---------------------------------------------------------------------------

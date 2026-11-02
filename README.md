@@ -12,7 +12,7 @@ ADMIN_EMAIL=oma@osoite.fi SESSION_SECRET=pitka-satunnainen-merkkijono npm start
 
 Ensimmäisellä käynnistyksellä luodaan admin-käyttäjä. Väliaikainen salasana tulostuu konsoliin (tai sen voi antaa `ADMIN_PASSWORD`-muuttujalla), ja se vaihdetaan ensimmäisellä kirjautumisella. Muut asetukset löytyvät tiedostosta `.env.example`. Docker: `docker build -t kohtaamiset . && docker run -p 3000:3000 -v kohtaamiset:/data -e SESSION_SECRET=… kohtaamiset`.
 
-Testit: `npm test` (17 testiä: roolit, validointi, tunnistetietojen esto, Excel-vienti ja kysymysten versiointi).
+Testit: `npm test` (18 testiä: roolit, validointi, tunnistetietojen esto, Excel-vienti ja kysymysten versiointi).
 
 ## Roolit
 
@@ -24,6 +24,7 @@ Testit: `npm test` (17 testiä: roolit, validointi, tunnistetietojen esto, Excel
 | Korjaa / poistaa kirjauksia | kaikki | omat hankkeet | – | – |
 | Excel-vienti | kaikki hankkeet | omat hankkeet | – | – |
 | Työntekijäseuranta | kaikki | omien hankkeiden kirjaukset | – | – |
+| Tilastot (dashboard) | kaikki | omat hankkeet | omat hankkeet | – |
 | Asiakaspolut (koosteet) | kaikki | omien hankkeiden kirjaukset | – | – |
 | Asiakastunnisteen haku kirjatessa | ✓ | ✓ | ✓ | ✓ |
 | Käyttäjät, hankkeet, kysymykset, loki | ✓ | – | – | – |
@@ -45,6 +46,22 @@ Hankkeelle voi asettaa kohdassa Hallinta → Hankkeet asetuksen **Digipalvelu**.
 ## Kysymysten ylläpito (admin)
 
 Kysymyksiä voi lisätä, muokata, järjestää ja ottaa pois käytöstä. Kysymyksiä **ei poisteta**, ja jokaisella kysymyksellä on pysyvä tunniste (`key`). Näin aiempien vuosien raportointi säilyy, vaikka lomake muuttuisi. Kysymyksen tyyppiä ei voi muuttaa sen jälkeen, kun kysymykseen on vastattu. Tyypit ovat lyhyt teksti, pitkä teksti, luku, valinta (yksi tai useita), arvio 1–5 ja päivämäärä.
+
+## Tilastot (dashboard)
+
+Määrittelydokumentin dashboard-mallin mukainen näkymä (valikossa **Tilastot**). Admin näkee kaikki hankkeet, tiimivetäjä ja hanketyöntekijä omat hankkeensa.
+
+- **Rajaukset:** aikaväli (pikavalinnat: tämä vuosi, edellinen vuosi, 30 pv, tämä kk), hanke, kohtaamisen tyyppi, kirjaajan rooli, ikä ja sukupuoli. Rajaukset koskevat kaikkia näkymän lukuja. **Lataa raakadata (Excel)** käyttää aikaväliä ja hanketta.
+- **Kohtaamiset yhteensä** ja **eri henkilöiden määrä (arvio)** näytetään erillisinä tunnuslukuina, ja kumpaankin lasketaan muutos edelliseen yhtä pitkään jaksoon.
+- **Eri henkilöiden arvio** = tunnistetut asiakkaat + ryhmien ilmoitetut osallistujat. Ilman tunnistetta kirjatut yksilökohtaamiset näytetään erikseen, koska samaa henkilöä ei niistä voi tunnistaa. Laskentasääntö kerrotaan (i)-painikkeen takana.
+- **Kaaviot:**
+  - kohtaamisen tyyppi (rengaskaavio)
+  - kohtaamiset kuukausittain (yhteensä, yksilö, ryhmä; tarkastelulinja ja taulukkonäkymä)
+  - kohtaamiset hankkeittain
+  - työntekijän ja asiakkaan arviot
+  - palveluohjausten yhteenveto
+  - vastausjakaumat (yhteiset kysymykset, ja hankkeen valinnan jälkeen myös hankekohtaiset).
+- Kaikki luvut ovat koosteita. Tunnisteita, nimimerkkejä ja vapaatekstejä ei näytetä.
 
 ## Työntekijäseuranta (admin ja tiimivetäjä)
 

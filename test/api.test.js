@@ -379,3 +379,28 @@ test('digipalvelu: sijainti automaattisesti, kaupunki ja katu eivät tallennu', 
   const bad = await users.admin('PUT', '/questions/' + sq.id, { label: sq.label, type: 'choice', applies_to: 'kaikki', options: JSON.parse(sq.options), digital_mode: 'fixed', digital_value: 'Kuussa' });
   assert.equal(bad.status, 400);
 });
+
+test('tilastot: koosteet, rajaukset, vertailujakso ja oikeudet', async () => {
+  const { shiftPeriod } = require('../src/dashboard');
+  assert.deepEqual(shiftPeriod('2026-01-01', '2026-01-31'), ['2025-12-01', '2025-12-31']);
+  const a = await users.admin('GET', `/dashboard?from=2020-01-01&to=${today}`);
+  assert.equal(a.status, 200, JSON.stringify(a.data));
+  const all = db.prepare('SELECT COUNT(*) n, SUM(encounter_count) s FROM encounters WHERE deleted_at IS NULL').get();
+  assert.equal(a.data.totals.rows, all.n); assert.equal(a.data.totals.encounters, all.s);
+  assert.equal(a.data.totals.yksilo + a.data.totals.ryhma, all.s);
+  assert.ok(a.data.monthly.length >= 1 && a.data.byProject.length >= 2);
+  assert.ok(a.data.distributions.some(d => d.key === 'ika'));
+  // Tyyppirajaus
+  const g = await users.admin('GET', `/dashboard?from=2020-01-01&to=${today}&types=ryhma`);
+  assert.equal(g.data.totals.yksilo, 0);
+  // Ikärajaus
+  const ik = await users.admin('GET', `/dashboard?from=2020-01-01&to=${today}&ika=${encodeURIComponent('18–29 vuotta')}`);
+  assert.ok(ik.data.totals.rows >= 1 && ik.data.totals.rows < all.n);
+  // Hanketyöntekijä: vain omat hankkeet (Katuklinikka)
+  const ht = await users.hanketyontekija('GET', `/dashboard?from=2020-01-01&to=${today}`);
+  assert.equal(ht.status, 200);
+  assert.ok(ht.data.byProject.every(p => p.name === 'Katuklinikka'));
+  assert.equal((await users.hanketyontekija('GET', `/dashboard?project_id=${P().JALMA}`)).status, 403);
+  // Ei tunnisteita tai vapaatekstejä
+  assert.ok(!/revontuli|Keskustelu|Hyvä keskustelu/i.test(JSON.stringify(a.data)));
+});

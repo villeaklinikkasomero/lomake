@@ -13,6 +13,7 @@ const { ROLES, PERMISSIONS, DEFAULT_RECORDER_ROLE_INDEX, can, scope, allowsEncou
 const { buildWorkbook } = require('./export');
 const demo = require('./demo');
 const clients = require('./clients');
+const { dashboard } = require('./dashboard');
 
 const PORT = Number(process.env.PORT || 3000);
 const IS_PROD = process.env.NODE_ENV === 'production';
@@ -466,6 +467,23 @@ app.get('/api/paths', requireAuth, (req, res) => {
   const projectId = req.query.project_id ? Number(req.query.project_id) : null;
   if (projectId && !projectIds.includes(projectId)) return bad(res, 'Ei oikeutta.', 403);
   res.json(clients.pathStats({ from: isDate(req.query.from) ? req.query.from : null, to: isDate(req.query.to) ? req.query.to : null, projectIds, projectId }));
+});
+
+// Tilastot (dashboard): admin kaikki, tiimivetäjä ja hanketyöntekijä omat hankkeet
+app.get('/api/dashboard', requireAuth, (req, res) => {
+  const s = scope(req.user, 'dashScope');
+  if (s === 'none') return bad(res, 'Ei oikeutta.', 403);
+  const projectIds = s === 'all' ? db.prepare('SELECT id FROM projects').all().map(r => r.id) : req.projectIds;
+  const projectId = req.query.project_id ? Number(req.query.project_id) : null;
+  if (projectId && !projectIds.includes(projectId)) return bad(res, 'Ei oikeutta.', 403);
+  const from = isDate(req.query.from) ? req.query.from : today().slice(0, 4) + '-01-01';
+  const to = isDate(req.query.to) ? req.query.to : today();
+  if (from > to) return bad(res, 'Tarkista aikaväli.');
+  const types = String(req.query.types || 'yksilo,ryhma').split(',').filter(t => ['yksilo', 'ryhma'].includes(t));
+  if (!types.length) return bad(res, 'Valitse vähintään yksi kohtaamisen tyyppi.');
+  const role = RECORDER_ROLES.includes(req.query.role) ? req.query.role : null;
+  res.json(dashboard({ from, to, projectIds, projectId, types, role,
+    ika: req.query.ika ? String(req.query.ika) : null, sukupuoli: req.query.sukupuoli ? String(req.query.sukupuoli) : null }));
 });
 
 // Ohjauspalveluiden ylläpito (admin)

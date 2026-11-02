@@ -80,7 +80,7 @@ function generateDemoPayloads(count, seed = Date.now()) {
       project_id: project.id,
       encounter_date: fmt(d > today ? today : d),
       encounter_type: type,
-      encounter_count: type === 'ryhma' ? int(3, 40) : 1,
+      encounter_count: type === 'ryhma' ? int(3, 14) : 1,
       person_count: null,
       answers: {},
       _recorder_role: RECORDER_ROLES[0],   // admin = säätiön työntekijä
