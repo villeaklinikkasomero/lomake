@@ -521,7 +521,7 @@ test('täydennysehdotukset: kunnat ja aiemmin kirjatut, kadut kaupungin mukaan, 
   for (let i = 0; i < 2; i++) await tv('POST', '/encounters', basePayload(p.KATUKLINIKKA, { answers: { tyontekijan_arvio: '4', sijainti: 'Kadulla tai muulla julkisella paikalla', kaupunki: 'Tampere', kadunnimi: 'Hämeenkatu' } }));
   await users.admin('POST', '/encounters', basePayload(p.KATUKLINIKKA, { answers: { tyontekijan_arvio: '4', sijainti: 'Kadulla tai muulla julkisella paikalla', kaupunki: 'Turku', kadunnimi: 'Hämeenkatu 5 rappu' } }));
   r = await tv('GET', '/suggest?key=kadunnimi&q=häm&kaupunki=tampere');
-  assert.deepEqual(r.data.items, ['Hämeenkatu']);
+  assert.equal(r.data.items[0], 'Hämeenkatu', 'eniten käytetty ensin');
   r = await tv('GET', '/suggest?key=kadunnimi&q=rappu');
   assert.ok(!r.data.items.includes('Hämeenkatu 5 rappu'), 'toisen yksittäinen arvo ei näy');
   assert.ok((await users.admin('GET', '/suggest?key=kadunnimi&q=rappu')).data.items.includes('Hämeenkatu 5 rappu'), 'oma arvo näkyy');
@@ -529,29 +529,14 @@ test('täydennysehdotukset: kunnat ja aiemmin kirjatut, kadut kaupungin mukaan, 
   assert.ok((await users.hanketyontekija('GET', '/suggest?key=kadunnimi&q=häm')).data.items.includes('Hämeenkatu'));
 });
 
-test('kadunnimet: kunnan kadut OpenStreetMapista (testipalvelin), välimuisti, vain kunnan nimi lähtee', async () => {
-  const http = require('http');
-  const seen = [];
-  const mock = http.createServer((req, res) => {
-    let body = ''; req.on('data', c => { body += c; }); req.on('end', () => {
-      const qtext = decodeURIComponent(body.replace(/^data=/, '').replace(/\+/g, ' '));
-      seen.push(qtext);
-      const names = qtext.includes('"Oulu"') ? ['Kirkkokatu', 'Isokatu', 'Hallituskatu', 'Kajaaninkatu'] : [];
-      res.setHeader('Content-Type', 'application/json');
-      res.end(JSON.stringify({ elements: names.map(n => ({ type: 's', tags: { name: n } })) }));
-    });
-  }).listen(0);
-  await new Promise(r => mock.once('listening', r));
-  process.env.OVERPASS_URL = `http://127.0.0.1:${mock.address().port}/api/interpreter`;
-  try {
-    let r = await users.tiimivetaja('GET', '/suggest?key=kadunnimi&q=kir&kaupunki=oulu');
-    assert.deepEqual(r.data.items, ['Kirkkokatu']);
-    assert.equal(seen.length, 1); assert.ok(!seen[0].includes('kir'), 'kirjoitettu teksti ei lähde palveluun');
-    r = await users.tiimivetaja('GET', '/suggest?key=kadunnimi&q=kaj&kaupunki=Oulu');
-    assert.deepEqual(r.data.items, ['Kajaaninkatu']);
-    assert.equal(seen.length, 1, 'välimuisti');
-    // Muu kuin Suomen kunta ei aiheuta hakua
-    await users.tiimivetaja('GET', '/suggest?key=kadunnimi&q=kir&kaupunki=Atlantis');
-    assert.equal(seen.length, 1);
-  } finally { mock.close(); delete process.env.OVERPASS_URL; }
+test('kadunnimet: kunnan kadut omasta aineistosta, kaupungin mukaan', async () => {
+  let r = await users.tiimivetaja('GET', '/suggest?key=kadunnimi&q=kirkkok&kaupunki=oulu');
+  assert.ok(r.data.items.includes('Kirkkokatu'), JSON.stringify(r.data));
+  r = await users.tiimivetaja('GET', '/suggest?key=kadunnimi&q=mannerheimin&kaupunki=Helsinki');
+  assert.ok(r.data.items.includes('Mannerheimintie'));
+  r = await users.tiimivetaja('GET', '/suggest?key=kadunnimi&q=stor&kaupunki=Mariehamn');
+  assert.ok(r.data.items.length > 0, 'ruotsinkielinen kuntanimi');
+  r = await users.tiimivetaja('GET', '/suggest?key=kadunnimi&q=mannerheimin&kaupunki=Atlantis');
+  assert.ok(!r.data.items.includes('Mannerheimintie'), 'tuntematon kunta ei tuo katuja');
+  assert.equal(require('../src/kunnat.json').length, 308);
 });

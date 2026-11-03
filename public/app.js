@@ -711,8 +711,8 @@ let suggestSeq = 0;
 function attachSuggest(input, q, answers, set) {
   const listId = 'sg-' + q.key + '-' + (++suggestSeq);
   const list = h('ul', { class: 'suggest-list', id: listId, role: 'listbox', hidden: true, 'aria-label': 'Ehdotukset' });
-  // Kadunnimet tulevat osin OpenStreetMapista: lähdemerkintä listan alle (ODbL)
-  const attr = q.key === 'kadunnimi' ? h('p', { class: 'suggest-attr' }, 'Kadunnimet: © OpenStreetMapin tekijät') : null;
+  // Kadunnimet tulevat osin DVV:n avoimesta osoiteaineistosta: lähdemerkintä listan alle (CC BY 4.0)
+  const attr = q.key === 'kadunnimi' ? h('p', { class: 'suggest-attr' }, 'Kadunnimet: Digi- ja väestötietovirasto') : null;
   const pop = h('div', { class: 'suggest-pop', hidden: true }, list, attr);
   Object.assign(input, { autocomplete: 'off' });
   input.setAttribute('role', 'combobox'); input.setAttribute('aria-autocomplete', 'list');

@@ -6,7 +6,7 @@
   "scripts": {
     "start": "node src/server.js",
     "dev": "node --watch src/server.js",
-    "test": "LOGIN_RATE_LIMIT=1000 MFA_REQUIRED=false OVERPASS_URL=http://127.0.0.1:9/ node --test test/api.test.js test/auth.test.js"
+    "test": "LOGIN_RATE_LIMIT=1000 MFA_REQUIRED=false node --test test/api.test.js test/auth.test.js"
   },
   "dependencies": {
     "bcryptjs": "^3.0.3",
