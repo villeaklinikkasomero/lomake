@@ -696,3 +696,4 @@ details.info[open] > summary { background: var(--blue); color: #fff; }
 .suggest-list li { padding: .65rem .9rem; min-height: 44px; display: flex; align-items: center; cursor: pointer; }
 .suggest-list li strong { font-weight: 700; }
 .suggest-list li:hover, .suggest-list li.active { background: var(--blue-50, #eef3ff); color: var(--blue, #0037D3); }
+.code-big.words, .notice .code-big { font-family: inherit; letter-spacing: 0; font-weight: 700; }

@@ -338,7 +338,7 @@ test('asiakastunniste: hankekohtainen tiiviste, ei hankkeiden välistä linkitys
 
   // Satunnaistunnus (hankekohtainen)
   const g = await ht('POST', '/clients/generate', { project_id: p.KATUKLINIKKA });
-  assert.match(g.data.code, /^[2-9A-Z]{3}-[2-9A-Z]{4}$/);
+  assert.match(g.data.code, /^\p{Lu}\p{Ll}+ \p{Lu}\p{Ll}+( \d{1,2})?$/u);
   r = await ht('POST', '/encounters', basePayload(p.KATUKLINIKKA, { client_mode: 'new', client_ref: g.data.code, client_generated: true }));
   assert.equal(r.status, 201);
   // Tunniste ei saa näyttää henkilötunnukselta

@@ -588,7 +588,7 @@ function renderClientSection(s, opts) {
     } else if (opts.clientTracking) {
       const status = h('div', { class: 'client-status' + (c.mode === 'new' ? ' reserve' : ''), 'aria-live': 'polite' });
       const input = h('input', { type: 'text', id: 'f-client', maxlength: '40', autocomplete: 'off', autocapitalize: 'off', spellcheck: 'false',
-        enterkeyhint: 'search', class: 'input-narrow mono', value: c.ref, placeholder: c.mode === 'new' ? 'esim. nimimerkki tai luotu tunnus' : 'nimimerkki tai tunnus',
+        enterkeyhint: 'search', class: 'client-input', value: c.ref, placeholder: c.mode === 'new' ? 'esim. Sininen Kettu' : 'nimimerkki',
         oninput: (e) => { c.ref = e.target.value; c.generated = false; if (c.checkedRef !== c.ref) { c.summary = null; c.available = null; drawStatus(); } },
         onkeydown: (e) => { if (e.key === 'Enter') { e.preventDefault(); check(); } },
         // Vain uusi asiakas tarkistetaan automaattisesti; tulos kirjoitetaan varattuun riviin, joten sisältö ei hyppää
@@ -623,12 +623,12 @@ function renderClientSection(s, opts) {
           }
         }
         if (c.mode === 'new' && c.checkedRef === c.ref && c.ref) {
-          out.push(c.available ? h('p', { class: 'ok-text' }, '✓ Tunniste on vapaa.')
-            : h('p', { class: 'field-error' }, 'Tunniste on jo toisen asiakkaan käytössä. Valitse toinen tai luo satunnainen tunnus.'));
+          out.push(c.available ? h('p', { class: 'ok-text' }, '✓ Nimimerkki on vapaa.')
+            : h('p', { class: 'field-error' }, 'Nimimerkki on jo toisen asiakkaan käytössä. Valitse toinen tai luo nimimerkki.'));
         }
         if (c.mode === 'new' && c.generated && c.ref) {
-          out.push(h('div', { class: 'notice info' }, h('p', null, 'Kerro tunnus asiakkaalle: ', h('strong', { class: 'code-big' }, c.ref)),
-            h('p', { class: 'small' }, 'Tunnus on käytössä vain tässä hankkeessa. Sitä ei voi hakea järjestelmästä myöhemmin.')));
+          out.push(h('div', { class: 'notice info' }, h('p', null, 'Kerro nimimerkki asiakkaalle: ', h('strong', { class: 'code-big' }, c.ref)),
+            h('p', { class: 'small' }, 'Nimimerkki on käytössä vain tässä hankkeessa. Sitä ei voi hakea järjestelmästä myöhemmin, joten asiakkaan kannattaa painaa se mieleen. Kirjainkoolla ja välilyönneillä ei ole väliä.')));
         }
         status.replaceChildren(...out);
       }
@@ -640,13 +640,13 @@ function renderClientSection(s, opts) {
         c.mode === 'none' ? h('p', { class: 'help' }, services.length ? 'Ilman tunnistetta asiakkaan palveluihin ohjautumista ei voi seurata.'
           : 'Ilman tunnistetta kohtaaminen lasketaan täysin anonyymiksi, eikä se sisälly eri henkilöiden määrään.') : [
           h('p', { class: 'help' }, c.mode === 'existing' ? 'Kirjoita asiakkaan nimimerkki tai tunnus. Kirjainkoolla, välilyönneillä ja väliviivoilla ei ole väliä.'
-            : 'Keksi asiakkaan kanssa nimimerkki tai luo satunnainen tunnus. Älä käytä oikeaa nimeä.'),
+            : 'Keksi asiakkaan kanssa nimimerkki tai luo helposti muistettava nimimerkki, esim. ”Sininen Kettu”. Älä käytä oikeaa nimeä.'),
           h('div', { class: 'actions client-row' }, input,
             c.mode === 'existing' ? h('button', { type: 'button', class: 'btn btn-secondary', onclick: check }, 'Hae')
               : h('button', { type: 'button', class: 'btn btn-secondary', onclick: async () => {
                   if (!s.project_id) { toast('Valitse ensin hanke.', true); return; }
                   try { const r = await api('/clients/generate', { method: 'POST', body: { project_id: s.project_id } }); c.ref = r.code; c.generated = true; c.checkedRef = r.code; c.available = true; draw(); }
-                  catch (ex) { toast(ex.message, true); } } }, 'Luo satunnainen tunnus')),
+                  catch (ex) { toast(ex.message, true); } } }, 'Luo nimimerkki')),
           status]));
       setTimeout(() => { drawStatus(); if (focusInput) input.focus(); }, 0);
     } else {

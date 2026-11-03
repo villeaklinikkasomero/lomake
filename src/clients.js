@@ -115,10 +115,22 @@ function hashRef(projectId, ref) {
 function legacyHash(ref) {
   return crypto.createHmac('sha256', KEY).update('asiakas:' + normalize(ref)).digest('hex');
 }
-const CODE_ALPHABET = '23456789ABCDEFGHJKMNPQRSTVWXYZ'; // ei sekoittuvia merkkejä (0/O, 1/I/L, U)
-function newCode() {
-  const pick = () => CODE_ALPHABET[crypto.randomInt(CODE_ALPHABET.length)];
-  return `${pick()}${pick()}${pick()}-${pick()}${pick()}${pick()}${pick()}`;
+// Satunnainen nimimerkki kahdesta sanasta (adjektiivi + luonnosta tai eläimistä), esim. "Sininen Kettu".
+// Sanat on valittu neutraaleiksi: ei henkilönnimiä, yleisiä sukunimiä, arvottavia eikä arkaluonteisia sanoja.
+const ADJECTIVES = ['Sininen', 'Vihreä', 'Punainen', 'Keltainen', 'Kultainen', 'Hopeinen', 'Iloinen', 'Rohkea', 'Nopea', 'Kirkas',
+  'Lempeä', 'Tumma', 'Vaalea', 'Utelias', 'Vikkelä', 'Viisas', 'Reipas', 'Tyyni', 'Raikas', 'Lämmin', 'Kesäinen', 'Talvinen',
+  'Syksyinen', 'Keväinen', 'Pehmeä', 'Vahva', 'Ketterä', 'Hohtava', 'Leikkisä', 'Sitkeä', 'Uljas', 'Valoisa', 'Villi',
+  'Rauhallinen', 'Pirteä', 'Notkea', 'Tähtinen', 'Huurteinen', 'Aurinkoinen', 'Sumuinen', 'Tuulinen', 'Ripeä', 'Hellä',
+  'Sinertävä', 'Vehreä', 'Kuulas', 'Ystävällinen', 'Oranssi', 'Violetti', 'Turkoosi'];
+const NOUNS = ['Kettu', 'Karhu', 'Ilves', 'Jänis', 'Orava', 'Siili', 'Pöllö', 'Haukka', 'Joutsen', 'Kurki', 'Lokki', 'Harakka',
+  'Tikka', 'Peippo', 'Sorsa', 'Hirvi', 'Majava', 'Saukko', 'Hylje', 'Hauki', 'Ahven', 'Muikku', 'Mäyrä', 'Näätä', 'Kärppä',
+  'Myyrä', 'Sammakko', 'Perhonen', 'Kimalainen', 'Leppäkerttu', 'Kuu', 'Pilvi', 'Tuuli', 'Lumihiutale', 'Sateenkaari',
+  'Revontuli', 'Puro', 'Metsä', 'Mänty', 'Pihlaja', 'Vaahtera', 'Kanerva', 'Mustikka', 'Puolukka', 'Mansikka', 'Vadelma',
+  'Omena', 'Sammal', 'Niitty', 'Kukkula', 'Tunturi', 'Majakka', 'Kompassi', 'Purjevene', 'Lyhty', 'Kanootti', 'Käpy',
+  'Simpukka', 'Meritähti', 'Delfiini', 'Pingviini', 'Kameli', 'Seepra', 'Koala', 'Pandakarhu', 'Tiikeri', 'Kilpikonna'];
+function newCode(withNumber) {
+  const pick = (arr) => arr[crypto.randomInt(arr.length)];
+  return `${pick(ADJECTIVES)} ${pick(NOUNS)}` + (withNumber ? ` ${crypto.randomInt(2, 100)}` : '');
 }
 function validateRef(ref, sensitiveHit) {
   const n = normalize(ref);
@@ -140,7 +152,8 @@ function findClient(projectId, ref) {
 }
 
 function generateUniqueCode(projectId) {
-  for (let i = 0; i < 20; i++) { const c = newCode(); if (!findClient(projectId, c)) return c; }
+  // Ensin pelkät sanat; jos hankkeessa on jo paljon asiakkaita, lisätään loppuun numero
+  for (let i = 0; i < 40; i++) { const c = newCode(i >= 25); if (!findClient(projectId, c)) return c; }
   throw new Error('Tunnuksen luonti epäonnistui.');
 }
 
