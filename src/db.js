@@ -216,6 +216,18 @@ if (!db.prepare("PRAGMA table_info(questions)").all().some(c => c.name === 'digi
   db.prepare("UPDATE questions SET digital_mode = 'hide' WHERE key IN ('kaupunki', 'kadunnimi')").run();
 }
 
+// Kirjautumistapa: 'local' = sähköposti + salasana + MFA (esim. tuntityöntekijät),
+// 'entra' = säätiön Microsoft-tunnus (Entra ID). MFA-salaisuus on salattuna.
+{
+  const cols = db.prepare('PRAGMA table_info(users)').all().map(c => c.name);
+  if (!cols.includes('auth_method')) db.exec("ALTER TABLE users ADD COLUMN auth_method TEXT NOT NULL DEFAULT 'local'");
+  if (!cols.includes('entra_oid')) db.exec('ALTER TABLE users ADD COLUMN entra_oid TEXT');
+  if (!cols.includes('mfa_secret')) db.exec('ALTER TABLE users ADD COLUMN mfa_secret TEXT');
+  if (!cols.includes('mfa_enabled')) db.exec('ALTER TABLE users ADD COLUMN mfa_enabled INTEGER NOT NULL DEFAULT 0');
+  if (!cols.includes('mfa_last_step')) db.exec('ALTER TABLE users ADD COLUMN mfa_last_step INTEGER');
+  db.exec('CREATE UNIQUE INDEX IF NOT EXISTS ux_users_entra_oid ON users(entra_oid) WHERE entra_oid IS NOT NULL');
+}
+
 // Kertaluonteiset tietomuutokset (ajetaan kerran, eivät ohita adminin myöhempiä muutoksia)
 function once(name, fn) {
   if (db.prepare('SELECT 1 FROM settings WHERE key = ?').get('migration.' + name)) return;

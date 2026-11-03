@@ -14,6 +14,8 @@ const { buildWorkbook } = require('./export');
 const demo = require('./demo');
 const clients = require('./clients');
 const { dashboard } = require('./dashboard');
+const auth = require('./auth');
+const QRCode = require('qrcode');
 
 const PORT = Number(process.env.PORT || 3000);
 const IS_PROD = process.env.NODE_ENV === 'production';
@@ -78,7 +80,7 @@ const bad = (res, msg, code = 400) => res.status(code).json({ error: msg });
 
 function loadUser(req) {
   if (!req.session.userId) return null;
-  const u = db.prepare('SELECT id, email, name, role, active, must_change_password, recorder_role FROM users WHERE id = ?').get(req.session.userId);
+  const u = db.prepare('SELECT id, email, name, role, active, must_change_password, recorder_role, auth_method, mfa_enabled FROM users WHERE id = ?').get(req.session.userId);
   return u && u.active ? u : null;
 }
 
@@ -89,7 +91,7 @@ function userProjectIds(user) {
 
 function requireAuth(req, res, next) {
   const user = loadUser(req);
-  if (!user) { req.session.destroy(() => {}); return bad(res, 'Kirjaudu sisään.', 401); }
+  if (!user) { if (req.session.userId) req.session.destroy(() => {}); return bad(res, 'Kirjaudu sisään.', 401); }
   req.user = user;
   req.projectIds = userProjectIds(user);
   if (user.must_change_password && !req.originalUrl.startsWith('/api/me')) return bad(res, 'Vaihda salasana ennen jatkamista.', 403);
@@ -224,19 +226,143 @@ const loginLimiter = rateLimit({ windowMs: 15 * 60 * 1000, limit: Number(process
   message: { error: 'Liian monta kirjautumisyritystä. Yritä uudelleen 15 minuutin kuluttua.' } });
 
 const DUMMY_HASH = bcrypt.hashSync('dummy-password', 12);
+const mfaLimiter = rateLimit({ windowMs: 15 * 60 * 1000, limit: Number(process.env.LOGIN_RATE_LIMIT || 10) * 2, standardHeaders: true, legacyHeaders: false,
+  message: { error: 'Liian monta yritystä. Yritä uudelleen 15 minuutin kuluttua.' } });
+const PENDING_MS = 5 * 60 * 1000;
+
+// Kirjautuminen valmis: uusi istunto ja käyttäjä siihen
+function completeLogin(req, res, u, method, done) {
+  req.session.regenerate((err) => {
+    if (err) return bad(res, 'Kirjautuminen epäonnistui.', 500);
+    req.session.userId = u.id;
+    req.session.authMethod = method;
+    db.prepare("UPDATE users SET last_login_at = datetime('now') WHERE id = ?").run(u.id);
+    audit(u.id, 'login', 'user', u.id, { method });
+    done();
+  });
+}
+
+// Kirjautumistavat kirjautumissivulle (ei vaadi kirjautumista)
+app.get('/api/auth/config', (req, res) => res.json({ entra: auth.entraEnabled(), mfaRequired: auth.mfaRequired() }));
+
+// 1. vaihe: sähköposti ja salasana (paikalliset tunnukset, esim. tuntityöntekijät)
 app.post('/api/login', loginLimiter, (req, res) => {
   const email = String(req.body.email || '').trim();
   const password = String(req.body.password || '');
   const u = db.prepare('SELECT * FROM users WHERE email = ?').get(email);
+  if (u && u.auth_method === 'entra' && u.active) {
+    return bad(res, auth.entraEnabled() ? 'Kirjaudu säätiön Microsoft-tunnuksella.' : 'Tämä tunnus käyttää Microsoft-kirjautumista, joka ei ole vielä käytössä. Ota yhteyttä pääkäyttäjään.', 401);
+  }
   const ok = bcrypt.compareSync(password, u ? u.password_hash : DUMMY_HASH);
   if (!u || !ok || !u.active) { audit(u && u.id, 'login_failed', 'user', u && u.id, { email }); return bad(res, 'Virheellinen sähköposti tai salasana.', 401); }
-  req.session.regenerate((err) => {
+  if (!(auth.mfaRequired() || u.mfa_enabled)) return completeLogin(req, res, u, 'password', () => res.json({ ok: true }));
+  // 2. vaihe: todennussovelluksen koodi (tai sen käyttöönotto ensimmäisellä kerralla)
+  req.session.regenerate(async (err) => {
     if (err) return bad(res, 'Kirjautuminen epäonnistui.', 500);
-    req.session.userId = u.id;
-    db.prepare("UPDATE users SET last_login_at = datetime('now') WHERE id = ?").run(u.id);
-    audit(u.id, 'login', 'user', u.id);
-    res.json({ ok: true });
+    req.session.pending = { userId: u.id, exp: Date.now() + PENDING_MS, fails: 0 };
+    if (u.mfa_enabled) return res.json({ mfa: 'verify' });
+    const secret = auth.newSecret();
+    req.session.pending.secret = auth.encrypt(secret);
+    const uri = auth.otpauthUri(secret, u.email);
+    const qr = await QRCode.toDataURL(uri, { margin: 1, width: 220, errorCorrectionLevel: 'M' });
+    res.json({ mfa: 'setup', secret: secret.replace(/(.{4})/g, '$1 ').trim(), otpauth: uri, qr });
   });
+});
+
+// 2. vaihe: TOTP-koodi
+app.post('/api/login/mfa', mfaLimiter, (req, res) => {
+  const pend = req.session.pending;
+  if (!pend || pend.exp < Date.now()) { delete req.session.pending; return bad(res, 'Kirjautuminen vanheni. Aloita alusta.', 401); }
+  const u = db.prepare('SELECT * FROM users WHERE id = ?').get(pend.userId);
+  if (!u || !u.active) { delete req.session.pending; return bad(res, 'Kirjautuminen epäonnistui.', 401); }
+  const secret = pend.secret ? auth.decrypt(pend.secret) : (u.mfa_secret ? auth.decrypt(u.mfa_secret) : null);
+  if (!secret) { delete req.session.pending; return bad(res, 'Kirjautuminen epäonnistui. Aloita alusta.', 401); }
+  const step = auth.verifyTotp(secret, req.body.code, pend.secret ? null : u.mfa_last_step);
+  if (step == null) {
+    pend.fails = (pend.fails || 0) + 1;
+    audit(u.id, 'mfa_failed', 'user', u.id);
+    if (pend.fails >= 5) { delete req.session.pending; return bad(res, 'Liian monta väärää koodia. Aloita kirjautuminen alusta.', 401); }
+    return bad(res, 'Koodi ei kelpaa. Tarkista koodi sovelluksesta ja yritä uudelleen.', 401);
+  }
+  if (pend.secret) {
+    db.prepare('UPDATE users SET mfa_secret = ?, mfa_enabled = 1, mfa_last_step = ? WHERE id = ?').run(pend.secret, step, u.id);
+    audit(u.id, 'mfa_enrolled', 'user', u.id);
+  } else {
+    db.prepare('UPDATE users SET mfa_last_step = ? WHERE id = ?').run(step, u.id);
+  }
+  completeLogin(req, res, u, 'password+mfa', () => res.json({ ok: true }));
+});
+
+// ---------------------------------------------------------------------------
+// Microsoft Entra ID -kirjautuminen (säätiön työntekijät)
+// Rooli tulee Entran sovellusroolista (roles-väite), jos se on annettu;
+// muuten käytetään sovelluksessa määriteltyä roolia. Hankkeet hallitaan sovelluksessa.
+// ---------------------------------------------------------------------------
+const AUTH_COOKIE = 'kr.auth';
+const loginError = (res, msg) => res.redirect('/#/kirjaudu?virhe=' + encodeURIComponent(msg));
+app.get('/auth/entra', loginLimiter, async (req, res) => {
+  if (!auth.entraEnabled()) return loginError(res, 'Microsoft-kirjautuminen ei ole käytössä.');
+  try {
+    const { generators } = require('openid-client');
+    const client = await auth.entraClient();
+    const st = { state: generators.state(), nonce: generators.nonce(), verifier: generators.codeVerifier(), exp: Date.now() + 10 * 60 * 1000 };
+    res.cookie(AUTH_COOKIE, auth.signState(st, SESSION_SECRET), { httpOnly: true, sameSite: 'lax', secure: IS_PROD, maxAge: 10 * 60 * 1000, path: '/auth' });
+    res.redirect(client.authorizationUrl({ scope: 'openid profile email', state: st.state, nonce: st.nonce,
+      code_challenge: generators.codeChallenge(st.verifier), code_challenge_method: 'S256', prompt: 'select_account' }));
+  } catch (e) {
+    console.error('Entra-kirjautumisen aloitus epäonnistui:', e.message);
+    loginError(res, 'Microsoft-kirjautumista ei saatu yhteyttä. Yritä hetken kuluttua uudelleen.');
+  }
+});
+
+app.get('/auth/callback', loginLimiter, async (req, res) => {
+  const st = auth.readState(auth.readCookie(req, AUTH_COOKIE), SESSION_SECRET);
+  res.clearCookie(AUTH_COOKIE, { path: '/auth' });
+  if (!auth.entraEnabled() || !st) return loginError(res, 'Kirjautuminen vanheni. Yritä uudelleen.');
+  let claims;
+  try {
+    const client = await auth.entraClient();
+    const params = client.callbackParams(req);
+    if (params.error) return loginError(res, 'Microsoft-kirjautuminen peruttiin tai sitä ei sallittu.');
+    const tokens = await client.callback(auth.entraConfig().redirectUri, params, { state: st.state, nonce: st.nonce, code_verifier: st.verifier });
+    claims = tokens.claims();
+  } catch (e) {
+    console.error('Entra-kirjautuminen epäonnistui:', e.message);
+    return loginError(res, 'Microsoft-kirjautuminen epäonnistui.');
+  }
+  const cfg = auth.entraConfig();
+  if (claims.tid && cfg.tenant && claims.tid !== cfg.tenant) return loginError(res, 'Tunnus ei kuulu säätiön organisaatioon.');
+  const oid = claims.oid || claims.sub;
+  const email = String(claims.email || claims.preferred_username || '').trim().toLowerCase();
+  const name = String(claims.name || email).trim();
+  const roleClaims = Array.isArray(claims.roles) ? claims.roles.filter(r => ROLES[r]) : [];
+  // Useasta roolista valitaan laajin
+  const order = ['admin', 'tiimivetaja', 'hanketyontekija', 'tuntityontekija'];
+  const entraRole = order.find(r => roleClaims.includes(r)) || null;
+
+  let u = db.prepare('SELECT * FROM users WHERE entra_oid = ?').get(oid);
+  if (!u && email) u = db.prepare("SELECT * FROM users WHERE email = ? AND auth_method = 'entra' AND entra_oid IS NULL").get(email);
+  if (!u && email && db.prepare('SELECT 1 FROM users WHERE email = ?').get(email)) {
+    audit(null, 'login_failed', 'user', null, { email, method: 'entra', reason: 'local_account' });
+    return loginError(res, 'Sähköpostiosoitteelle on sovelluksessa salasanatunnus. Pyydä pääkäyttäjää vaihtamaan kirjautumistavaksi Microsoft.');
+  }
+  if (!u && !entraRole) {
+    audit(null, 'login_failed', 'user', null, { email, method: 'entra', reason: 'no_role' });
+    return loginError(res, 'Sinulla ei ole vielä käyttöoikeutta. Ota yhteyttä pääkäyttäjään tai tiiminvetäjään.');
+  }
+  if (!u) {
+    const id = db.prepare(`INSERT INTO users (email, name, password_hash, role, recorder_role, must_change_password, auth_method, entra_oid)
+                           VALUES (?, ?, '!', ?, ?, 0, 'entra', ?)`).run(email || oid, name, entraRole, RECORDER_ROLES[DEFAULT_RECORDER_ROLE_INDEX[entraRole]], oid).lastInsertRowid;
+    audit(null, 'user_create', 'user', id, { role: entraRole, method: 'entra' });
+    u = db.prepare('SELECT * FROM users WHERE id = ?').get(id);
+  } else {
+    if (!u.active) return loginError(res, 'Tunnus on suljettu.');
+    const role = entraRole || u.role;
+    db.prepare(`UPDATE users SET entra_oid = ?, name = ?, role = ?, recorder_role = ?, must_change_password = 0 WHERE id = ?`)
+      .run(oid, name || u.name, role, RECORDER_ROLES[DEFAULT_RECORDER_ROLE_INDEX[role]], u.id);
+    u = db.prepare('SELECT * FROM users WHERE id = ?').get(u.id);
+  }
+  completeLogin(req, res, u, 'entra', () => res.redirect('/#/kirjaa'));
 });
 
 app.post('/api/logout', (req, res) => { req.session.destroy(() => { res.clearCookie('kr.sid'); res.json({ ok: true }); }); });
@@ -252,7 +378,7 @@ app.get('/api/me', requireAuth, (req, res) => {
   const projects = db.prepare(`SELECT id, code, name, active, digital FROM projects WHERE id IN (${req.projectIds.map(() => '?').join(',') || 'NULL'}) ORDER BY sort, name`).all(...req.projectIds);
   res.json({
     user: { id: req.user.id, email: req.user.email, name: req.user.name, role: req.user.role, roleLabel: ROLES[req.user.role].label,
-            mustChangePassword: !!req.user.must_change_password, recorderRole: RECORDER_ROLES[DEFAULT_RECORDER_ROLE_INDEX[req.user.role]] },
+            mustChangePassword: !!req.user.must_change_password, authMethod: req.user.auth_method, mfaEnabled: !!req.user.mfa_enabled, recorderRole: RECORDER_ROLES[DEFAULT_RECORDER_ROLE_INDEX[req.user.role]] },
     permissions: effectivePermissions(req.user.role),
     features: features(),
     projects,
@@ -266,6 +392,7 @@ app.get('/api/me', requireAuth, (req, res) => {
 });
 
 app.post('/api/me/password', requireAuth, (req, res) => {
+  if (req.user.auth_method === 'entra') return bad(res, 'Microsoft-tunnuksen salasanaa hallitaan Microsoftin palveluissa.');
   const { current, next: newPw } = req.body;
   const u = db.prepare('SELECT password_hash FROM users WHERE id = ?').get(req.user.id);
   if (!bcrypt.compareSync(String(current || ''), u.password_hash)) return bad(res, 'Nykyinen salasana on väärin.');
@@ -590,7 +717,7 @@ app.get('/api/export', requireAuth, async (req, res) => {
 const tempPassword = () => crypto.randomBytes(9).toString('base64url');
 
 app.get('/api/users', requireAuth, requirePerm('manageUsers'), (req, res) => {
-  const users = db.prepare('SELECT id, email, name, role, recorder_role, active, last_login_at, created_at FROM users ORDER BY name').all();
+  const users = db.prepare('SELECT id, email, name, role, recorder_role, active, last_login_at, created_at, auth_method, mfa_enabled, entra_oid IS NOT NULL entra_linked FROM users ORDER BY name').all();
   const links = db.prepare('SELECT user_id, project_id FROM user_projects').all();
   for (const u of users) u.project_ids = links.filter(l => l.user_id === u.id).map(l => l.project_id);
   res.json({ users });
@@ -601,6 +728,7 @@ function validateUserBody(b) {
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(b.email || ''))) return 'Anna kelvollinen sähköpostiosoite.';
   if (!ROLES[b.role]) return 'Valitse rooli.';
   if (!Array.isArray(b.project_ids)) return 'Virheelliset hankkeet.';
+  if (b.auth_method != null && !['local', 'entra'].includes(b.auth_method)) return 'Valitse kirjautumistapa.';
   return null;
 }
 // Kirjaajan rooli johdetaan aina käyttöoikeusroolista, sitä ei valita erikseen.
@@ -616,12 +744,14 @@ function setUserProjects(userId, ids) {
 app.post('/api/users', requireAuth, requirePerm('manageUsers'), (req, res) => {
   const err = validateUserBody(req.body); if (err) return bad(res, err);
   if (db.prepare('SELECT 1 FROM users WHERE email = ?').get(req.body.email)) return bad(res, 'Sähköpostiosoite on jo käytössä.');
-  const pw = tempPassword();
+  const method = req.body.auth_method || 'local';
+  // Microsoft-tunnuksella ei ole salasanaa; kirjautuminen yhdistyy sähköpostiosoitteen perusteella
+  const pw = method === 'local' ? tempPassword() : null;
   const id = db.transaction(() => {
-    const id = db.prepare('INSERT INTO users (email, name, password_hash, role, recorder_role) VALUES (?, ?, ?, ?, ?)')
-      .run(String(req.body.email).trim(), String(req.body.name).trim(), bcrypt.hashSync(pw, 12), req.body.role, recorderRoleFor(req.body)).lastInsertRowid;
+    const id = db.prepare('INSERT INTO users (email, name, password_hash, role, recorder_role, auth_method, must_change_password) VALUES (?, ?, ?, ?, ?, ?, ?)')
+      .run(String(req.body.email).trim(), String(req.body.name).trim(), pw ? bcrypt.hashSync(pw, 12) : '!', req.body.role, recorderRoleFor(req.body), method, pw ? 1 : 0).lastInsertRowid;
     setUserProjects(id, req.body.project_ids);
-    audit(req.user.id, 'user_create', 'user', id, { role: req.body.role });
+    audit(req.user.id, 'user_create', 'user', id, { role: req.body.role, method });
     return id;
   })();
   res.status(201).json({ id, temporaryPassword: pw });
@@ -636,19 +766,40 @@ app.put('/api/users/:id', requireAuth, requirePerm('manageUsers'), (req, res) =>
   if (other) return bad(res, 'Sähköpostiosoite on jo käytössä.');
   const active = req.body.active === false ? 0 : 1;
   if (id === req.user.id && (req.body.role !== 'admin' || !active)) return bad(res, 'Et voi poistaa omaa admin-oikeuttasi.');
+  const method = req.body.auth_method || u.auth_method;
+  if (id === req.user.id && method !== u.auth_method) return bad(res, 'Et voi vaihtaa omaa kirjautumistapaasi.');
+  let temporaryPassword = null;
   db.transaction(() => {
-    db.prepare('UPDATE users SET email = ?, name = ?, role = ?, recorder_role = ?, active = ? WHERE id = ?')
-      .run(String(req.body.email).trim(), String(req.body.name).trim(), req.body.role, recorderRoleFor(req.body), active, id);
+    db.prepare('UPDATE users SET email = ?, name = ?, role = ?, recorder_role = ?, active = ?, auth_method = ? WHERE id = ?')
+      .run(String(req.body.email).trim(), String(req.body.name).trim(), req.body.role, recorderRoleFor(req.body), active, method, id);
+    if (method !== u.auth_method) {
+      // Kirjautumistavan vaihto: Microsoft → salasana saa väliaikaisen salasanan; salasana → Microsoft poistaa salasanan ja MFA:n
+      if (method === 'local') { temporaryPassword = tempPassword(); db.prepare('UPDATE users SET password_hash = ?, must_change_password = 1, entra_oid = NULL WHERE id = ?').run(bcrypt.hashSync(temporaryPassword, 12), id); }
+      else db.prepare("UPDATE users SET password_hash = '!', must_change_password = 0, mfa_secret = NULL, mfa_enabled = 0, mfa_last_step = NULL WHERE id = ?").run(id);
+      db.prepare("DELETE FROM sessions WHERE json_extract(sess, '$.userId') = ?").run(id);
+    }
     setUserProjects(id, req.body.project_ids);
     if (!active) db.prepare("DELETE FROM sessions WHERE json_extract(sess, '$.userId') = ?").run(id);
-    audit(req.user.id, 'user_update', 'user', id, { role: req.body.role, active });
+    audit(req.user.id, 'user_update', 'user', id, { role: req.body.role, active, method });
   })();
+  res.json({ ok: true, temporaryPassword });
+});
+
+// Kadonnut puhelin tai uusi todennussovellus: käyttäjä ottaa MFA:n uudelleen käyttöön seuraavalla kirjautumisella
+app.post('/api/users/:id/reset-mfa', requireAuth, requirePerm('manageUsers'), (req, res) => {
+  const id = Number(req.params.id);
+  if (!db.prepare('SELECT 1 FROM users WHERE id = ?').get(id)) return bad(res, 'Käyttäjää ei löydy.', 404);
+  db.prepare('UPDATE users SET mfa_secret = NULL, mfa_enabled = 0, mfa_last_step = NULL WHERE id = ?').run(id);
+  db.prepare("DELETE FROM sessions WHERE json_extract(sess, '$.userId') = ?").run(id);
+  audit(req.user.id, 'user_reset_mfa', 'user', id);
   res.json({ ok: true });
 });
 
 app.post('/api/users/:id/reset-password', requireAuth, requirePerm('manageUsers'), (req, res) => {
   const id = Number(req.params.id);
-  if (!db.prepare('SELECT 1 FROM users WHERE id = ?').get(id)) return bad(res, 'Käyttäjää ei löydy.', 404);
+  const target = db.prepare('SELECT auth_method FROM users WHERE id = ?').get(id);
+  if (!target) return bad(res, 'Käyttäjää ei löydy.', 404);
+  if (target.auth_method === 'entra') return bad(res, 'Microsoft-tunnuksen salasanaa hallitaan Microsoftin palveluissa.');
   const pw = tempPassword();
   db.prepare('UPDATE users SET password_hash = ?, must_change_password = 1 WHERE id = ?').run(bcrypt.hashSync(pw, 12), id);
   db.prepare("DELETE FROM sessions WHERE json_extract(sess, '$.userId') = ?").run(id);

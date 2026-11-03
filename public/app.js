@@ -44,7 +44,7 @@ async function api(path, opts = {}) {
   });
   let data = null;
   try { data = await res.json(); } catch { /* ei JSONia */ }
-  if (res.status === 401 && path !== '/login') { state.me = null; go('#/kirjaudu'); throw new Error((data && data.error) || 'Kirjaudu sisään.'); }
+  if (res.status === 401 && !path.startsWith('/login')) { state.me = null; go('#/kirjaudu'); throw new Error((data && data.error) || 'Kirjaudu sisään.'); }
   if (!res.ok) throw new Error((data && data.error) || 'Toiminto epäonnistui.');
   return data;
 }
@@ -90,6 +90,11 @@ const ROUTES = [
 ];
 
 async function route() {
+  // Microsoft-kirjautumisen virhe palaa muodossa #/kirjaudu?virhe=...
+  if (location.hash.startsWith('#/kirjaudu?')) {
+    state.loginError = new URLSearchParams(location.hash.split('?')[1]).get('virhe');
+    history.replaceState(null, '', '#/kirjaudu');
+  }
   const hash = location.hash || '#/kirjaa';
   if (!state.me && hash !== '#/kirjaudu') await loadMe();
   if (!state.me && hash !== '#/kirjaudu') return go('#/kirjaudu');
@@ -153,7 +158,7 @@ function renderNav(hash) {
     ]),
     group('Ylläpito', [p.manageQuestions ? link('#/hallinta/kysymykset', 'Hallinta', 'settings', '#/hallinta') : null]),
     h('div', { class: 'nav-user' },
-      h('a', { href: '#/salasana', class: 'who' + (hash === '#/salasana' ? ' active' : ''), title: 'Vaihda salasana' },
+      h(u.authMethod === 'entra' ? 'div' : 'a', u.authMethod === 'entra' ? { class: 'who', title: 'Kirjautunut Microsoft-tunnuksella' } : { href: '#/salasana', class: 'who' + (hash === '#/salasana' ? ' active' : ''), title: 'Vaihda salasana' },
         h('span', { class: 'avatar', 'aria-hidden': 'true' }, initials), h('span', { class: 'who-text' }, h('strong', null, u.name), h('small', null, u.roleLabel))),
       h('button', { type: 'button', class: 'nav-logout', onclick: logout }, icon('logout'), h('span', null, 'Kirjaudu ulos'))),
   ].filter(Boolean));
@@ -177,34 +182,104 @@ async function logout() {
 // ---------------------------------------------------------------------------
 async function viewLogin() {
   document.getElementById('topbar').hidden = true;
-  const err = h('div', { class: 'notice err', hidden: true });
-  const email = h('input', { type: 'email', id: 'email', autocomplete: 'username', required: true });
-  const pw = h('input', { type: 'password', id: 'password', autocomplete: 'current-password', required: true });
-  const btn = h('button', { class: 'btn btn-primary btn-lg', type: 'submit' }, 'Kirjaudu');
-  const form = h('form', { onsubmit: async (e) => {
-    e.preventDefault(); err.hidden = true; btn.disabled = true;
-    try {
-      await api('/login', { method: 'POST', body: { email: email.value, password: pw.value } });
-      await loadMe(); state.form = null; go('#/kirjaa');
-    } catch (ex) { err.textContent = ex.message; err.hidden = false; pw.value = ''; pw.focus(); }
-    finally { btn.disabled = false; }
-  } },
-    h('div', { class: 'field' }, h('label', { for: 'email' }, 'Sähköposti'), email),
-    h('div', { class: 'field' }, h('label', { for: 'password' }, 'Salasana'), pw),
-    err, btn);
+  let cfg = { entra: false };
+  try { cfg = await api('/auth/config'); } catch { /* oletus: vain salasana */ }
+  const panel = h('div');
   const mark = () => { const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg'); svg.setAttribute('viewBox', '0 0 554 437');
     const use = document.createElementNS('http://www.w3.org/2000/svg', 'use'); use.setAttribute('href', '/brand/tunnus.svg#tunnus'); svg.append(use); return svg; };
   $app.replaceChildren(h('div', { class: 'login-wrap' },
     h('div', { class: 'login-brand' },
       h('div', { class: 'login-mark', 'aria-hidden': 'true' }, mark()),
       h('div', null, h('p', { class: 'login-org' }, 'A-klinikkasäätiö'), h('p', { class: 'login-claim' }, 'Kohtaamisten raportointi'))),
-    h('div', { class: 'login' },
+    h('div', { class: 'login' }, panel)));
+  $app.classList.remove('container');
+  const done = async () => { await loadMe(); state.form = null; go('#/kirjaa'); };
+
+  // 1. vaihe: kirjautumistavan valinta / sähköposti ja salasana
+  function drawStart(message) {
+    const err = h('div', { class: 'notice err', hidden: !message, role: 'alert' }, message || '');
+    const email = h('input', { type: 'email', id: 'email', autocomplete: 'username', required: true });
+    const pw = h('input', { type: 'password', id: 'password', autocomplete: 'current-password', required: true });
+    const btn = h('button', { class: 'btn btn-lg ' + (cfg.entra ? 'btn-secondary' : 'btn-primary'), type: 'submit' }, 'Kirjaudu');
+    const form = h('form', { onsubmit: async (e) => {
+      e.preventDefault(); err.hidden = true; btn.disabled = true;
+      try {
+        const r = await api('/login', { method: 'POST', body: { email: email.value, password: pw.value } });
+        if (r.mfa) drawMfa(r, email.value); else await done();
+      } catch (ex) { err.textContent = ex.message; err.hidden = false; pw.value = ''; pw.focus(); }
+      finally { btn.disabled = false; }
+    } },
+      h('div', { class: 'field' }, h('label', { for: 'email' }, 'Sähköposti'), email),
+      h('div', { class: 'field' }, h('label', { for: 'password' }, 'Salasana'), pw),
+      btn);
+    panel.replaceChildren(...[
       h('h1', null, 'Kirjaudu sisään'),
       h('p', { class: 'muted' }, 'Hankkeiden yhteinen kohtaamisten kirjaus ja seuranta.'),
+      err,
+      cfg.entra ? [
+        h('div', { class: 'login-method' },
+          h('h2', null, 'A-klinikkasäätiön työntekijät'),
+          h('a', { class: 'btn btn-primary btn-lg btn-ms', href: '/auth/entra' }, msLogo(), h('span', null, 'Kirjaudu Microsoft-tunnuksella'))),
+        h('div', { class: 'login-divider', role: 'separator' }, h('span', null, 'tai')),
+        h('div', { class: 'login-method' }, h('h2', null, 'Tuntityöntekijät ja muut'),
+          h('p', { class: 'small muted' }, 'Sähköposti, salasana ja todennussovelluksen koodi.'), form),
+      ] : form,
+      h('p', { class: 'small muted login-help' }, 'Tunnukset saat hankkeesi tiiminvetäjältä tai pääkäyttäjältä.')].flat());
+    (cfg.entra ? panel.querySelector('.btn-ms') : email).focus();
+  }
+
+  // 2. vaihe: todennussovelluksen koodi (ensimmäisellä kerralla käyttöönotto)
+  function drawMfa(r, account) {
+    const err = h('div', { class: 'notice err', hidden: true, role: 'alert' });
+    const code = h('input', { type: 'text', id: 'mfa-code', inputmode: 'numeric', autocomplete: 'one-time-code', pattern: '[0-9 ]*', maxlength: '7',
+      class: 'input-narrow mono code-input', required: true, 'aria-describedby': 'mfa-help' });
+    const btn = h('button', { class: 'btn btn-primary btn-lg', type: 'submit' }, r.mfa === 'setup' ? 'Ota käyttöön ja kirjaudu' : 'Kirjaudu');
+    const form = h('form', { onsubmit: async (e) => {
+      e.preventDefault(); err.hidden = true; btn.disabled = true;
+      try { await api('/login/mfa', { method: 'POST', body: { code: code.value } }); await done(); }
+      catch (ex) {
+        err.textContent = ex.message; err.hidden = false; code.value = ''; code.focus();
+        if (/alusta|vanheni/.test(ex.message)) setTimeout(() => drawStart(ex.message), 1500);
+      } finally { btn.disabled = false; }
+    } },
+      h('div', { class: 'field' }, h('label', { for: 'mfa-code' }, '6-numeroinen koodi'), code,
+        h('p', { class: 'help help-below', id: 'mfa-help' }, 'Koodi vaihtuu 30 sekunnin välein.')),
+      err, btn,
+      h('button', { class: 'btn btn-secondary', type: 'button', onclick: () => drawStart() }, 'Peruuta'));
+    panel.replaceChildren(...(r.mfa === 'setup' ? [
+      h('h1', null, 'Ota kaksivaiheinen tunnistautuminen käyttöön'),
+      h('p', { class: 'muted' }, 'Tunnuksesi suojataan salasanan lisäksi puhelimen todennussovelluksella. Tämä tehdään vain kerran.'),
+      h('ol', { class: 'mfa-steps' },
+        h('li', null, 'Asenna puhelimeen todennussovellus, esim. ', h('strong', null, 'Microsoft Authenticator'), ' tai Google Authenticator.'),
+        h('li', null, 'Lisää sovellukseen uusi tili ja lue alla oleva QR-koodi.',
+          h('div', { class: 'mfa-qr' }, h('img', { src: r.qr, alt: 'QR-koodi todennussovellukseen', width: '220', height: '220' })),
+          h('details', { class: 'define' }, h('summary', null, 'Et voi lukea koodia?'),
+            h('p', null, 'Jos käytät tätä samalla puhelimella, ', h('a', { href: r.otpauth }, 'avaa todennussovelluksessa'), '. Voit myös syöttää avaimen käsin:'),
+            h('p', null, h('code', { class: 'mfa-secret' }, r.secret)),
+            h('p', { class: 'small muted' }, `Tili: ${account} · tyyppi: aikaperusteinen (TOTP)`))),
+        h('li', null, 'Kirjoita sovelluksen näyttämä koodi alle.')),
       form,
-      h('p', { class: 'small muted login-help' }, 'Tunnukset saat hankkeesi tiiminvetäjältä tai pääkäyttäjältä.'))));
-  $app.classList.remove('container');
-  email.focus();
+    ] : [
+      h('h1', null, 'Vahvista kirjautuminen'),
+      h('p', { class: 'muted' }, 'Avaa puhelimen todennussovellus ja kirjoita sen näyttämä koodi.'),
+      form,
+      h('p', { class: 'small muted login-help' }, 'Puhelin kadonnut tai vaihtunut? Pyydä pääkäyttäjää nollaamaan kaksivaiheinen tunnistautuminen.'),
+    ]));
+    code.focus();
+  }
+
+  const msg = state.loginError; state.loginError = null;
+  drawStart(msg);
+}
+
+function msLogo() {
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('viewBox', '0 0 21 21'); svg.setAttribute('width', '20'); svg.setAttribute('height', '20'); svg.setAttribute('aria-hidden', 'true');
+  [['1', '1', '#f25022'], ['11', '1', '#7fba00'], ['1', '11', '#00a4ef'], ['11', '11', '#ffb900']].forEach(([x, y, c]) => {
+    const r = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+    r.setAttribute('x', x); r.setAttribute('y', y); r.setAttribute('width', '9'); r.setAttribute('height', '9'); r.setAttribute('fill', c); svg.append(r);
+  });
+  return svg;
 }
 
 async function viewPassword() {
@@ -1322,14 +1397,24 @@ function adminTabs(active) {
 // --- Käyttäjät
 async function viewUsers() {
   $app.classList.add('container');
-  const [{ users }, { projects }] = await Promise.all([api('/users'), api('/projects')]);
+  const [{ users }, { projects }, cfg] = await Promise.all([api('/users'), api('/projects'), api('/auth/config')]);
   const roles = state.me.roles;
+  const METHODS = { entra: 'Säätiön Microsoft-tunnus (Entra ID)', local: 'Sähköposti + salasana + todennussovellus' };
+  const defaultMethod = (r) => (r === 'tuntityontekija' || !cfg.entra ? 'local' : 'entra');
   const editorBox = h('div');
   const pname = (id) => (projects.find(p => p.id === id) || {}).name || '?';
 
   function openEditor(u) {
     const isNew = !u;
-    u = u || { name: '', email: '', role: 'hanketyontekija', active: 1, project_ids: [] };
+    u = u || { name: '', email: '', role: 'hanketyontekija', active: 1, project_ids: [], auth_method: defaultMethod('hanketyontekija') };
+    const method = h('select', { id: 'u-method' }, Object.entries(METHODS).map(([k, v]) => h('option', { value: k, selected: k === u.auth_method }, v)));
+    let methodTouched = !isNew;
+    const methodHelp = h('p', { class: 'help help-below' });
+    const syncMethod = () => methodHelp.replaceChildren(method.value === 'entra'
+      ? (cfg.entra ? 'Kirjautuu säätiön Microsoft-tunnuksella. Sähköpostin on oltava sama kuin Microsoft-tunnuksessa. Kaksivaiheinen tunnistautuminen hoidetaan Microsoftin puolella.'
+        : h('span', { class: 'warn-text' }, 'Microsoft-kirjautumista ei ole vielä otettu käyttöön palvelimella. Tunnus toimii, kun Entra ID -asetukset on tehty.'))
+      : 'Saa väliaikaisen salasanan. Ensimmäisellä kirjautumisella otetaan käyttöön todennussovellus (esim. Microsoft Authenticator).');
+    method.addEventListener('change', () => { methodTouched = true; syncMethod(); });
     const name = h('input', { type: 'text', id: 'u-name', value: u.name });
     const email = h('input', { type: 'email', id: 'u-email', value: u.email });
     const role = h('select', { id: 'u-role' }, Object.entries(roles).map(([k, v]) => h('option', { value: k, selected: k === u.role }, v)));
@@ -1347,31 +1432,43 @@ async function viewUsers() {
       roleHelp.replaceChildren(h('strong', null, state.me.roleDescriptions[role.value]), '. ', ROLE_HELP[role.value], ' ',
         h('span', { class: 'muted' }, `Kirjauksiin tallentuu: ”${state.me.defaultRecorderRoles[role.value]}”.`));
     };
-    role.addEventListener('change', syncHelp); syncHelp();
+    role.addEventListener('change', () => { syncHelp(); if (!methodTouched) { method.value = defaultMethod(role.value); syncMethod(); } }); syncHelp(); syncMethod();
 
     editorBox.replaceChildren(h('div', { class: 'card editor' },
       h('h2', null, isNew ? 'Uusi käyttäjä' : 'Muokkaa käyttäjää'),
       h('div', { class: 'row' }, h('div', { class: 'field' }, h('label', { for: 'u-name' }, 'Nimi'), name),
         h('div', { class: 'field' }, h('label', { for: 'u-email' }, 'Sähköposti (käyttäjätunnus)'), email)),
       h('div', { class: 'field' }, h('label', { for: 'u-role' }, 'Rooli'), roleHelp, role),
+      h('div', { class: 'field' }, h('label', { for: 'u-method' }, 'Kirjautumistapa'), method, methodHelp),
       h('div', { class: 'field' }, h('div', { class: 'label' }, 'Hankkeet'), h('div', { class: 'checks' },
         pboxes.map(b => h('label', { class: 'opt' }, b.el, h('span', null, pname(b.id)))))),
       !isNew ? h('div', { class: 'field' }, h('label', { class: 'switch' }, active, 'Tunnus käytössä')) : null,
       msg,
       h('div', { class: 'actions' },
         h('button', { class: 'btn btn-primary', type: 'button', onclick: async () => {
-          const body = { name: name.value, email: email.value, role: role.value, active: active.checked, project_ids: pboxes.filter(b => b.el.checked).map(b => b.id) };
+          const body = { name: name.value, email: email.value, role: role.value, active: active.checked, auth_method: method.value, project_ids: pboxes.filter(b => b.el.checked).map(b => b.id) };
           try {
             if (isNew) {
               const r = await api('/users', { method: 'POST', body });
-              showTemp(`Käyttäjä luotu. Väliaikainen salasana:`, r.temporaryPassword);
-            } else { await api('/users/' + u.id, { method: 'PUT', body }); toast('Tallennettu.'); viewUsers(); }
+              if (r.temporaryPassword) showTemp(`Käyttäjä luotu. Väliaikainen salasana:`, r.temporaryPassword);
+              else { toast('Käyttäjä luotu. Hän kirjautuu Microsoft-tunnuksella.'); viewUsers(); }
+            } else {
+              const r = await api('/users/' + u.id, { method: 'PUT', body });
+              if (r.temporaryPassword) showTemp(`Kirjautumistapa vaihdettu. Väliaikainen salasana:`, r.temporaryPassword);
+              else { toast('Tallennettu.'); viewUsers(); }
+            }
           } catch (ex) { msg.className = 'notice err'; msg.textContent = ex.message; msg.hidden = false; }
         } }, isNew ? 'Luo käyttäjä' : 'Tallenna'),
-        !isNew ? h('button', { class: 'btn btn-secondary', type: 'button', onclick: async () => {
+        !isNew && u.auth_method === 'local' ? h('button', { class: 'btn btn-secondary', type: 'button', onclick: async () => {
           try { const r = await api(`/users/${u.id}/reset-password`, { method: 'POST' }); showTemp(`Salasana nollattu käyttäjälle ${u.name}. Uusi väliaikainen salasana:`, r.temporaryPassword); }
           catch (ex) { toast(ex.message, true); }
         } }, 'Nollaa salasana') : null,
+        !isNew && u.auth_method === 'local' && u.mfa_enabled ? h('button', { class: 'btn btn-secondary', type: 'button', onclick: async (ev) => {
+          const b = ev.currentTarget;
+          if (!b.classList.contains('confirming')) { b.classList.add('confirming'); b.textContent = 'Vahvista: nollaa todennussovellus'; return; }
+          try { await api(`/users/${u.id}/reset-mfa`, { method: 'POST' }); toast(`${u.name} ottaa todennussovelluksen uudelleen käyttöön seuraavalla kirjautumisella.`); viewUsers(); }
+          catch (ex) { toast(ex.message, true); }
+        } }, 'Nollaa todennussovellus') : null,
         h('button', { class: 'btn btn-secondary', type: 'button', onclick: () => editorBox.replaceChildren() }, 'Peruuta'))));
     editorBox.scrollIntoView({ behavior: 'smooth', block: 'start' });
     name.focus();
@@ -1387,9 +1484,10 @@ async function viewUsers() {
       h('button', { class: 'btn btn-primary', type: 'button', onclick: () => openEditor(null) }, '+ Uusi käyttäjä')),
     editorBox,
     h('div', { class: 'table-wrap' }, h('table', null,
-      h('thead', null, h('tr', null, h('th', null, 'Nimi'), h('th', null, 'Sähköposti'), h('th', null, 'Rooli'), h('th', null, 'Hankkeet'), h('th', null, 'Viimeksi kirjautunut'), h('th', null, 'Tila'))),
+      h('thead', null, h('tr', null, h('th', null, 'Nimi'), h('th', null, 'Sähköposti'), h('th', null, 'Rooli'), h('th', null, 'Kirjautuminen'), h('th', null, 'Hankkeet'), h('th', null, 'Viimeksi kirjautunut'), h('th', null, 'Tila'))),
       h('tbody', null, users.map(u => h('tr', { class: 'clickable', tabindex: '0', onclick: () => openEditor(u), onkeydown: (e) => { if (e.key === 'Enter') openEditor(u); } },
         h('td', null, h('strong', null, u.name)), h('td', null, u.email), h('td', null, h('span', { class: 'badge blue' }, roles[u.role])),
+        h('td', { class: 'small' }, u.auth_method === 'entra' ? 'Microsoft' : ['Salasana', ' ', u.mfa_enabled ? h('span', { class: 'badge green' }, 'MFA') : h('span', { class: 'badge grey' }, 'MFA ei vielä')]),
         h('td', { class: 'small' }, u.role === 'admin' ? 'Kaikki' : u.project_ids.map(pname).join(', ') || h('span', { class: 'badge red' }, 'Ei hankkeita')),
         h('td', { class: 'small muted' }, u.last_login_at ? fmtDateTime(u.last_login_at) : '–'),
         h('td', null, u.active ? h('span', { class: 'badge green' }, 'Käytössä') : h('span', { class: 'badge grey' }, 'Suljettu'))))))));
@@ -1606,7 +1704,7 @@ async function viewAudit() {
   const LABELS = { login: 'Kirjautuminen', login_failed: 'Epäonnistunut kirjautuminen', password_changed: 'Salasana vaihdettu', encounter_create: 'Kirjaus luotu',
     encounter_update: 'Kirjaus korjattu', encounter_delete: 'Kirjaus poistettu', export: 'Excel-vienti', user_create: 'Käyttäjä luotu', user_update: 'Käyttäjä muokattu',
     user_reset_password: 'Salasana nollattu', demo_create: 'Testidataa luotu', demo_delete: 'Testidata poistettu', project_create: 'Hanke luotu', project_update: 'Hanke muokattu', question_create: 'Kysymys luotu', question_update: 'Kysymys muokattu',
-    feature_enable: 'Toiminto otettu käyttöön', feature_disable: 'Toiminto piilotettu' };
+    feature_enable: 'Toiminto otettu käyttöön', mfa_failed: 'Väärä tunnistautumiskoodi', mfa_enrolled: 'Todennussovellus otettu käyttöön', user_reset_mfa: 'Todennussovellus nollattu', feature_disable: 'Toiminto piilotettu' };
   $app.replaceChildren(adminTabs('#/hallinta/loki'),
     h('p', { class: 'muted' }, '200 viimeisintä tapahtumaa.'),
     h('div', { class: 'table-wrap' }, h('table', null,

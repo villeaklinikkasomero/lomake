@@ -31,6 +31,16 @@ services:
         sync: false            # Render kysyy arvon Blueprintia luodessa
       - key: ADMIN_PASSWORD
         sync: false            # väliaikainen, vaihdetaan ensimmäisellä kirjautumisella
+      - key: MFA_REQUIRED
+        value: "true"
+      - key: APP_URL
+        sync: false            # esim. https://kohtaamisten-raportointi.onrender.com
+      - key: ENTRA_TENANT_ID
+        sync: false
+      - key: ENTRA_CLIENT_ID
+        sync: false
+      - key: ENTRA_CLIENT_SECRET
+        sync: false
     disk:
       name: data
       mountPath: /var/data

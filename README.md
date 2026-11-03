@@ -22,6 +22,25 @@ Ulkoasu noudattaa A-klinikkasäätiön graafista ohjeistoa (15.12.2023):
 - **Tunnus:** `public/brand/tunnus.svg` on piirretty ohjeiston mittasuhteista. Ohjeiston mukaan logoissa käytetään alkuperäistiedostoja, joten korvaa tiedosto viestinnän virallisella SVG:llä. Sovellus käyttää sen sellaisenaan (elementin id `tunnus`).
 - **Navigaatio:** työpöydällä sivupalkki, jossa kohdat on ryhmitelty (Kirjaukset, Seuranta, Ylläpito). Mobiilissa yläpalkki ja avattava valikko.
 
+## Kirjautuminen
+
+| Kuka | Kirjautumistapa |
+|---|---|
+| A-klinikkasäätiön työntekijät (admin, tiiminvetäjä, hanketyöntekijä) | **Microsoft-tunnus (Entra ID)**. Kaksivaiheinen tunnistautuminen hoidetaan Microsoftin puolella. |
+| Tuntityöntekijät ja muut ilman säätiön tunnusta | **Sähköposti + salasana + todennussovellus** (TOTP, esim. Microsoft Authenticator) |
+
+Kirjautumistapa valitaan käyttäjäkohtaisesti kohdassa Hallinta → Käyttäjät. Uuden käyttäjän oletustapa määräytyy roolin mukaan.
+
+**Todennussovellus:** salasanatunnus ottaa sovelluksen käyttöön ensimmäisellä kirjautumisella lukemalla QR-koodin. Sen jälkeen jokaisella kirjautumisella kysytään 6-numeroinen koodi. Samaa koodia ei voi käyttää kahdesti, ja viisi väärää koodia katkaisee kirjautumisyrityksen. Salaisuus tallennetaan kantaan salattuna (AES-256-GCM, avain johdetaan `PSEUDONYM_KEY`:stä tai erillisestä `MFA_KEY`:stä). Jos puhelin katoaa, admin valitsee **Nollaa todennussovellus**. `MFA_REQUIRED=false` kytkee pakotuksen pois, mutta vain kehityskäytössä.
+
+**Microsoft Entra ID:** Microsoft-kirjautuminen otetaan käyttöön asettamalla `ENTRA_TENANT_ID`, `ENTRA_CLIENT_ID`, `ENTRA_CLIENT_SECRET` ja `APP_URL`. Paluuosoite on `APP_URL/auth/callback`. Kirjautumissivulle tulee silloin painike *Kirjaudu Microsoft-tunnuksella*.
+
+- Sovellusrekisteröinnissä määritellään sovellusroolit, joiden arvot ovat `admin`, `tiimivetaja`, `hanketyontekija` ja `tuntityontekija`. Kun Entrassa on annettu rooli, se ohittaa sovelluksen roolin ja päivittyy jokaisella kirjautumisella. Käyttäjä, jolla on rooli, luodaan automaattisesti ensimmäisellä kirjautumisella.
+- Ilman Entra-roolia käyttäjä pääsee sisään vain, jos admin on luonut hänelle etukäteen Microsoft-tunnuksen samalla sähköpostiosoitteella. Silloin rooli tulee sovelluksesta.
+- Hankkeisiin liittäminen tehdään aina sovelluksessa.
+- Toisen organisaation tunnuksilla ei pääse sisään. Sähköpostiosoite, jolle on sovelluksessa salasanatunnus, ei yhdisty Microsoft-kirjautumiseen ilman adminin päätöstä.
+- Kirjautuminen käyttää valtuutuskoodia PKCE-suojauksella, ja state, nonce ja PKCE-tunniste ovat lyhytikäisessä allekirjoitetussa evästeessä.
+
 ## Roolit
 
 | | Admin | Tiiminvetäjä | Hanketyöntekijä | Tuntityöntekijä (avustaja) |
