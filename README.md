@@ -111,7 +111,7 @@ Tiiminvetäjä näkee vain omien hankkeidensa kirjaukset, vaikka työntekijä ki
 **Tunnisteet ovat hankekohtaisia.** Jokaisella hankkeella on omat nimimerkkinsä. Sama nimimerkki voi olla eri hankkeissa eri asiakkaalla, eikä hankkeiden välillä ole asiakaslinkitystä. Hanke on mukana tiivisteen laskennassa, joten saman nimimerkin tiivisteet eri hankkeissa eivät täsmää edes tietokannassa.
 
 **Kirjaaminen** (yksilökohtaaminen, hanke valittuna):
-- **Ei tunnistetta / Palaava asiakas / Uusi asiakas.** Uudelle asiakkaalle keksitään nimimerkki tai luodaan satunnainen kaksisanainen nimimerkki (esim. *Sininen Kettu*; jos hankkeessa on jo paljon asiakkaita, loppuun lisätään numero, esim. *Sininen Kettu 12*). Tunniste on yksilöllinen hankkeen sisällä, ja kirjainkoko, välilyönnit ja väliviivat eivät vaikuta tunnistamiseen.
+- **Ei tunnistetta / Palaava asiakas / Uusi asiakas.** Uudelle asiakkaalle keksitään nimimerkki tai luodaan satunnainen kaksisanainen nimimerkki (esim. *Sininen Kettu*; jos hankkeessa on jo paljon asiakkaita, loppuun lisätään numero, esim. *Sininen Kettu 12*). Tunniste on yksilöllinen hankkeen sisällä, ja kirjainkoko, välilyönnit, väliviivat ja ääkköset (ä = a) eivät vaikuta tunnistamiseen.
 - **Palaavan asiakkaan haku** näyttää vain kohtaamisten määrän tässä hankkeessa, ensimmäisen kohtaamisen kuukauden ja hankkeen avoimet ohjaukset. Avoimet ohjaukset voi kuitata: *toteutui* tai *ei toteutunut*.
 - **Ohjattiinko asiakas palveluun?** Palvelulistaa ylläpidetään kohdassa Hallinta → Ohjauspalvelut. Ilman tunnistetta ohjauksen tila on *ei seurattavissa*.
 

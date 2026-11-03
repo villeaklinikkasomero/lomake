@@ -540,3 +540,19 @@ test('kadunnimet: kunnan kadut omasta aineistosta, kaupungin mukaan', async () =
   assert.ok(!r.data.items.includes('Mannerheimintie'), 'tuntematon kunta ei tuo katuja');
   assert.equal(require('../src/kunnat.json').length, 308);
 });
+
+test('nimimerkki: ääkköset ja kirjainkoko eivät estä löytymistä; vanha tiiviste päivittyy', async () => {
+  const p = P(); const tv = users.tiimivetaja; const clients = require('../src/clients');
+  let r = await tv('POST', '/encounters', basePayload(p.KATUKLINIKKA, { client_mode: 'new', client_ref: 'Tähtinen Mäyrä', client_generated: true }));
+  assert.equal(r.status, 201, JSON.stringify(r.data));
+  for (const v of ['tähtinen mäyrä', 'Tahtinen Mayra', 'TAHTINEN-MAYRA']) {
+    r = await tv('POST', '/clients/lookup', { ref: v, project_id: p.KATUKLINIKKA });
+    assert.equal(r.data.found, true, v);
+  }
+  // Vanha (ääkkösiä erotteleva) tiiviste löytyy alkuperäisellä kirjoitusasulla ja päivittyy
+  const crypto = require('crypto');
+  const v1 = crypto.createHmac('sha256', 'kehitys-avain-ei-tuotantoon').update(`asiakas:p${p.KATUKLINIKKA}:` + clients.normalize('Pöllö Ilves')).digest('hex');
+  db.prepare('INSERT INTO clients (project_id, ref_hash, legacy) VALUES (?, ?, 0)').run(p.KATUKLINIKKA, v1);
+  assert.ok(clients.findClient(p.KATUKLINIKKA, 'pöllö ilves'));
+  assert.ok(clients.findClient(p.KATUKLINIKKA, 'pollo ilves'), 'päivityksen jälkeen myös ilman ääkkösiä');
+});

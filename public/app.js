@@ -505,7 +505,7 @@ function renderEncounterForm(opts) {
       if (s.client.mode === 'existing' && s.client.checkedRef !== s.client.ref) {
         try { await lookupClient(s); } catch (ex) { showFieldError('fw-client', ex.message, errBox); return; }
       }
-      if (s.client.mode === 'existing' && !s.client.summary) { showFieldError('fw-client', 'Asiakastunnistetta ei löydy. Tarkista kirjoitusasu tai valitse ”Uusi asiakas”.', errBox); return; }
+      if (s.client.mode === 'existing' && !s.client.summary) { showFieldError('fw-client', 'Nimimerkkiä ei löydy tästä hankkeesta. Tarkista hanke ja kirjoitusasu, tai valitse ”Uusi asiakas”.', errBox); return; }
       if (s.client.mode === 'new' && s.client.available === false && s.client.checkedRef === s.client.ref) { showFieldError('fw-client', 'Tunniste on jo toisen asiakkaan käytössä. Valitse toinen tunniste.', errBox); return; }
       Object.assign(payload, {
         client_mode: s.client.mode, client_ref: s.client.mode === 'none' ? '' : s.client.ref, client_generated: s.client.generated,
@@ -603,7 +603,11 @@ function renderClientSection(s, opts) {
       function drawStatus() {
         const out = [];
         if (c.mode === 'existing' && c.checkedRef === c.ref && c.ref) {
-          if (!c.summary) out.push(h('p', { class: 'field-error' }, 'Tunnistetta ei löydy. Tarkista kirjoitusasu tai valitse ”Uusi asiakas”.'));
+          if (!c.summary) {
+            const pr = (state.me.projects.find(x => x.id === s.project_id) || {}).name || 'tästä hankkeesta';
+            out.push(h('div', { class: 'field-error' }, h('p', null, `Nimimerkkiä ei löydy hankkeesta ${pr}.`),
+              h('p', { class: 'small' }, 'Nimimerkit ovat hankekohtaisia: tarkista, että hanke on sama kuin ensimmäisellä kerralla. Tarkista myös kirjoitusasu, tai valitse ”Uusi asiakas”.')));
+          }
           else {
             const sm = c.summary;
             out.push(h('div', { class: 'notice ok client-found' }, h('strong', null, '✓ Tunnistettu asiakas'),
@@ -628,7 +632,7 @@ function renderClientSection(s, opts) {
         }
         if (c.mode === 'new' && c.generated && c.ref) {
           out.push(h('div', { class: 'notice info' }, h('p', null, 'Kerro nimimerkki asiakkaalle: ', h('strong', { class: 'code-big' }, c.ref)),
-            h('p', { class: 'small' }, 'Nimimerkki on käytössä vain tässä hankkeessa. Sitä ei voi hakea järjestelmästä myöhemmin, joten asiakkaan kannattaa painaa se mieleen. Kirjainkoolla ja välilyönneillä ei ole väliä.')));
+            h('p', { class: 'small' }, 'Nimimerkki on käytössä vain tässä hankkeessa. Sitä ei voi hakea järjestelmästä myöhemmin, joten asiakkaan kannattaa painaa se mieleen. Kirjainkoolla, välilyönneillä tai ääkkösillä ei ole väliä.')));
         }
         status.replaceChildren(...out);
       }
@@ -639,7 +643,7 @@ function renderClientSection(s, opts) {
             h('input', { type: 'radio', name: 'client_mode', value: v, checked: c.mode === v, onchange: () => modeChange(v) }), h('span', null, t)))),
         c.mode === 'none' ? h('p', { class: 'help' }, services.length ? 'Ilman tunnistetta asiakkaan palveluihin ohjautumista ei voi seurata.'
           : 'Ilman tunnistetta kohtaaminen lasketaan täysin anonyymiksi, eikä se sisälly eri henkilöiden määrään.') : [
-          h('p', { class: 'help' }, c.mode === 'existing' ? 'Kirjoita asiakkaan nimimerkki tai tunnus. Kirjainkoolla, välilyönneillä ja väliviivoilla ei ole väliä.'
+          h('p', { class: 'help' }, c.mode === 'existing' ? 'Kirjoita asiakkaan nimimerkki tai tunnus. Kirjainkoolla, välilyönneillä, väliviivoilla tai ääkkösillä ei ole väliä.'
             : 'Keksi asiakkaan kanssa nimimerkki tai luo helposti muistettava nimimerkki, esim. ”Sininen Kettu”. Älä käytä oikeaa nimeä.'),
           h('div', { class: 'actions client-row' }, input,
             c.mode === 'existing' ? h('button', { type: 'button', class: 'btn btn-secondary', onclick: check }, 'Hae')

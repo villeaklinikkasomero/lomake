@@ -107,8 +107,17 @@ if (db.prepare('SELECT COUNT(*) n FROM referral_services').get().n === 0) {
 function normalize(ref) {
   return String(ref || '').normalize('NFKC').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '');
 }
+// Lisäksi ääkköset ja muut tarkkeet ohitetaan: "Mäyrä", "Mayra" ja "MÄYRÄ" ovat sama tunniste
+// (puhelimella tai vieraalla näppäimistöllä ääkköset jäävät helposti pois).
+function fold(ref) {
+  return normalize(ref).normalize('NFD').replace(/\p{M}+/gu, '').normalize('NFC');
+}
 // Hankekohtainen tiiviste: sama nimimerkki eri hankkeissa → eri tiiviste
 function hashRef(projectId, ref) {
+  return crypto.createHmac('sha256', KEY).update(`asiakas:p${Number(projectId)}:` + fold(ref)).digest('hex');
+}
+// Aiempi tiiviste (ääkköset erotteleva) – vanhat rivit päivitetään haun yhteydessä
+function hashRefV1(projectId, ref) {
   return crypto.createHmac('sha256', KEY).update(`asiakas:p${Number(projectId)}:` + normalize(ref)).digest('hex');
 }
 // Vanha (ennen hankekohtaisuutta) tiiviste – käytetään vain vanhojen rivien päivittämiseen
@@ -145,6 +154,16 @@ function findClient(projectId, ref) {
   const hash = hashRef(projectId, ref);
   const c = db.prepare('SELECT * FROM clients WHERE project_id = ? AND ref_hash = ?').get(projectId, hash);
   if (c) return c;
+  // Ennen ääkkösten ohitusta tallennettu tunniste löytyy, kun se kirjoitetaan samoin kuin tallennettaessa.
+  // Rivi päivitetään samalla uuteen muotoon, jonka jälkeen kelpaa myös ääkkösetön kirjoitusasu.
+  const v1 = hashRefV1(projectId, ref);
+  if (v1 !== hash) {
+    const o = db.prepare('SELECT * FROM clients WHERE project_id = ? AND ref_hash = ? AND legacy = 0').get(projectId, v1);
+    if (o) {
+      try { db.prepare('UPDATE clients SET ref_hash = ? WHERE id = ?').run(hash, o.id); return { ...o, ref_hash: hash }; }
+      catch { return o; }   // harvinainen törmäys (esim. "Mäyrä" ja "Mayra" eri asiakkaina): jätetään ennalleen
+    }
+  }
   const old = db.prepare('SELECT * FROM clients WHERE project_id = ? AND legacy = 1 AND ref_hash = ?').get(projectId, legacyHash(ref));
   if (!old) return undefined;
   db.prepare('UPDATE clients SET ref_hash = ?, legacy = 0 WHERE id = ?').run(hash, old.id);
