@@ -114,7 +114,7 @@ function sensitiveHit(text) {
   return null;
 }
 
-function parseQ(q) { return { ...q, options: q.options ? JSON.parse(q.options) : null, required: !!q.required, active: !!q.active, free_text_warning: !!q.free_text_warning }; }
+function parseQ(q) { return { ...q, options: q.options ? JSON.parse(q.options) : null, required: !!q.required, active: !!q.active, free_text_warning: !!q.free_text_warning, suggest: !!q.suggest }; }
 
 function activeQuestionsFor(projectId, type) {
   return db.prepare(`SELECT * FROM questions WHERE active = 1 AND (project_id IS NULL OR project_id = ?)
@@ -241,6 +241,51 @@ function completeLogin(req, res, u, method, done) {
     done();
   });
 }
+
+// ---------------------------------------------------------------------------
+// Täydennysehdotukset tekstikysymyksiin (vähintään 2 merkkiä)
+//  - kaupunki: Suomen kunnat + aiemmin kirjatut
+//  - muut (esim. kadunnimi): aiemmin kirjatut omien hankkeiden kirjauksista. Arvo ehdotetaan,
+//    jos sitä on käytetty vähintään kahdessa kirjauksessa tai käyttäjä on kirjannut sen itse
+//    (yksittäinen, mahdollisesti virheellinen teksti ei näy muille). Kadunnimet rajataan
+//    valittuun kaupunkiin, jos sellainen on annettu.
+// ---------------------------------------------------------------------------
+const MUNICIPALITIES = require('./kunnat.json');
+const fold = (v) => String(v || '').normalize('NFKC').trim().toLocaleLowerCase('fi');
+const suggestLimiter = rateLimit({ windowMs: 60 * 1000, limit: 120, standardHeaders: true, legacyHeaders: false, message: { error: 'Liian monta hakua.' } });
+app.get('/api/suggest', requireAuth, requirePerm('record'), suggestLimiter, (req, res) => {
+  const key = String(req.query.key || '');
+  const q = fold(req.query.q);
+  const qrow = db.prepare("SELECT id FROM questions WHERE key = ? AND type = 'text' AND suggest = 1").get(key);
+  if (!qrow || q.length < 2 || q.length > 60) return res.json({ items: [] });
+  const ph = req.projectIds.map(() => '?').join(',') || 'NULL';
+  let cityFilter = '', cityParams = [];
+  const city = fold(req.query.kaupunki);
+  const cityQ = db.prepare("SELECT id FROM questions WHERE key = 'kaupunki'").get();
+  if (key !== 'kaupunki' && city && cityQ) {
+    cityFilter = 'AND EXISTS (SELECT 1 FROM encounter_answers c WHERE c.encounter_id = e.id AND c.question_id = ? AND lower(trim(c.value)) = ?)';
+    cityParams = [cityQ.id, city];
+  }
+  const history = (withCity) => db.prepare(`SELECT a.value, COUNT(*) n, MAX(e.created_by = ?) mine FROM encounter_answers a
+      JOIN encounters e ON e.id = a.encounter_id
+      WHERE a.question_id = ? AND e.deleted_at IS NULL AND e.project_id IN (${ph}) ${withCity ? cityFilter : ''}
+      GROUP BY lower(trim(a.value))`).all(req.user.id, qrow.id, ...req.projectIds, ...(withCity ? cityParams : []))
+    .filter(r => r.n >= 2 || r.mine).map(r => ({ value: String(r.value).trim(), n: r.n }));
+  let rows = history(true);
+  if (cityFilter && !rows.some(r => fold(r.value).includes(q))) rows = history(false);
+  if (key === 'kaupunki') {
+    const known = new Set(rows.map(r => fold(r.value)));
+    for (const m of MUNICIPALITIES) if (!known.has(fold(m))) rows.push({ value: m, n: 0 });
+  }
+  // Alusta alkavat ensin, sitten sanan alusta, sitten muualta; käytetyimmät ensin
+  const rank = (v) => { const f = fold(v); return f.startsWith(q) ? 0 : f.split(/[\s-]+/).some(w => w.startsWith(q)) ? 1 : f.includes(q) ? 2 : 9; };
+  let ranked = rows.map(r => ({ ...r, r: rank(r.value) })).filter(r => r.r < 9);
+  // Keskeltä sanaa osuvat näytetään vain, jos alkuosumia ei ole (vähemmän kohinaa)
+  if (ranked.some(r => r.r < 2)) ranked = ranked.filter(r => r.r < 2);
+  const items = ranked
+    .sort((a, b) => a.r - b.r || b.n - a.n || a.value.localeCompare(b.value, 'fi')).slice(0, 8).map(r => r.value);
+  res.json({ items });
+});
 
 // Kirjautumistavat kirjautumissivulle (ei vaadi kirjautumista)
 app.get('/api/auth/config', (req, res) => res.json({ entra: auth.entraEnabled(), mfaRequired: auth.mfaRequired() }));
@@ -870,10 +915,10 @@ app.post('/api/questions', requireAuth, requirePerm('manageQuestions'), (req, re
   if (db.prepare('SELECT 1 FROM questions WHERE key = ?').get(b.key)) return bad(res, 'Tunniste on jo käytössä.');
   const pid = b.project_id == null ? null : Number(b.project_id);
   const sort = (db.prepare('SELECT MAX(sort) m FROM questions WHERE project_id IS ?').get(pid).m || 0) + 10;
-  const id = db.prepare(`INSERT INTO questions (key, project_id, label, help, type, options, required, applies_to, free_text_warning, sort, digital_mode, digital_value)
-                         VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`)
+  const id = db.prepare(`INSERT INTO questions (key, project_id, label, help, type, options, required, applies_to, free_text_warning, sort, digital_mode, digital_value, suggest)
+                         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`)
     .run(b.key, pid, b.label.trim(), (b.help || '').trim() || null, b.type, normalizeOptions(b), b.required ? 1 : 0, b.applies_to,
-         ['text', 'textarea'].includes(b.type) ? 1 : 0, sort, ...digitalCols(b)).lastInsertRowid;
+         ['text', 'textarea'].includes(b.type) ? 1 : 0, sort, ...digitalCols(b), b.type === 'text' && b.suggest ? 1 : 0).lastInsertRowid;
   audit(req.user.id, 'question_create', 'question', id, { key: b.key });
   res.status(201).json({ id });
 });
@@ -881,13 +926,13 @@ app.put('/api/questions/:id', requireAuth, requirePerm('manageQuestions'), (req,
   const id = Number(req.params.id);
   const q = db.prepare('SELECT * FROM questions WHERE id = ?').get(id);
   if (!q) return bad(res, 'Kysymystä ei löydy.', 404);
-  const b = { digital_mode: q.digital_mode, digital_value: q.digital_value, ...req.body, project_id: q.project_id };     // hanke ja tunniste ovat pysyviä
+  const b = { digital_mode: q.digital_mode, digital_value: q.digital_value, suggest: !!q.suggest, ...req.body, project_id: q.project_id };     // hanke ja tunniste ovat pysyviä
   const err = validateQuestion(b, false); if (err) return bad(res, err);
   const answered = db.prepare('SELECT COUNT(*) n FROM encounter_answers WHERE question_id = ?').get(id).n;
   if (answered && b.type !== q.type) return bad(res, 'Kysymystyyppiä ei voi muuttaa, kun kysymykseen on jo vastattu. Lisää uusi kysymys ja poista vanha käytöstä.');
-  db.prepare(`UPDATE questions SET label=?, help=?, type=?, options=?, required=?, applies_to=?, active=?, digital_mode=?, digital_value=?, sort=COALESCE(?, sort), updated_at=datetime('now') WHERE id=?`)
+  db.prepare(`UPDATE questions SET label=?, help=?, type=?, options=?, required=?, applies_to=?, active=?, digital_mode=?, digital_value=?, suggest=?, sort=COALESCE(?, sort), updated_at=datetime('now') WHERE id=?`)
     .run(b.label.trim(), (b.help || '').trim() || null, b.type, normalizeOptions(b), b.required ? 1 : 0, b.applies_to,
-         b.active === false ? 0 : 1, ...digitalCols(b), Number.isInteger(b.sort) ? b.sort : null, id);
+         b.active === false ? 0 : 1, ...digitalCols(b), b.type === 'text' && b.suggest ? 1 : 0, Number.isInteger(b.sort) ? b.sort : null, id);
   audit(req.user.id, 'question_update', 'question', id, { label: b.label, active: b.active });
   res.json({ ok: true });
 });

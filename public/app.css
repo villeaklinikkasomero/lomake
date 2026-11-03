@@ -688,3 +688,11 @@ details.info[open] > summary { background: var(--blue); color: #fff; }
 .code-input { font-size: 1.4rem; letter-spacing: .2em; max-width: 10rem; }
 .login form .btn-secondary { width: 100%; margin-top: .5rem; }
 .warn-text { color: #8a5a00; }
+
+/* Täydennysehdotukset */
+.suggest { position: relative; }
+.suggest-list { position: absolute; z-index: 30; left: 0; right: 0; top: calc(100% + 4px); margin: 0; padding: .25rem 0; list-style: none;
+  background: #fff; border: 1px solid #c9d0db; border-radius: 10px; box-shadow: 0 8px 24px rgba(0,0,0,.12); max-height: 18rem; overflow-y: auto; }
+.suggest-list li { padding: .65rem .9rem; min-height: 44px; display: flex; align-items: center; cursor: pointer; }
+.suggest-list li strong { font-weight: 700; }
+.suggest-list li:hover, .suggest-list li.active { background: var(--blue-50, #eef3ff); color: var(--blue, #0037D3); }

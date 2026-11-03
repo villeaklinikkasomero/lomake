@@ -509,3 +509,22 @@ test('tilastot: koosteet, rajaukset, vertailujakso ja oikeudet', async () => {
   // Ei tunnisteita tai vapaatekstejä
   assert.ok(!/revontuli|Keskustelu|Hyvä keskustelu/i.test(JSON.stringify(a.data)));
 });
+
+test('täydennysehdotukset: kunnat ja aiemmin kirjatut, kadut kaupungin mukaan, yksittäinen toisen arvo ei näy', async () => {
+  const p = P(); const tv = users.tiimivetaja;
+  let r = await tv('GET', '/suggest?key=kaupunki&q=ta');
+  assert.equal(r.status, 200);
+  assert.ok(r.data.items.includes('Tampere'), JSON.stringify(r.data));
+  assert.equal((await tv('GET', '/suggest?key=kaupunki&q=t')).data.items.length, 0, 'alle 2 merkkiä');
+  assert.equal((await tv('GET', '/suggest?key=tyontekijan_huomiot&q=hy')).data.items.length, 0, 'vain sallitut kysymykset');
+  // Kadunnimi: kaksi kirjausta Tampereella, yksi Turussa toisen käyttäjän tekemänä
+  for (let i = 0; i < 2; i++) await tv('POST', '/encounters', basePayload(p.KATUKLINIKKA, { answers: { tyontekijan_arvio: '4', sijainti: 'Kadulla tai muulla julkisella paikalla', kaupunki: 'Tampere', kadunnimi: 'Hämeenkatu' } }));
+  await users.admin('POST', '/encounters', basePayload(p.KATUKLINIKKA, { answers: { tyontekijan_arvio: '4', sijainti: 'Kadulla tai muulla julkisella paikalla', kaupunki: 'Turku', kadunnimi: 'Hämeenkatu 5 rappu' } }));
+  r = await tv('GET', '/suggest?key=kadunnimi&q=häm&kaupunki=tampere');
+  assert.deepEqual(r.data.items, ['Hämeenkatu']);
+  r = await tv('GET', '/suggest?key=kadunnimi&q=rappu');
+  assert.ok(!r.data.items.includes('Hämeenkatu 5 rappu'), 'toisen yksittäinen arvo ei näy');
+  assert.ok((await users.admin('GET', '/suggest?key=kadunnimi&q=rappu')).data.items.includes('Hämeenkatu 5 rappu'), 'oma arvo näkyy');
+  // Hankerajaus: hanketyöntekijä (vain Katuklinikka) näkee Katuklinikan kirjaukset
+  assert.ok((await users.hanketyontekija('GET', '/suggest?key=kadunnimi&q=häm')).data.items.includes('Hämeenkatu'));
+});

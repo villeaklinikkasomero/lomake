@@ -228,6 +228,12 @@ if (!db.prepare("PRAGMA table_info(questions)").all().some(c => c.name === 'digi
   db.exec('CREATE UNIQUE INDEX IF NOT EXISTS ux_users_entra_oid ON users(entra_oid) WHERE entra_oid IS NOT NULL');
 }
 
+// Täydennysehdotukset tekstikysymyksiin (esim. kaupunki ja kadunnimi)
+if (!db.prepare('PRAGMA table_info(questions)').all().some(c => c.name === 'suggest')) {
+  db.exec('ALTER TABLE questions ADD COLUMN suggest INTEGER NOT NULL DEFAULT 0');
+  db.prepare("UPDATE questions SET suggest = 1 WHERE key IN ('kaupunki', 'kadunnimi')").run();
+}
+
 // Kertaluonteiset tietomuutokset (ajetaan kerran, eivät ohita adminin myöhempiä muutoksia)
 function once(name, fn) {
   if (db.prepare('SELECT 1 FROM settings WHERE key = ?').get('migration.' + name)) return;

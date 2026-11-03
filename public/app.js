@@ -693,6 +693,55 @@ function showFieldError(fieldId, msg, fallbackBox) {
   if (input) setTimeout(() => input.focus({ preventScroll: true }), 350);
 }
 
+// Täydennysehdotukset tekstikenttään (ARIA-combobox). Haku alkaa 2 merkistä.
+let suggestSeq = 0;
+function attachSuggest(input, q, answers, set) {
+  const listId = 'sg-' + q.key + '-' + (++suggestSeq);
+  const list = h('ul', { class: 'suggest-list', id: listId, role: 'listbox', hidden: true, 'aria-label': 'Ehdotukset' });
+  Object.assign(input, { autocomplete: 'off' });
+  input.setAttribute('role', 'combobox'); input.setAttribute('aria-autocomplete', 'list');
+  input.setAttribute('aria-expanded', 'false'); input.setAttribute('aria-controls', listId);
+  input.setAttribute('autocapitalize', 'words'); input.setAttribute('spellcheck', 'false');
+  let items = [], active = -1, timer = null, seq = 0;
+  const cache = new Map();
+  const close = () => { list.hidden = true; input.setAttribute('aria-expanded', 'false'); input.removeAttribute('aria-activedescendant'); active = -1; };
+  const choose = (v) => { input.value = v; set(v); close(); input.dispatchEvent(new Event('change', { bubbles: true })); };
+  const mark = (v, typed) => {
+    const i = v.toLocaleLowerCase('fi').indexOf(typed.toLocaleLowerCase('fi'));
+    return i < 0 ? v : [v.slice(0, i), h('strong', null, v.slice(i, i + typed.length)), v.slice(i + typed.length)];
+  };
+  const draw = (typed) => {
+    list.replaceChildren(...items.map((v, i) => h('li', { id: `${listId}-${i}`, role: 'option', class: i === active ? 'active' : null, 'aria-selected': i === active ? 'true' : 'false',
+      onmousedown: (e) => e.preventDefault(), onclick: () => choose(v) }, mark(v, typed))));
+    const open = items.length > 0;
+    list.hidden = !open; input.setAttribute('aria-expanded', String(open));
+    if (active >= 0) input.setAttribute('aria-activedescendant', `${listId}-${active}`); else input.removeAttribute('aria-activedescendant');
+  };
+  const load = async () => {
+    const typed = input.value.trim();
+    if (typed.length < 2) { items = []; close(); return; }
+    const params = new URLSearchParams({ key: q.key, q: typed });
+    if (q.key !== 'kaupunki' && answers.kaupunki) params.set('kaupunki', answers.kaupunki);
+    const ck = params.toString(); const my = ++seq;
+    let r = cache.get(ck);
+    if (!r) { try { r = (await api('/suggest?' + ck)).items; cache.set(ck, r); } catch { r = []; } }
+    if (my !== seq || document.activeElement !== input) return;
+    // Ei ehdoteta pelkkää jo kirjoitettua arvoa
+    items = r.filter(v => v.toLocaleLowerCase('fi') !== typed.toLocaleLowerCase('fi')); active = -1; draw(typed);
+  };
+  input.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(load, 150); });
+  input.addEventListener('focus', () => { if (input.value.trim().length >= 2) load(); });
+  input.addEventListener('blur', () => setTimeout(close, 120));
+  input.addEventListener('keydown', (e) => {
+    if (list.hidden) return;
+    if (e.key === 'ArrowDown') { e.preventDefault(); active = (active + 1) % items.length; draw(input.value.trim()); }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); active = (active - 1 + items.length) % items.length; draw(input.value.trim()); }
+    else if (e.key === 'Enter' && active >= 0) { e.preventDefault(); choose(items[active]); }
+    else if (e.key === 'Escape') { e.preventDefault(); close(); }
+  });
+  return h('div', { class: 'suggest' }, input, list);
+}
+
 function renderQuestion(q, answers) {
   const id = 'q-' + q.key;
   const label = h(['choice', 'multichoice', 'rating'].includes(q.type) ? 'div' : 'label', { for: id, class: 'label', id: id + '-l' },
@@ -707,7 +756,7 @@ function renderQuestion(q, answers) {
       const attrs = { id, value: answers[q.key] || '', maxlength: q.type === 'text' ? '200' : '4000',
         oninput: (e) => { set(e.target.value); if (q.free_text_warning) { const hit = sensitiveHit(e.target.value); warn.hidden = !hit; if (hit) warn.textContent = `Teksti näyttää ${hit}. Älä kirjaa asiakkaan tunnistetietoja.`; } } };
       const input = q.type === 'text' ? h('input', { type: 'text', ...attrs }) : h('textarea', attrs);
-      control = [input, q.free_text_warning ? h('p', { class: 'help small' }, 'Älä kirjaa asiakkaan henkilö-, terveys- tai muita tunnistetietoja.') : null, warn];
+      control = [q.type === 'text' && q.suggest ? attachSuggest(input, q, answers, set) : input, q.free_text_warning ? h('p', { class: 'help small' }, 'Älä kirjaa asiakkaan henkilö-, terveys- tai muita tunnistetietoja.') : null, warn];
       break;
     }
     case 'number':
@@ -1552,6 +1601,10 @@ async function viewQuestions() {
     const type = h('select', { id: 'q-type', disabled: !isNew && q.answer_count > 0 }, Object.entries(QTYPES).map(([k, v]) => h('option', { value: k, selected: k === q.type }, v)));
     const applies = h('select', { id: 'q-applies' }, Object.entries(APPLIES).map(([k, v]) => h('option', { value: k, selected: k === q.applies_to }, v)));
     const required = h('input', { type: 'checkbox', checked: q.required });
+    const suggest = h('input', { type: 'checkbox', checked: !!q.suggest });
+    const suggestLabel = h('label', { class: 'switch' }, suggest, 'Täydennysehdotukset');
+    const syncSuggest = () => { suggestLabel.hidden = type.value !== 'text'; };
+    type.addEventListener('change', syncSuggest); syncSuggest();
     const dmode = h('select', { id: 'q-dmode' }, [['show', 'Näytetään aina'], ['hide', `Piilotetaan, kun sijainti on ”${DIGITAL_LOCATION}”`]]
       .map(([v, t]) => h('option', { value: v, selected: (q.digital_mode === 'hide' ? 'hide' : 'show') === v }, t)));
     const active = h('input', { type: 'checkbox', checked: q.active });
@@ -1583,13 +1636,13 @@ async function viewQuestions() {
       optField,
       q.key !== 'sijainti' ? h('div', { class: 'field' }, h('label', { for: 'q-dmode' }, 'Digialustalla tapahtuneet kohtaamiset'),
         h('p', { class: 'help' }, 'Esim. kaupunkia ja kadunnimeä ei kysytä, kun kohtaamisen sijainniksi valitaan digialusta.'), dmode) : null,
-      h('div', { class: 'actions field' }, h('label', { class: 'switch' }, required, 'Pakollinen'),
+      h('div', { class: 'actions field' }, h('label', { class: 'switch' }, required, 'Pakollinen'), suggestLabel,
         !isNew ? h('label', { class: 'switch' }, active, 'Käytössä lomakkeella') : null),
       msg,
       h('div', { class: 'actions' },
         h('button', { class: 'btn btn-primary', type: 'button', onclick: async () => {
           const body = { key: key.value, project_id: q.project_id ?? null, label: label.value, help: help.value, type: type.value, applies_to: applies.value,
-            required: required.checked, active: active.checked, options: opts,
+            required: required.checked, active: active.checked, options: opts, suggest: type.value === 'text' && suggest.checked,
             digital_mode: q.key === 'sijainti' ? 'show' : dmode.value, digital_value: null };
           try {
             if (isNew) await api('/questions', { method: 'POST', body }); else await api('/questions/' + q.id, { method: 'PUT', body });
