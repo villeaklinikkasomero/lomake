@@ -4,10 +4,11 @@
 //  - Jokainen kysymys omassa sarakkeessaan (yhteiset + hankekohtaiset).
 //  - Yksilökohtaamisten nimimerkkiä EI viedä (tietosuoja); eri henkilöiden
 //    määrä näytetään vain ryhmäkirjauksille.
-//  - Kirjaajan henkilöllisyyttä ei viedä, vain kirjaajan rooli.
+//  - Kirjaajan ja toteuttajan henkilöllisyyttä ei viedä, vain toteuttajan rooli.
+//  - Palveluohjaukset vain, kun Asiakaspolut-toiminto on käytössä.
 
 const ExcelJS = require('exceljs');
-const { db } = require('./db');
+const { db, featureEnabled } = require('./db');
 
 const TZ = 'Europe/Helsinki';
 function utcToLocalDate(sqliteUtc) {
@@ -65,12 +66,13 @@ function buildWorkbook({ from, to, projectIds }) {
     { header: 'Kohtaamisen ajankohta', key: 'encounter_date', width: 14, style: { numFmt: 'd.m.yyyy' } },
     { header: 'Hanke', key: 'project_name', width: 32 },
     { header: 'Hanketunnus', key: 'project_code', width: 14 },
-    { header: 'Kirjaajan rooli', key: 'recorder_role', width: 40 },
+    { header: 'Toteuttajan rooli', key: 'recorder_role', width: 40 },
+    { header: 'Kirjattu toisen puolesta', key: 'on_behalf', width: 12 },
     { header: 'Kirjauksen tyyppi', key: 'encounter_type', width: 16 },
     { header: 'Kohtaamisten määrä', key: 'encounter_count', width: 12 },
     { header: 'Eri henkilöiden määrä (ryhmä)', key: 'person_count', width: 14 },
     { header: 'Tunnistettu asiakas (yksilö)', key: 'client_linked', width: 14 },
-    { header: 'Ohjattu palveluun', key: 'referrals', width: 36 },
+    ...(featureEnabled('paths') ? [{ header: 'Ohjattu palveluun', key: 'referrals', width: 36 }] : []),
   ];
   const qCols = questions.map(q => ({
     header: q.project_id ? `${q.project_name}: ${q.label}` : q.label,
@@ -90,6 +92,7 @@ function buildWorkbook({ from, to, projectIds }) {
       project_name: e.project_name,
       project_code: e.project_code,
       recorder_role: e.recorder_role,
+      on_behalf: e.performer_type === 'vapaaehtoinen' || (e.performed_by != null && e.performed_by !== e.created_by) ? 'kyllä' : 'ei',
       encounter_type: e.encounter_type === 'ryhma' ? 'Ryhmä' : 'Yksi kohtaaminen',
       encounter_count: e.encounter_count,
       person_count: e.encounter_type === 'ryhma' ? e.person_count : null,

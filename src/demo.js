@@ -95,7 +95,7 @@ function generateDemoPayloads(count, seed = Date.now()) {
       payload._client = c.idx;
     }
 
-    const digital = project.digital ? true : chance(0.3);
+    const digital = project.digital ? chance(0.85) : chance(0.25); // digihankkeillakin on livekohtaamisia
     for (const q of questions) {
       if (q.project_id != null && q.project_id !== project.id) continue;
       if (q.applies_to !== 'kaikki' && q.applies_to !== type) continue;
@@ -168,9 +168,9 @@ function createDemoData({ count, userId, validate, user, projectIds }) {
   const workers = ensureDemoWorkers();
   const pool = workers.flatMap(w => Array(w.weight).fill(w));
   const insE = db.prepare(`INSERT INTO encounters (id, project_id, encounter_date, encounter_type, encounter_count, person_count,
-                             recorder_role, created_by, created_at, is_test)
+                             recorder_role, created_by, performed_by, performer_type, created_at, is_test)
                            VALUES (@id, @project_id, @encounter_date, @encounter_type, @encounter_count, @person_count,
-                             @recorder_role, @created_by, @created_at, 1)`);
+                             @recorder_role, @created_by, @performed_by, @performer_type, @created_at, 1)`);
   const insA = db.prepare('INSERT INTO encounter_answers (encounter_id, question_id, value) VALUES (?, ?, ?)');
   let created = 0;
   db.transaction(() => {
@@ -185,7 +185,12 @@ function createDemoData({ count, userId, validate, user, projectIds }) {
       const cands = pool.filter(w => w.projects.includes(p.project_id));
       const w = cands.length ? cands[Math.floor(Math.random() * cands.length)] : null;
       const { pseudonym, ...data } = v.data;
-      insE.run({ id, ...data, recorder_role: w ? w.recorder_role : p._recorder_role, created_by: w ? w.id : userId,
+      // Toteuttaja: yleensä kirjaaja itse; osa vapaaehtoisten kohtaamisista ja osa kirjattu toisen puolesta
+      const r = Math.random();
+      const volunteer = w && r < 0.08, onBehalf = w && !volunteer && r < 0.16;
+      insE.run({ id, ...data, recorder_role: volunteer ? RECORDER_ROLES[2] : w ? w.recorder_role : p._recorder_role,
+        created_by: w && !onBehalf ? w.id : userId,
+        performed_by: volunteer ? null : w ? w.id : userId, performer_type: volunteer ? 'vapaaehtoinen' : 'kayttaja',
         created_at: (created_at > now ? now : created_at).toISOString().slice(0, 19).replace('T', ' ') });
       for (const a of v.answers) insA.run(id, a.question_id, a.value);
 

@@ -4,7 +4,7 @@
 
 const ROLES = {
   admin:           { label: 'Admin',                      description: 'A-klinikkasäätiön työntekijä, pääkäyttäjä' },
-  tiimivetaja:     { label: 'Tiimivetäjä',                description: 'A-klinikkasäätiön työntekijä' },
+  tiimivetaja:     { label: 'Tiiminvetäjä',                description: 'A-klinikkasäätiön työntekijä' },
   hanketyontekija: { label: 'Hanketyöntekijä',            description: 'A-klinikkasäätiön työntekijä' },
   tuntityontekija: { label: 'Tuntityöntekijä (avustaja)', description: 'Tuntityöntekijä tai avustaja' },
 };
@@ -29,7 +29,7 @@ const PERMISSIONS = {
     manageUsers: false, manageProjects: false, manageQuestions: false,
   },
   hanketyontekija: {
-    record: true, viewScope: 'own', editScope: 'none', deleteScope: 'none', exportScope: 'none', staffScope: 'none', pathScope: 'none', dashScope: 'projects',
+    record: true, viewScope: 'own', editScope: 'own', deleteScope: 'none', exportScope: 'none', staffScope: 'none', pathScope: 'none', dashScope: 'projects',
     manageUsers: false, manageProjects: false, manageQuestions: false,
   },
   tuntityontekija: {
@@ -39,7 +39,7 @@ const PERMISSIONS = {
 };
 
 // Kirjaajan rooli (lomakkeen "Olen"-tieto) määräytyy käyttöoikeusroolista:
-// admin, tiimivetäjä ja hanketyöntekijä ovat A-klinikkasäätiön työntekijöitä,
+// admin, tiiminvetäjä ja hanketyöntekijä ovat A-klinikkasäätiön työntekijöitä,
 // tuntityöntekijä on avustaja. Indeksi viittaa db.js:n RECORDER_ROLES-listaan.
 const DEFAULT_RECORDER_ROLE_INDEX = { admin: 0, tiimivetaja: 0, hanketyontekija: 0, tuntityontekija: 1 };
 
@@ -51,7 +51,7 @@ function allowsEncounter(user, perm, encounter, userProjectIds) {
   const s = scope(user, perm);
   if (s === 'all') return true;
   if (s === 'projects') return userProjectIds.includes(encounter.project_id);
-  if (s === 'own') return encounter.created_by === user.id;
+  if (s === 'own') return encounter.created_by === user.id || encounter.performed_by === user.id;
   return false;
 }
 

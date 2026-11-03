@@ -37,10 +37,16 @@ function totals(W) {
       COUNT(DISTINCT e.client_id) identified,
       COALESCE(SUM(CASE WHEN e.encounter_type = 'ryhma' THEN e.person_count END), 0) group_persons,
       COALESCE(SUM(CASE WHEN e.encounter_type = 'yksilo' AND e.client_id IS NULL THEN 1 END), 0) unidentified,
-      COALESCE(SUM(CASE WHEN e.encounter_type = 'ryhma' AND e.person_count IS NULL THEN 1 END), 0) groups_without_count
+      COALESCE(SUM(CASE WHEN e.encounter_type = 'ryhma' AND e.person_count IS NULL THEN 1 END), 0) groups_without_count,
+      -- Täysin anonyymit kohtaamiset: yksilö ilman nimimerkkiä + ryhmien kohtaamiset, joista osallistujamäärä puuttuu.
+      -- Näistä ei voi päätellä eri henkilöiden määrää, joten ne jäävät arvion ulkopuolelle.
+      COALESCE(SUM(CASE WHEN e.encounter_type = 'yksilo' AND e.client_id IS NULL THEN e.encounter_count END), 0) anon_individual,
+      COALESCE(SUM(CASE WHEN e.encounter_type = 'ryhma' AND e.person_count IS NULL THEN e.encounter_count END), 0) anon_group
     FROM encounters e WHERE ${W.sql}`).get(...W.params);
   // Eri henkilöiden arvio = tunnistetut asiakkaat + ryhmien ilmoitetut osallistujat
   t.persons = t.identified + t.group_persons;
+  t.anonymous = t.anon_individual + t.anon_group;
+  t.anonymous_share = t.encounters ? t.anonymous / t.encounters : null;
   return t;
 }
 

@@ -8,7 +8,7 @@ const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 const bcrypt = require('bcryptjs');
 
-const { db, ensureAdmin, audit, RECORDER_ROLES } = require('./db');
+const { db, ensureAdmin, audit, RECORDER_ROLES, DIGITAL_LOCATION, FEATURES, featureEnabled, setFeature, features } = require('./db');
 const { ROLES, PERMISSIONS, DEFAULT_RECORDER_ROLE_INDEX, can, scope, allowsEncounter } = require('./permissions');
 const { buildWorkbook } = require('./export');
 const demo = require('./demo');
@@ -122,7 +122,7 @@ function activeQuestionsFor(projectId, type) {
 
 // Validoi lomaketallennuksen. Palauttaa { data, answers } tai { error }.
 // Kirjaajan rooli tulee kirjautuneen käyttäjän profiilista, ei lomakkeelta.
-function validateEncounter(body, user, projectIds) {
+function validateEncounter(body, user, projectIds, existing) {
   const projectId = Number(body.project_id);
   const project = db.prepare('SELECT * FROM projects WHERE id = ?').get(projectId);
   if (!project || !project.active) return { error: 'Valitse hanke.' };
@@ -149,14 +149,10 @@ function validateEncounter(body, user, projectIds) {
 
   const answers = [];
   const given = body.answers && typeof body.answers === 'object' ? body.answers : {};
+  // Sijainti valitaan joka kerta; jos se on "Digialustalla", kaupunkia ja katua ei kysytä eikä tallenneta
+  const onDigital = given.sijainti === DIGITAL_LOCATION;
   for (const q of activeQuestionsFor(projectId, type)) {
-    // Digipalvelu: piilotettuja kysymyksiä ei tallenneta, vakioarvo asetetaan palvelimella
-    if (project.digital && q.digital_mode === 'hide') continue;
-    if (project.digital && q.digital_mode === 'fixed' && q.digital_value) {
-      if (q.type === 'choice' && !q.options.includes(q.digital_value)) continue;
-      answers.push({ question_id: q.id, value: q.type === 'multichoice' ? JSON.stringify([q.digital_value]) : q.digital_value });
-      continue;
-    }
+    if (onDigital && q.digital_mode === 'hide') continue;
     let v = given[q.key];
     const empty = v == null || v === '' || (Array.isArray(v) && v.length === 0);
     if (empty) { if (q.required) return { error: `Vastaa kysymykseen: ${q.label}` }; continue; }
@@ -180,18 +176,44 @@ function validateEncounter(body, user, projectIds) {
     answers.push({ question_id: q.id, value: v });
   }
 
+  const performer = resolvePerformer(body.performer, user, projectId, existing);
+  if (performer.error) return performer;
+
   return {
     data: { project_id: projectId, encounter_date: body.encounter_date, encounter_type: type,
-            encounter_count: encounterCount, person_count: personCount, pseudonym },
+            encounter_count: encounterCount, person_count: personCount, pseudonym, ...performer },
     answers,
   };
+}
+
+// Kohtaamisen toteuttaja: kirjaaja itse (oletus), toinen hankkeen käyttäjä tai vapaaehtoinen.
+// Kirjaajan rooli (raportoinnin "Olen"-tieto) määräytyy toteuttajasta.
+const VOLUNTEER = 'vapaaehtoinen';
+function projectMembers(projectId) {
+  return db.prepare(`SELECT u.id, u.name, u.role FROM users u WHERE u.active = 1 AND u.is_test = 0
+    AND (u.role = 'admin' OR EXISTS (SELECT 1 FROM user_projects up WHERE up.user_id = u.id AND up.project_id = ?)) ORDER BY u.name`).all(projectId);
+}
+function resolvePerformer(value, user, projectId, existing) {
+  // Korjauksessa säilytetään alkuperäinen toteuttaja ja rooli, ellei toteuttajaa vaihdeta
+  if (existing) {
+    const cur = existing.performer_type === VOLUNTEER ? VOLUNTEER : String(existing.performed_by);
+    if (value == null || value === '' || String(value) === cur) return { performer_type: existing.performer_type, performed_by: existing.performed_by, recorder_role: existing.recorder_role };
+  }
+  if (value === VOLUNTEER) return { performer_type: VOLUNTEER, performed_by: null, recorder_role: RECORDER_ROLES[2] };
+  const id = value == null || value === '' || value === 'self' ? user.id : Number(value);
+  if (id === user.id) return { performer_type: 'kayttaja', performed_by: user.id, recorder_role: RECORDER_ROLES[DEFAULT_RECORDER_ROLE_INDEX[user.role]] };
+  const u = db.prepare('SELECT id, role, active FROM users WHERE id = ?').get(id);
+  if (!u || !projectMembers(projectId).some(m => m.id === id)) {
+    return { error: 'Valitse kohtaamisen toteuttaja hankkeen käyttäjistä tai ”Vapaaehtoinen”.' };
+  }
+  return { performer_type: 'kayttaja', performed_by: u.id, recorder_role: RECORDER_ROLES[DEFAULT_RECORDER_ROLE_INDEX[u.role]] };
 }
 
 function encounterVisibleWhere(user, projectIds) {
   const s = scope(user, 'viewScope');
   if (s === 'all') return { sql: '1=1', params: [] };
   if (s === 'projects') return { sql: `e.project_id IN (${projectIds.map(() => '?').join(',') || 'NULL'})`, params: projectIds };
-  if (s === 'own') return { sql: 'e.created_by = ?', params: [user.id] };
+  if (s === 'own') return { sql: '(e.created_by = ? OR e.performed_by = ?)', params: [user.id, user.id] };
   return { sql: '0=1', params: [] };
 }
 
@@ -219,12 +241,20 @@ app.post('/api/login', loginLimiter, (req, res) => {
 
 app.post('/api/logout', (req, res) => { req.session.destroy(() => { res.clearCookie('kr.sid'); res.json({ ok: true }); }); });
 
+// Piilotettu toiminto poistaa siihen liittyvän oikeuden kaikilta rooleilta
+function effectivePermissions(role) {
+  const p = { ...PERMISSIONS[role] };
+  if (!featureEnabled('paths')) p.pathScope = 'none';
+  return p;
+}
+
 app.get('/api/me', requireAuth, (req, res) => {
   const projects = db.prepare(`SELECT id, code, name, active, digital FROM projects WHERE id IN (${req.projectIds.map(() => '?').join(',') || 'NULL'}) ORDER BY sort, name`).all(...req.projectIds);
   res.json({
     user: { id: req.user.id, email: req.user.email, name: req.user.name, role: req.user.role, roleLabel: ROLES[req.user.role].label,
             mustChangePassword: !!req.user.must_change_password, recorderRole: RECORDER_ROLES[DEFAULT_RECORDER_ROLE_INDEX[req.user.role]] },
-    permissions: PERMISSIONS[req.user.role],
+    permissions: effectivePermissions(req.user.role),
+    features: features(),
     projects,
     recorderRoles: RECORDER_ROLES,
     defaultRecorderRoles: Object.fromEntries(Object.keys(ROLES).map(r => [r, RECORDER_ROLES[DEFAULT_RECORDER_ROLE_INDEX[r]]])),
@@ -253,19 +283,22 @@ app.get('/api/form', requireAuth, (req, res) => {
   const qs = db.prepare(`SELECT * FROM questions WHERE active = 1 AND (project_id IS NULL OR project_id IN (${req.projectIds.map(() => '?').join(',') || 'NULL'}))
                          ORDER BY project_id IS NOT NULL, sort, id`).all(...req.projectIds).map(parseQ);
   const services = db.prepare('SELECT id, name FROM referral_services WHERE active = 1 ORDER BY sort, name').all();
-  res.json({ questions: qs, referralServices: services, clientTracking: clients.ENABLED });
+  const members = Object.fromEntries(req.projectIds.map(pid => [pid, projectMembers(pid).filter(m => m.id !== req.user.id).map(({ id, name }) => ({ id, name }))]));
+  res.json({ questions: qs, referralServices: featureEnabled('paths') ? services : [], clientTracking: clients.ENABLED, members, digitalLocation: DIGITAL_LOCATION });
 });
 
 app.post('/api/encounters', requireAuth, requirePerm('record'), (req, res) => {
   const v = validateEncounter(req.body, req.user, req.projectIds);
   if (v.error) return bad(res, v.error);
-  const cp = clients.prepareClientPart(req.body, v.data.encounter_type, sensitiveHit, v.data.project_id);
+  // Palveluohjausten seuranta kuuluu Asiakaspolut-toimintoon: piilotettuna ohjauksia ei kirjata
+  const body = featureEnabled('paths') ? req.body : { ...req.body, referrals: [], referral_updates: [] };
+  const cp = clients.prepareClientPart(body, v.data.encounter_type, sensitiveHit, v.data.project_id);
   if (cp.error) return bad(res, cp.error);
   const id = crypto.randomUUID();
   db.transaction(() => {
-    db.prepare(`INSERT INTO encounters (id, project_id, encounter_date, encounter_type, encounter_count, person_count, pseudonym, recorder_role, created_by)
-                VALUES (@id, @project_id, @encounter_date, @encounter_type, @encounter_count, @person_count, @pseudonym, @recorder_role, @created_by)`)
-      .run({ id, ...v.data, recorder_role: RECORDER_ROLES[DEFAULT_RECORDER_ROLE_INDEX[req.user.role]], created_by: req.user.id });
+    db.prepare(`INSERT INTO encounters (id, project_id, encounter_date, encounter_type, encounter_count, person_count, pseudonym, recorder_role, created_by, performed_by, performer_type)
+                VALUES (@id, @project_id, @encounter_date, @encounter_type, @encounter_count, @person_count, @pseudonym, @recorder_role, @created_by, @performed_by, @performer_type)`)
+      .run({ id, ...v.data, created_by: req.user.id });
     const ins = db.prepare('INSERT INTO encounter_answers (encounter_id, question_id, value) VALUES (?, ?, ?)');
     for (const a of v.answers) ins.run(id, a.question_id, a.value);
     clients.applyClientPart(cp, { encounterId: id, encounterDate: v.data.encounter_date, userId: req.user.id });
@@ -283,14 +316,14 @@ app.get('/api/encounters', requireAuth, (req, res) => {
   if (isDate(req.query.to)) { where.push('e.encounter_date <= ?'); params.push(req.query.to); }
   if (req.query.project_id) { where.push('e.project_id = ?'); params.push(Number(req.query.project_id)); }
   if (['yksilo', 'ryhma'].includes(req.query.type)) { where.push('e.encounter_type = ?'); params.push(req.query.type); }
-  if (req.query.created_by && scope(req.user, 'viewScope') !== 'own') { where.push('e.created_by = ?'); params.push(Number(req.query.created_by)); }
+  if (req.query.created_by && scope(req.user, 'viewScope') !== 'own') { where.push('(e.created_by = ? OR e.performed_by = ?)'); params.push(Number(req.query.created_by), Number(req.query.created_by)); }
   const limit = Math.min(Number(req.query.limit) || 50, 200);
   const offset = Math.max(Number(req.query.offset) || 0, 0);
   const whereSql = where.join(' AND ');
   const totals = db.prepare(`SELECT COUNT(*) rows, COALESCE(SUM(encounter_count),0) encounters FROM encounters e WHERE ${whereSql}`).get(...params);
   const rows = db.prepare(`SELECT e.id, e.encounter_date, e.encounter_type, e.encounter_count, e.person_count, e.created_at, e.updated_at, e.is_test,
-                                  e.project_id, e.created_by, p.name project_name, u.name created_by_name
-                           FROM encounters e JOIN projects p ON p.id = e.project_id JOIN users u ON u.id = e.created_by
+                                  e.project_id, e.created_by, e.performed_by, e.performer_type, p.name project_name, u.name created_by_name, pu.name performed_by_name
+                           FROM encounters e JOIN projects p ON p.id = e.project_id JOIN users u ON u.id = e.created_by LEFT JOIN users pu ON pu.id = e.performed_by
                            WHERE ${whereSql} ORDER BY e.encounter_date DESC, e.created_at DESC, e.rowid DESC LIMIT ? OFFSET ?`).all(...params, limit, offset);
   for (const r of rows) {
     r.canEdit = allowsEncounter(req.user, 'editScope', r, req.projectIds);
@@ -316,6 +349,8 @@ app.get('/api/encounters/:id', requireAuth, (req, res) => {
   const referralUpdates = db.prepare(`SELECT rs.name service, r.status, r.referred_on FROM referrals r JOIN referral_services rs ON rs.id = r.service_id
                                       WHERE r.status_encounter_id = ? ORDER BY r.referred_on`).all(e.id);
   const { pseudonym, client_id, ...pub } = e;
+  const nameOf = (id) => id == null ? null : (db.prepare('SELECT name FROM users WHERE id = ?').get(id) || {}).name || null;
+  pub.created_by_name = nameOf(e.created_by); pub.performed_by_name = nameOf(e.performed_by);
   res.json({ encounter: { ...pub, client_linked: !!client_id, referrals: referralsMade, referral_updates: referralUpdates, answers: ans,
     canEdit: allowsEncounter(req.user, 'editScope', e, req.projectIds), canDelete: allowsEncounter(req.user, 'deleteScope', e, req.projectIds) },
     questions: allQs });
@@ -325,11 +360,12 @@ app.put('/api/encounters/:id', requireAuth, (req, res) => {
   const e = loadEncounter(req.params.id);
   if (!e || !allowsEncounter(req.user, 'editScope', e, req.projectIds)) return bad(res, 'Ei oikeutta korjata tätä kirjausta.', 403);
   // Korjaaja voi siirtää kirjauksen vain hankkeeseen, johon hänellä on oikeus.
-  const v = validateEncounter(req.body, req.user, req.projectIds);
+  const v = validateEncounter(req.body, req.user, req.projectIds, e);
   if (v.error) return bad(res, v.error);
   db.transaction(() => {
     db.prepare(`UPDATE encounters SET project_id=@project_id, encounter_date=@encounter_date, encounter_type=@encounter_type,
                 encounter_count=@encounter_count, person_count=@person_count,
+                performed_by=@performed_by, performer_type=@performer_type, recorder_role=@recorder_role,
                 updated_by=@uid, updated_at=datetime('now') WHERE id=@id`).run({ ...v.data, uid: req.user.id, id: e.id });
     // Säilytetään käytöstä poistettujen kysymysten vastaukset, korvataan aktiivisten.
     db.prepare(`DELETE FROM encounter_answers WHERE encounter_id = ? AND question_id IN (SELECT id FROM questions WHERE active = 1)`).run(e.id);
@@ -349,7 +385,7 @@ app.delete('/api/encounters/:id', requireAuth, (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
-// Työntekijäkohtainen seuranta (admin: kaikki, tiimivetäjä: omien hankkeiden kirjaukset)
+// Työntekijäkohtainen seuranta (admin: kaikki, tiiminvetäjä: omien hankkeiden kirjaukset)
 // ---------------------------------------------------------------------------
 function staffScopeSql(req, alias = 'e') {
   const s = scope(req.user, 'staffScope');
@@ -378,7 +414,7 @@ app.get('/api/staff', requireAuth, (req, res) => {
   const f = staffFilters(req);
   const wr = ratingQ('tyontekijan_arvio'), cr = ratingQ('asiakkaan_arvio');
   const stats = db.prepare(`
-    SELECT e.created_by user_id, COUNT(*) rows, SUM(e.encounter_count) encounters,
+    SELECT e.performed_by user_id, COUNT(*) rows, SUM(e.encounter_count) encounters,
            SUM(e.encounter_type = 'yksilo') yksilo_rows,
            SUM(e.encounter_type = 'ryhma') ryhma_rows,
            COALESCE(SUM(CASE WHEN e.encounter_type = 'ryhma' THEN e.encounter_count END), 0) ryhma_encounters,
@@ -387,7 +423,7 @@ app.get('/api/staff', requireAuth, (req, res) => {
     FROM encounters e
     LEFT JOIN encounter_answers w ON w.encounter_id = e.id AND w.question_id = ?
     LEFT JOIN encounter_answers c ON c.encounter_id = e.id AND c.question_id = ?
-    WHERE ${f.sql} GROUP BY e.created_by`).all(wr, cr, ...f.params);
+    WHERE ${f.sql} AND e.performed_by IS NOT NULL GROUP BY e.performed_by`).all(wr, cr, ...f.params);
   const byUser = new Map(stats.map(s => [s.user_id, s]));
   const ids = new Set([...staffUserIds(req), ...byUser.keys()]);
   if (!ids.size) return res.json({ rows: [], totals: { rows: 0, encounters: 0 } });
@@ -405,9 +441,9 @@ app.get('/api/staff/:id', requireAuth, (req, res) => {
   const u = db.prepare('SELECT id, name, email, role, recorder_role, active, is_test, last_login_at, created_at FROM users WHERE id = ?').get(id);
   const f = staffFilters(req);
   const visible = u && (scope(req.user, 'staffScope') === 'all' || staffUserIds(req).includes(id) ||
-    db.prepare(`SELECT 1 FROM encounters e WHERE e.created_by = ? AND ${staffScopeSql(req).sql} LIMIT 1`).get(id, ...staffScopeSql(req).params));
+    db.prepare(`SELECT 1 FROM encounters e WHERE e.performed_by = ? AND ${staffScopeSql(req).sql} LIMIT 1`).get(id, ...staffScopeSql(req).params));
   if (!visible) return bad(res, 'Työntekijää ei löydy.', 404);
-  const where = `e.created_by = ? AND ${f.sql}`; const params = [id, ...f.params];
+  const where = `e.performed_by = ? AND ${f.sql}`; const params = [id, ...f.params];
   const wr = ratingQ('tyontekijan_arvio'), cr = ratingQ('asiakkaan_arvio');
   const kpi = db.prepare(`SELECT COUNT(*) rows, COALESCE(SUM(e.encounter_count), 0) encounters,
       COALESCE(SUM(e.encounter_type = 'yksilo'), 0) yksilo_rows, COALESCE(SUM(e.encounter_type = 'ryhma'), 0) ryhma_rows,
@@ -462,9 +498,10 @@ app.post('/api/clients/generate', requireAuth, requirePerm('record'), clientLimi
 });
 
 // ---------------------------------------------------------------------------
-// Asiakaspolut (admin: kaikki, tiimivetäjä: omien hankkeiden kirjaukset). Vain koosteita.
+// Asiakaspolut (admin: kaikki, tiiminvetäjä: omien hankkeiden kirjaukset). Vain koosteita.
 // ---------------------------------------------------------------------------
 app.get('/api/paths', requireAuth, (req, res) => {
+  if (!featureEnabled('paths')) return bad(res, 'Asiakaspolut eivät ole käytössä.', 404);
   const s = scope(req.user, 'pathScope');
   if (s === 'none') return bad(res, 'Ei oikeutta.', 403);
   const projectIds = s === 'all' ? db.prepare('SELECT id FROM projects').all().map(r => r.id) : req.projectIds;
@@ -473,7 +510,19 @@ app.get('/api/paths', requireAuth, (req, res) => {
   res.json(clients.pathStats({ from: isDate(req.query.from) ? req.query.from : null, to: isDate(req.query.to) ? req.query.to : null, projectIds, projectId }));
 });
 
-// Tilastot (dashboard): admin kaikki, tiimivetäjä ja hanketyöntekijä omat hankkeet
+// Kytkettävät toiminnot (vain admin)
+app.get('/api/features', requireAuth, requirePerm('manageUsers'), (req, res) => {
+  res.json({ features: Object.entries(FEATURES).map(([key, f]) => ({ key, label: f.label, description: f.description, enabled: featureEnabled(key) })) });
+});
+app.put('/api/features/:key', requireAuth, requirePerm('manageUsers'), (req, res) => {
+  if (!FEATURES[req.params.key]) return bad(res, 'Tuntematon toiminto.', 404);
+  const on = req.body.enabled === true;
+  setFeature(req.params.key, on);
+  audit(req.user.id, on ? 'feature_enable' : 'feature_disable', 'feature', req.params.key);
+  res.json({ key: req.params.key, enabled: on });
+});
+
+// Tilastot (dashboard): admin kaikki, tiiminvetäjä ja hanketyöntekijä omat hankkeet
 app.get('/api/dashboard', requireAuth, (req, res) => {
   const s = scope(req.user, 'dashScope');
   if (s === 'none') return bad(res, 'Ei oikeutta.', 403);
@@ -649,15 +698,10 @@ function validateQuestion(b, isNew) {
   }
   if (isNew && !/^[a-z0-9_]{2,40}$/.test(String(b.key || ''))) return 'Tunniste: 2–40 merkkiä, a–z, 0–9 tai _.';
   if (b.project_id != null && !db.prepare('SELECT 1 FROM projects WHERE id = ?').get(Number(b.project_id))) return 'Hanketta ei löydy.';
-  const dm = b.digital_mode || 'show';
-  if (!['show', 'hide', 'fixed'].includes(dm)) return 'Virheellinen digipalvelun asetus.';
-  if (dm === 'fixed') {
-    if (!['choice', 'multichoice'].includes(b.type)) return 'Automaattinen arvo on mahdollinen vain valintakysymyksissä.';
-    if (!(b.options || []).map(o => String(o).trim()).includes(String(b.digital_value || '').trim())) return 'Valitse digipalvelun automaattinen arvo vastausvaihtoehdoista.';
-  }
+  if (!['show', 'hide'].includes(b.digital_mode || 'show')) return 'Virheellinen sijaintiasetus.';
   return null;
 }
-const digitalCols = (b) => { const dm = b.digital_mode || 'show'; return [dm, dm === 'fixed' ? String(b.digital_value).trim() : null]; };
+const digitalCols = (b) => [b.digital_mode === 'hide' ? 'hide' : 'show', null];
 function normalizeOptions(b) {
   if (['choice', 'multichoice'].includes(b.type)) return JSON.stringify([...new Set(b.options.map(o => String(o).trim()).filter(Boolean))]);
   if (b.type === 'rating') return JSON.stringify([1, 2, 3, 4, 5]);

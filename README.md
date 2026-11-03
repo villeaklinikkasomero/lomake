@@ -24,32 +24,35 @@ Ulkoasu noudattaa A-klinikkasäätiön graafista ohjeistoa (15.12.2023):
 
 ## Roolit
 
-| | Admin | Tiimivetäjä | Hanketyöntekijä | Tuntityöntekijä (avustaja) |
+| | Admin | Tiiminvetäjä | Hanketyöntekijä | Tuntityöntekijä (avustaja) |
 |---|---|---|---|---|
 | Kuka | säätiön työntekijä | säätiön työntekijä | säätiön työntekijä | tuntityöntekijä / avustaja |
 | Kirjaa kohtaamisia | kaikki hankkeet | omat hankkeet | omat hankkeet | omat hankkeet |
-| Selaa kirjauksia | kaikki | omien hankkeiden kaikki | vain omat | – |
-| Korjaa / poistaa kirjauksia | kaikki | omat hankkeet | – | – |
+| Selaa kirjauksia | kaikki | omien hankkeiden kaikki | vain omat (myös hänen puolestaan kirjatut) | – |
+| Korjaa kirjauksia | kaikki | omat hankkeet | vain omat | – |
+| Poistaa kirjauksia | kaikki | omat hankkeet | – | – |
 | Excel-vienti | kaikki hankkeet | omat hankkeet | – | – |
 | Työntekijäseuranta | kaikki | omien hankkeiden kirjaukset | – | – |
 | Tilastot (dashboard) | kaikki | omat hankkeet | omat hankkeet | – |
-| Asiakaspolut (koosteet, hankekohtaiset) | kaikki | omien hankkeiden kirjaukset | – | – |
+| Asiakaspolut (koosteet, hankekohtaiset; oletuksena piilotettu) | kaikki | omien hankkeiden kirjaukset | – | – |
 | Asiakastunnisteen haku kirjatessa | ✓ | ✓ | ✓ | ✓ |
 | Käyttäjät, hankkeet, kysymykset, loki | ✓ | – | – | – |
 
-Oikeudet on koottu yhteen tiedostoon, `src/permissions.js`. Jos esimerkiksi hanketyöntekijän halutaan voivan korjata omia kirjauksiaan, muutetaan sinne `editScope: 'own'`.
+Oikeudet on koottu yhteen tiedostoon, `src/permissions.js`. Esimerkiksi tuntityöntekijälle voi antaa omien kirjausten selauksen ja korjauksen asettamalla sinne `viewScope: 'own'` ja `editScope: 'own'`.
+
+Kirjauslistassa ja kirjauksen tiedoissa ei näy nimimerkkejä: niitä ei tallenneta selväkielisinä lainkaan (ks. Asiakastunnisteet), joten niitä ei voi näyttää kenellekään.
 
 ## Lomake
 
-- **Perustiedot**: ajankohta, hanke (näkyy vain käyttäjän omat hankkeet) sekä valinta yksi kohtaaminen / ryhmä. *Olen*-tietoa (kirjaajan rooli) ei kysytä lomakkeella, vaan se määräytyy käyttäjän roolista: admin, tiimivetäjä ja hanketyöntekijä ovat A-klinikkasäätiön työntekijöitä (”A-klinikkasäätiön asiantuntija tai ohjaaja”), ja tuntityöntekijä on avustaja (”Tuntityöntekijä tai ulkopuolinen asiantuntija, ohjaaja, avustaja…”). Rooli tallentuu kirjaukseen, eikä se muutu, vaikka kirjausta korjataan.
+- **Perustiedot**: ajankohta, hanke (näkyy vain käyttäjän omat hankkeet) sekä valinta yksi kohtaaminen / ryhmä. **Kohtaamisen toteutti**: oletuksena kirjaaja itse. Kohtaamisen voi kirjata toisen puolesta valitsemalla listalta hankkeen toisen käyttäjän tai *Vapaaehtoinen tai vertainen*. Kirjaajaksi tallentuu edelleen kirjauksen tekijä, ja työntekijäseuranta laskee kohtaamisen toteuttajalle. *Olen*-tietoa (rooli) ei kysytä, vaan se määräytyy toteuttajasta: admin, tiiminvetäjä ja hanketyöntekijä ovat A-klinikkasäätiön työntekijöitä (”A-klinikkasäätiön asiantuntija tai ohjaaja”), tuntityöntekijä on avustaja (”Tuntityöntekijä tai ulkopuolinen asiantuntija, ohjaaja, avustaja…”) ja vapaaehtoinen on ”Vertainen, kokemusasiantuntija tai vapaaehtoinen”. Rooli tallentuu kirjaukseen, eikä se muutu korjauksessa, ellei toteuttajaa vaihdeta.
 - **Yksi kohtaaminen**: kohtaamisten määrä on 1, ja lisäksi voi antaa valinnaisen nimimerkin. **Ryhmä**: kohtaamisten määrä (1–9999, pakollinen) ja eri osallistujien määrä (valinnainen).
-- **Yhteiset kysymykset** ja **hankekohtaiset kysymykset** näytetään valitun hankkeen ja kirjaustyypin mukaan (”Näytetään: kaikki / vain yksilö / vain ryhmä”).
+- **Yhteiset kysymykset** ja **hankekohtaiset kysymykset** näytetään valitun hankkeen ja kirjaustyypin mukaan (”Näytetään: kaikki / vain yksilö / vain ryhmä”). Esimerkiksi ikä, sukupuoli ja asiakkaalta kysytty arvio näytetään vain yksilökohtaamisissa.
 - Vapaatekstikentissä muistutetaan tunnistetiedoista. Henkilötunnukselta, sähköpostiosoitteelta tai puhelinnumerolta näyttävä teksti estetään sekä selaimessa että palvelimella.
-- ”Kirjaa seuraava” säilyttää hankkeen, päivän, roolin ja tyypin. Tämä nopeuttaa sarjakirjaamista esimerkiksi katutyössä. Lomake toimii myös puhelimella.
+- ”Kirjaa seuraava” säilyttää hankkeen, päivän, toteuttajan ja tyypin. Tämä nopeuttaa sarjakirjaamista esimerkiksi katutyössä. Lomake toimii myös puhelimella.
 
-## Digipalvelut
+## Sijainti ja digialustat
 
-Hankkeelle voi asettaa kohdassa Hallinta → Hankkeet asetuksen **Digipalvelu**. Asetus on oletuksena päällä hankkeilla Ak21 (Päihdelinkki ja Nuortenlinkki), Dopinglinkki ja Lasinen lapsuus. Digipalvelun kirjauksissa sijainniksi tallentuu automaattisesti ”Digialustalla”, eikä kaupunkia ja kadunnimeä kysytä. Käytöksen voi säätää kysymyskohtaisesti kohdassa Hallinta → Kysymykset → **Digipalvelun hankkeissa**: *Näytetään*, *Piilotetaan* tai *Täytetään automaattisesti*. Automaattisen arvon asettaa palvelin, joten lomakkeelta lähetetty arvo ei voi ohittaa sitä.
+Kohtaamisen sijainti valitaan jokaisessa kirjauksessa, koska myös digihankkeilla on livekohtaamisia ja päinvastoin. Kun sijainniksi valitaan **Digialustalla**, kaupunkia ja kadunnimeä ei kysytä eikä tallenneta. Asetuksen voi tehdä mille tahansa kysymykselle kohdassa Hallinta → Kysymykset → **Digialustalla tapahtuneet kohtaamiset**: *Näytetään aina* tai *Piilotetaan, kun sijainti on ”Digialustalla”*.
 
 ## Kysymysten ylläpito (admin)
 
@@ -57,7 +60,7 @@ Kysymyksiä voi lisätä, muokata, järjestää ja ottaa pois käytöstä. Kysym
 
 ## Tilastot (dashboard)
 
-Määrittelydokumentin dashboard-mallin mukainen näkymä (valikossa **Tilastot**). Admin näkee kaikki hankkeet, tiimivetäjä ja hanketyöntekijä omat hankkeensa.
+Määrittelydokumentin dashboard-mallin mukainen näkymä (valikossa **Tilastot**). Admin näkee kaikki hankkeet, tiiminvetäjä ja hanketyöntekijä omat hankkeensa.
 
 - **Rajaukset:** aikaväli (pikavalinnat: tämä vuosi, edellinen vuosi, 30 pv, tämä kk), hanke, kohtaamisen tyyppi, kirjaajan rooli, ikä ja sukupuoli. Rajaukset koskevat kaikkia näkymän lukuja. **Lataa raakadata (Excel)** käyttää aikaväliä ja hanketta.
 - **Kohtaamiset yhteensä** ja **eri henkilöiden määrä (arvio)** näytetään erillisinä tunnuslukuina, ja kumpaankin lasketaan muutos edelliseen yhtä pitkään jaksoon.
@@ -70,14 +73,15 @@ Määrittelydokumentin dashboard-mallin mukainen näkymä (valikossa **Tilastot*
   - palveluohjausten yhteenveto
   - vastausjakaumat (yhteiset kysymykset, ja hankkeen valinnan jälkeen myös hankekohtaiset).
 - Kaikki luvut ovat koosteita. Tunnisteita, nimimerkkejä ja vapaatekstejä ei näytetä.
+- **Uusin kirjaus tallennettu** kertoo rajauksiin osuvan uusimman kirjauksen tallennus- tai korjausajan. Tilastot lasketaan aina suoraan tietokannasta, joten ne ovat ajan tasalla.
 
-## Työntekijäseuranta (admin ja tiimivetäjä)
+## Työntekijäseuranta (admin ja tiiminvetäjä)
 
 **Työntekijät**-sivulla näkyy jokaisen kirjaajan yhteenveto valitulta aikaväliltä ja hankkeesta: kohtaamiset, kirjaukset, yksilö- ja ryhmäkirjaukset, aktiivipäivät, kohtaamiset aktiivipäivää kohden sekä työntekijän ja asiakkaan arvioiden keskiarvot. Sarakkeen otsikkoa klikkaamalla taulukko järjestyy kyseisen sarakkeen mukaan. Listalla näkyvät myös työntekijät, jotka eivät ole vielä kirjanneet mitään.
 
 Työntekijän omalla sivulla ovat tunnusluvut (mm. eri nimimerkit ja keskimääräinen kirjausviive), kuukausikaavio sekä jakaumat hankkeittain, sijainneittain ja oman arvion mukaan. **Näytä kirjaukset** avaa kirjauslistan valmiiksi rajattuna tähän työntekijään. Kirjauslistalla voi myös itse rajata kirjaajan mukaan.
 
-Tiimivetäjä näkee vain omien hankkeidensa kirjaukset, vaikka työntekijä kirjaisi myös muihin hankkeisiin.
+Tiiminvetäjä näkee vain omien hankkeidensa kirjaukset, vaikka työntekijä kirjaisi myös muihin hankkeisiin.
 
 ## Asiakastunnisteet ja palveluohjaukset
 
@@ -90,7 +94,7 @@ Tiimivetäjä näkee vain omien hankkeidensa kirjaukset, vaikka työntekijä kir
 - **Palaavan asiakkaan haku** näyttää vain kohtaamisten määrän tässä hankkeessa, ensimmäisen kohtaamisen kuukauden ja hankkeen avoimet ohjaukset. Avoimet ohjaukset voi kuitata: *toteutui* tai *ei toteutunut*.
 - **Ohjattiinko asiakas palveluun?** Palvelulistaa ylläpidetään kohdassa Hallinta → Ohjauspalvelut. Ilman tunnistetta ohjauksen tila on *ei seurattavissa*.
 
-**Asiakaspolut-sivu** (admin ja tiimivetäjä): tunnistetut, uudet ja palaavat asiakkaat, tunnisteen käyttöaste, ohjaukset palveluittain, toteutumisaste, mediaaniaika toteutumiseen ja kohtaamiset asiakasta kohden. Kaikki luvut ovat koosteita, eikä hankkeiden välisiä lukuja ole.
+**Asiakaspolut-sivu** (admin ja tiiminvetäjä; oletuksena piilotettu – admin aktivoi kohdassa Hallinta → Toiminnot, jolloin näkymä ja valikkolinkki tulevat näkyviin): tunnistetut, uudet ja palaavat asiakkaat, tunnisteen käyttöaste, ohjaukset palveluittain, toteutumisaste, mediaaniaika toteutumiseen ja kohtaamiset asiakasta kohden. Kaikki luvut ovat koosteita, eikä hankkeiden välisiä lukuja ole.
 
 **Suojaus:**
 - Kantaan tallennetaan vain `HMAC-SHA256(PSEUDONYM_KEY, hanke + vakioitu tunniste)`. Avain on vain palvelimen ympäristömuuttujassa.
@@ -109,7 +113,7 @@ Hallinta → **Testidata** luo halutun määrän (oletuksena 40) vaihtelevia tes
 
 ## Excel-vienti
 
-Viennissä valitaan aikaväli ja hankkeet (yksi, useita tai kaikki). Jokainen tallennus on oma rivinsä ja jokainen kysymys oma sarakkeensa. Ryhmä säilyy yhtenä rivinä, jolla näkyvät kohtaamisten ja osallistujien määrät. Mukana ovat myös tunniste, ajankohta, hanke sekä tallennus- ja muokkausaika. **Nimimerkkejä ja kirjaajan nimeä ei viedä.** Toisella välilehdellä ovat sarakkeiden pysyvät tunnisteet.
+Viennissä valitaan aikaväli ja hankkeet (yksi, useita tai kaikki). Jokainen tallennus on oma rivinsä ja jokainen kysymys oma sarakkeensa. Ryhmä säilyy yhtenä rivinä, jolla näkyvät kohtaamisten ja osallistujien määrät. Mukana ovat myös tunniste, ajankohta, hanke sekä tallennus- ja muokkausaika. Mukana ovat toteuttajan rooli ja tieto siitä, onko kirjaus tehty toisen puolesta. Palveluohjaukset ovat mukana vain, kun Asiakaspolut-toiminto on käytössä. **Nimimerkkejä eikä kirjaajan tai toteuttajan nimeä viedä.** Vienti on käytössä adminilla ja tiiminvetäjillä. Toisella välilehdellä ovat sarakkeiden pysyvät tunnisteet.
 
 ## Tietomalli (Sammio-siirtoa varten)
 

@@ -647,3 +647,28 @@ details.info[open] > summary { background: var(--blue); color: #fff; }
 .project-cards .opt > span { justify-content: center !important; }
 .project-cards .opt > span { flex-wrap: nowrap !important; flex-direction: column !important; justify-content: center !important; align-items: flex-start !important; }
 .project-cards .opt > span > .opt-title, .project-cards .opt > span > .opt-desc { flex: 0 0 auto !important; }
+/* Ohjeteksti kentän alla: kentät pysyvät samalla tasolla rinnakkain */
+.help.help-below { margin: .4rem 0 0; font-size: .85rem; }
+.row { align-items: start; }
+@media (min-width: 641px) { .row { column-gap: 1.25rem; } }
+
+/* Eri henkilöiden arvion kattavuus: anonyymien kohtaamisten osuus */
+.kpi-anon { margin-top: .75rem; padding-top: .65rem; border-top: 1px solid #d6ecfb; }
+.anon-bar { height: 6px; border-radius: 3px; background: #dfe9f6; overflow: hidden; margin-bottom: .45rem; }
+.anon-bar span { display: block; height: 100%; background: var(--brand-gray-2); border-radius: 3px; }
+.kpi-anon .kpi-note { margin: 0; color: var(--ink); font-size: .85rem; }
+.kpi-anon .kpi-note.sub { color: var(--muted); font-size: .78rem; margin-top: .15rem; }
+@media (max-width: 640px) {
+  .dash-row.r1 { grid-template-columns: 1fr; }
+  .kpi .kpi-head h2 { font-size: 1rem; }
+  .kpi-change strong { display: inline; }
+}
+
+/* Kytkettävät toiminnot */
+.feature-head { display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
+.feature-head h2 { margin: 0; }
+.badge.on { background: var(--ok-bg); color: var(--ok); }
+.feature-toggle { display: inline-flex; align-items: center; gap: .6rem; font-weight: 600; cursor: pointer; min-height: 44px; }
+.feature-toggle input { width: 1.25rem; height: 1.25rem; accent-color: var(--blue); }
+
+.block { display: block; }

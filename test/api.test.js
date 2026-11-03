@@ -95,14 +95,18 @@ test('tuntityöntekijä: kirjaus kyllä, selaus ja vienti ei', async () => {
   assert.equal((await tt('GET', '/users')).status, 403);
 });
 
-test('hanketyöntekijä näkee vain omat, ei voi korjata/poistaa/viedä', async () => {
+test('hanketyöntekijä näkee ja korjaa vain omat, ei voi poistaa/viedä', async () => {
   const ht = users.hanketyontekija;
   const list = await ht('GET', '/encounters');
   assert.equal(list.status, 200);
   assert.ok(list.data.rows.length >= 1);
   assert.ok(list.data.rows.every(r => r.created_by_name === 'ht'));
   const id = list.data.rows[0].id;
-  assert.equal((await ht('PUT', '/encounters/' + id, basePayload(P().KATUKLINIKKA))).status, 403);
+  assert.ok(list.data.rows[0].canEdit);
+  const upd = await ht('PUT', '/encounters/' + id, basePayload(P().KATUKLINIKKA));
+  assert.equal(upd.status, 200, JSON.stringify(upd.data));
+  const other = db.prepare("SELECT e.id FROM encounters e JOIN users u ON u.id = e.created_by WHERE u.email <> 'ht@t.fi' LIMIT 1").get();
+  if (other) assert.equal((await ht('PUT', '/encounters/' + other.id, basePayload(P().KATUKLINIKKA))).status, 403);
   assert.equal((await ht('DELETE', '/encounters/' + id)).status, 403);
   assert.equal((await ht('GET', `/export?from=2020-01-01&to=${today}`)).status, 403);
 });
@@ -124,7 +128,7 @@ test('kirjaajan rooli tulee profiilista eikä muutu korjauksessa', async () => {
   assert.equal(db.prepare('SELECT recorder_role FROM users WHERE id = ?').get(vid).recorder_role, SAATIO);
 });
 
-test('tiimivetäjä näkee hankkeidensa kaikki, korjaa ja poistaa', async () => {
+test('tiiminvetäjä näkee hankkeidensa kaikki, korjaa ja poistaa', async () => {
   const tv = users.tiimivetaja;
   const list = await tv('GET', '/encounters');
   const names = new Set(list.data.rows.map(r => r.created_by_name));
@@ -209,7 +213,7 @@ test('testidata: vähintään 30 erilaista kirjausta, kaikki hankkeet, poisto ko
   assert.equal(db.prepare('SELECT COUNT(*) n FROM encounter_answers WHERE encounter_id NOT IN (SELECT id FROM encounters)').get().n, 0);
 });
 
-test('työntekijäseuranta: admin kaikki, tiimivetäjä vain omat hankkeet, muut ei', async () => {
+test('työntekijäseuranta: admin kaikki, tiiminvetäjä vain omat hankkeet, muut ei', async () => {
   const p = P();
   // ht kirjaa Katuklinikkaan (tv:n hanke); admin kirjaa Jalmaan (ei tv:n hanke)
   await users.hanketyontekija('POST', '/encounters', basePayload(p.KATUKLINIKKA, { encounter_type: 'ryhma', encounter_count: 12, person_count: 5, answers: { tyontekijan_arvio: '5' } }));
@@ -224,7 +228,7 @@ test('työntekijäseuranta: admin kaikki, tiimivetäjä vain omat hankkeet, muut
 
   const tv = await users.tiimivetaja('GET', '/staff');
   assert.equal(tv.status, 200);
-  assert.ok(!tv.data.rows.some(r => r.id === adminId), 'tiimivetäjä ei näe toisen hankkeen kirjaajaa');
+  assert.ok(!tv.data.rows.some(r => r.id === adminId), 'tiiminvetäjä ei näe toisen hankkeen kirjaajaa');
   const jalmaRows = db.prepare('SELECT COUNT(*) n FROM encounters WHERE project_id = ? AND deleted_at IS NULL').get(p.JALMA).n;
   assert.ok(jalmaRows > 0);
   const tvTotal = tv.data.totals.rows;
@@ -264,6 +268,14 @@ test('testidata jakautuu testityöntekijöille ja poistuu heidän kanssaan', asy
 // ---------------------------------------------------------------------------
 test('asiakastunniste: hankekohtainen tiiviste, ei hankkeiden välistä linkitystä, ohjaus seurataan hankkeen sisällä', async () => {
   const p = P(); const ht = users.hanketyontekija; const tv = users.tiimivetaja;
+  // Palveluohjaukset kuuluvat Asiakaspolut-toimintoon: piilotettuna niitä ei tarjota eikä tallenneta
+  require('../src/db').setFeature('paths', false);
+  assert.deepEqual((await ht('GET', '/form')).data.referralServices, []);
+  const sid = db.prepare('SELECT id FROM referral_services LIMIT 1').get().id;
+  let r0 = await ht('POST', '/encounters', basePayload(p.KATUKLINIKKA, { referrals: [sid] }));
+  assert.equal(r0.status, 201);
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM referrals WHERE encounter_id = ?').get(r0.data.id).n, 0);
+  require('../src/db').setFeature('paths', true);
   const svc = (await ht('GET', '/form')).data.referralServices;
   assert.ok(svc.length >= 5);
 
@@ -352,7 +364,21 @@ test('vanhat säätiötasoiset asiakkaat jaetaan hankekohtaisiksi ja päivittyv�
   assert.equal(clients.findClient(p.VOLJY, 'vanha kettu'), undefined, 'toisen hankkeen haku ei löydä');
 });
 
-test('asiakaspolut: koosteet adminille ja tiimivetäjälle, ei muille; Excel ilman tunnistetta', async () => {
+test('asiakaspolut: oletuksena piilotettu, admin voi aktivoida', async () => {
+  db.prepare("DELETE FROM settings WHERE key = 'feature.paths'").run();
+  assert.equal((await users.admin('GET', '/paths')).status, 404);
+  const me = await users.tiimivetaja('GET', '/me');
+  assert.equal(me.data.features.paths, false);
+  assert.equal(me.data.permissions.pathScope, 'none');
+  assert.equal((await users.tiimivetaja('PUT', '/features/paths', { enabled: true })).status, 403);
+  const r = await users.admin('PUT', '/features/paths', { enabled: true });
+  assert.equal(r.status, 200); assert.equal(r.data.enabled, true);
+  assert.equal((await users.tiimivetaja('GET', '/me')).data.permissions.pathScope, 'projects');
+  const f = await users.admin('GET', '/features');
+  assert.ok(f.data.features.find(x => x.key === 'paths').enabled);
+});
+
+test('asiakaspolut: koosteet adminille ja tiiminvetäjälle, ei muille; Excel ilman tunnistetta', async () => {
   const s = await users.admin('GET', '/paths');
   assert.equal(s.status, 200, JSON.stringify(s.data));
   assert.ok(s.data.clients.total >= 2);
@@ -381,28 +407,76 @@ test('säilytysaika katkaisee vanhan linkityksen', async () => {
   assert.equal(db.prepare('SELECT status FROM referrals WHERE encounter_id = ?').get(r.data.id).status, 'ei_seurattavissa');
 });
 
-test('digipalvelu: sijainti automaattisesti, kaupunki ja katu eivät tallennu', async () => {
+test('sijainti valitaan joka kerta; Digialustalla kaupunki ja katu eivät tallennu', async () => {
   const p = P();
-  const digi = db.prepare('SELECT code FROM projects WHERE digital = 1 ORDER BY code').all().map(r => r.code);
-  assert.deepEqual(digi, ['AK21', 'DOPINGLINKKI', 'LASINEN']);
+  // Digihankkeenkin livekohtaaminen: sijainti ja kaupunki tallentuvat sellaisinaan
   const r = await users.tiimivetaja('POST', '/encounters', basePayload(p.AK21, { answers: { tyontekijan_arvio: '4', sijainti: 'Kadulla tai muulla julkisella paikalla', kaupunki: 'Tampere', kadunnimi: 'Hämeenkatu' } }));
   assert.equal(r.status, 201, JSON.stringify(r.data));
   const d = await users.tiimivetaja('GET', '/encounters/' + r.data.id);
-  assert.equal(d.data.encounter.answers.sijainti, 'Digialustalla');
-  assert.equal(d.data.encounter.answers.kaupunki, undefined);
-  assert.equal(d.data.encounter.answers.kadunnimi, undefined);
-  // Ei-digitaalinen hanke: arvot tallentuvat normaalisti
-  const r2 = await users.tiimivetaja('POST', '/encounters', basePayload(p.KATUKLINIKKA, { answers: { tyontekijan_arvio: '4', sijainti: 'Kadulla tai muulla julkisella paikalla', kaupunki: 'Tampere' } }));
+  assert.equal(d.data.encounter.answers.sijainti, 'Kadulla tai muulla julkisella paikalla');
+  assert.equal(d.data.encounter.answers.kaupunki, 'Tampere');
+  // Ei-digihankkeen digikohtaaminen: kaupunkia ja katua ei tallenneta
+  const r2 = await users.tiimivetaja('POST', '/encounters', basePayload(p.KATUKLINIKKA, { answers: { tyontekijan_arvio: '4', sijainti: 'Digialustalla', kaupunki: 'Tampere', kadunnimi: 'Hämeenkatu' } }));
   const d2 = await users.tiimivetaja('GET', '/encounters/' + r2.data.id);
-  assert.equal(d2.data.encounter.answers.kaupunki, 'Tampere');
-  // Kysymyksen muokkaus ilman digiasetusta ei nollaa sitä
+  assert.equal(d2.data.encounter.answers.sijainti, 'Digialustalla');
+  assert.equal(d2.data.encounter.answers.kaupunki, undefined);
+  assert.equal(d2.data.encounter.answers.kadunnimi, undefined);
+  // Sijaintia ei täytetä automaattisesti
+  const r3 = await users.tiimivetaja('POST', '/encounters', basePayload(p.AK21));
+  assert.equal((await users.tiimivetaja('GET', '/encounters/' + r3.data.id)).data.encounter.answers.sijainti, undefined);
+  // Kysymyksen muokkaus ilman asetusta ei nollaa sitä; automaattista arvoa ei enää ole
   const q = db.prepare("SELECT * FROM questions WHERE key = 'kaupunki'").get();
   await users.admin('PUT', '/questions/' + q.id, { label: q.label, help: q.help, type: q.type, applies_to: q.applies_to, options: [] });
   assert.equal(db.prepare("SELECT digital_mode FROM questions WHERE key = 'kaupunki'").get().digital_mode, 'hide');
-  // Automaattisen arvon on oltava vaihtoehtojen joukossa
   const sq = db.prepare("SELECT * FROM questions WHERE key = 'sijainti'").get();
-  const bad = await users.admin('PUT', '/questions/' + sq.id, { label: sq.label, type: 'choice', applies_to: 'kaikki', options: JSON.parse(sq.options), digital_mode: 'fixed', digital_value: 'Kuussa' });
+  assert.equal(sq.digital_mode, 'show');
+  const bad = await users.admin('PUT', '/questions/' + sq.id, { label: sq.label, type: 'choice', applies_to: 'kaikki', options: JSON.parse(sq.options), digital_mode: 'fixed', digital_value: 'Digialustalla' });
   assert.equal(bad.status, 400);
+});
+
+test('asiakkaalta kysytty arvio vain yksilökohtaamisissa', async () => {
+  const p = P();
+  assert.equal(db.prepare("SELECT applies_to FROM questions WHERE key = 'asiakkaan_arvio'").get().applies_to, 'yksilo');
+  const r = await users.tiimivetaja('POST', '/encounters', basePayload(p.KATUKLINIKKA, { encounter_type: 'ryhma', encounter_count: 5, answers: { tyontekijan_arvio: '4', asiakkaan_arvio: '5' } }));
+  assert.equal(r.status, 201, JSON.stringify(r.data));
+  assert.equal((await users.tiimivetaja('GET', '/encounters/' + r.data.id)).data.encounter.answers.asiakkaan_arvio, undefined);
+});
+
+test('kirjaus toisen puolesta: hankkeen käyttäjä tai vapaaehtoinen', async () => {
+  const p = P(); const tv = users.tiimivetaja;
+  const tvId = db.prepare("SELECT id FROM users WHERE email = 'tv@t.fi'").get().id;
+  const mk = await users.admin('POST', '/users', { name: 'Avustaja Kaksi', email: 'tt2@t.fi', role: 'tuntityontekija', project_ids: [p.KATUKLINIKKA] });
+  assert.equal(mk.status, 201, JSON.stringify(mk.data));
+  const ttId = mk.data.id ?? db.prepare("SELECT id FROM users WHERE email = 'tt2@t.fi'").get().id;
+  const htId = db.prepare("SELECT id FROM users WHERE email = 'ht@t.fi'").get().id;
+  const form = await tv('GET', '/form');
+  const members = form.data.members[p.KATUKLINIKKA].map(m => m.id);
+  assert.ok(members.includes(ttId) && !members.includes(tvId), 'lista: hankkeen muut käyttäjät');
+  const TT = 'Tuntityöntekijä tai ulkopuolinen asiantuntija, ohjaaja, avustaja tai neuvontapalvelun vastaaja';
+  // Tiiminvetäjä kirjaa tuntityöntekijän puolesta: rooli toteuttajasta, kirjaaja säilyy
+  let r = await tv('POST', '/encounters', basePayload(p.KATUKLINIKKA, { performer: String(ttId) }));
+  assert.equal(r.status, 201, JSON.stringify(r.data));
+  let e = db.prepare('SELECT * FROM encounters WHERE id = ?').get(r.data.id);
+  assert.equal(e.performed_by, ttId); assert.equal(e.created_by, tvId); assert.equal(e.recorder_role, TT);
+  // Työntekijäseuranta laskee kohtaamisen toteuttajalle
+  const st = await users.admin('GET', `/staff/${ttId}?from=2020-01-01&to=${today}`);
+  assert.ok(st.data.kpi.rows >= 1);
+  // Vapaaehtoinen
+  r = await tv('POST', '/encounters', basePayload(p.KATUKLINIKKA, { performer: 'vapaaehtoinen' }));
+  e = db.prepare('SELECT * FROM encounters WHERE id = ?').get(r.data.id);
+  assert.equal(e.performer_type, 'vapaaehtoinen'); assert.equal(e.performed_by, null);
+  assert.equal(e.recorder_role, 'Vertainen, kokemusasiantuntija tai vapaaehtoinen');
+  // Hankkeeseen kuulumaton käyttäjä ei kelpaa
+  const outsider = db.prepare("SELECT id FROM users WHERE is_test = 0 AND role <> 'admin' AND id NOT IN (SELECT user_id FROM user_projects WHERE project_id = ?)").get(p.VOLJY);
+  if (outsider) assert.equal((await tv('POST', '/encounters', basePayload(p.VOLJY, { performer: String(outsider.id) }))).status, 400);
+  // Hanketyöntekijän puolesta kirjattu näkyy hänelle ja hän voi korjata sen; korjaus säilyttää toteuttajan
+  r = await tv('POST', '/encounters', basePayload(p.KATUKLINIKKA, { performer: String(htId) }));
+  assert.equal(r.status, 201, JSON.stringify(r.data));
+  const own = await users.hanketyontekija('GET', '/encounters');
+  assert.ok(own.data.rows.some(x => x.id === r.data.id));
+  const upd = await users.hanketyontekija('PUT', '/encounters/' + r.data.id, basePayload(p.KATUKLINIKKA, { performer: String(htId) }));
+  assert.equal(upd.status, 200, JSON.stringify(upd.data));
+  assert.equal(db.prepare('SELECT created_by FROM encounters WHERE id = ?').get(r.data.id).created_by, tvId);
 });
 
 test('tilastot: koosteet, rajaukset, vertailujakso ja oikeudet', async () => {
@@ -413,6 +487,12 @@ test('tilastot: koosteet, rajaukset, vertailujakso ja oikeudet', async () => {
   const all = db.prepare('SELECT COUNT(*) n, SUM(encounter_count) s FROM encounters WHERE deleted_at IS NULL').get();
   assert.equal(a.data.totals.rows, all.n); assert.equal(a.data.totals.encounters, all.s);
   assert.equal(a.data.totals.yksilo + a.data.totals.ryhma, all.s);
+  // Täysin anonyymit: yksilö ilman nimimerkkiä + ryhmien kohtaamiset ilman osallistujamäärää
+  const anon = db.prepare(`SELECT COALESCE(SUM(CASE WHEN encounter_type = 'yksilo' AND client_id IS NULL THEN encounter_count END), 0)
+    + COALESCE(SUM(CASE WHEN encounter_type = 'ryhma' AND person_count IS NULL THEN encounter_count END), 0) n FROM encounters WHERE deleted_at IS NULL`).get().n;
+  assert.equal(a.data.totals.anonymous, anon);
+  assert.ok(a.data.totals.anon_group > 0, 'testidatassa on ryhmiä ilman osallistujamäärää');
+  assert.ok(Math.abs(a.data.totals.anonymous_share - anon / all.s) < 1e-9);
   assert.ok(a.data.monthly.length >= 1 && a.data.byProject.length >= 2);
   assert.ok(a.data.distributions.some(d => d.key === 'ika'));
   // Tyyppirajaus

@@ -103,6 +103,11 @@ CREATE TABLE IF NOT EXISTS audit_log (
   details   TEXT
 );
 
+CREATE TABLE IF NOT EXISTS settings (
+  key   TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS sessions (
   sid     TEXT PRIMARY KEY,
   sess    TEXT NOT NULL,
@@ -149,7 +154,7 @@ function seed() {
   // ja kirjaajan rooli ovat encounters-taulun omia sarakkeita).
   q({ key: 'tyontekijan_arvio', label: 'Työntekijän arvio kohtaamisen hyödystä', type: 'rating', options: [1, 2, 3, 4, 5], required: 1, sort: 10 });
   q({ key: 'asiakkaan_arvio', label: 'Asiakkaalta kysytty arvio kohtaamisen hyödystä',
-      help: 'Jätä tyhjäksi, jos ei tiedossa tai jos asiakaspalaute kerätään eri lomakkeella tai työkalulla.', type: 'rating', options: [1, 2, 3, 4, 5], sort: 20 });
+      help: 'Jätä tyhjäksi, jos ei tiedossa tai jos asiakaspalaute kerätään eri lomakkeella tai työkalulla.', type: 'rating', options: [1, 2, 3, 4, 5], applies_to: 'yksilo', sort: 20 });
   q({ key: 'ika', label: 'Ikä (arvio)', help: 'Jos ei tiedossa, jätä tyhjäksi.', type: 'choice', applies_to: 'yksilo',
       options: ['0–7 vuotta', '8–17 vuotta', '18–29 vuotta', '30–62 vuotta', '63–79 vuotta', 'Yli 80 vuotta'], sort: 30 });
   q({ key: 'sukupuoli', label: 'Oletettu sukupuoli', help: 'Jos ei tiedossa, jätä tyhjäksi.', type: 'choice', applies_to: 'yksilo',
@@ -211,9 +216,52 @@ if (!db.prepare("PRAGMA table_info(questions)").all().some(c => c.name === 'digi
   db.prepare("UPDATE questions SET digital_mode = 'hide' WHERE key IN ('kaupunki', 'kadunnimi')").run();
 }
 
+// Kertaluonteiset tietomuutokset (ajetaan kerran, eivät ohita adminin myöhempiä muutoksia)
+function once(name, fn) {
+  if (db.prepare('SELECT 1 FROM settings WHERE key = ?').get('migration.' + name)) return;
+  db.transaction(() => { fn(); db.prepare('INSERT INTO settings (key, value) VALUES (?, ?)').run('migration.' + name, new Date().toISOString()); })();
+}
+
+// Sijainti valitaan joka kirjauksessa (myös digihankkeilla on livekohtaamisia).
+// Kaupunki ja kadunnimi piilotetaan, kun sijainniksi valitaan "Digialustalla".
+//   digital_mode = 'show' (näytetään aina) | 'hide' (piilotetaan, kun sijainti on Digialustalla)
+once('sijainti_joka_kerta', () => {
+  db.prepare("UPDATE questions SET digital_mode = 'show', digital_value = NULL WHERE digital_mode = 'fixed'").run();
+});
+// Asiakkaalta kysytty arvio vain yksilökohtaamisiin (ryhmän vastaus ei voi olla yksi luku)
+once('asiakkaan_arvio_yksilo', () => {
+  db.prepare("UPDATE questions SET applies_to = 'yksilo' WHERE key = 'asiakkaan_arvio'").run();
+});
+
+// Kohtaamisen toteuttaja: kirjauksen voi tehdä toisen puolesta.
+//   performer_type = 'kayttaja' (performed_by = käyttäjä) | 'vapaaehtoinen' (performed_by NULL)
+if (!db.prepare("PRAGMA table_info(encounters)").all().some(c => c.name === 'performed_by')) {
+  db.exec('ALTER TABLE encounters ADD COLUMN performed_by INTEGER REFERENCES users(id)');
+  db.exec("ALTER TABLE encounters ADD COLUMN performer_type TEXT NOT NULL DEFAULT 'kayttaja'");
+  db.exec('UPDATE encounters SET performed_by = created_by');
+}
+db.exec('CREATE INDEX IF NOT EXISTS ix_enc_performed_by ON encounters(performed_by)');
+
+const DIGITAL_LOCATION = 'Digialustalla';
+
 function audit(userId, action, entity, entityId, details) {
   db.prepare('INSERT INTO audit_log (user_id, action, entity, entity_id, details) VALUES (?,?,?,?,?)')
     .run(userId ?? null, action, entity ?? null, entityId == null ? null : String(entityId), details ? JSON.stringify(details) : null);
 }
 
-module.exports = { db, ensureAdmin, audit, RECORDER_ROLES };
+// ---------------------------------------------------------------------------
+// Kytkettävät toiminnot (admin voi aktivoida Hallinta → Toiminnot).
+// ---------------------------------------------------------------------------
+const FEATURES = {
+  paths: { label: 'Asiakaspolut', description: 'Asiakaspolkujen ja palveluohjausten koostenäkymä (admin ja tiiminvetäjä). Piilotettuna näkymä ja sen valikkolinkki eivät näy, eikä rajapinta palauta tietoja. Asiakastunnisteiden ja palveluohjausten kirjaaminen lomakkeella toimii tästä riippumatta.', default: false },
+};
+function featureEnabled(key) {
+  const r = db.prepare('SELECT value FROM settings WHERE key = ?').get('feature.' + key);
+  return r ? r.value === '1' : !!(FEATURES[key] && FEATURES[key].default);
+}
+function setFeature(key, on) {
+  db.prepare('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value').run('feature.' + key, on ? '1' : '0');
+}
+const features = () => Object.fromEntries(Object.keys(FEATURES).map(k => [k, featureEnabled(k)]));
+
+module.exports = { db, ensureAdmin, audit, RECORDER_ROLES, DIGITAL_LOCATION, FEATURES, featureEnabled, setFeature, features };
