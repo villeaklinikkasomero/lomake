@@ -1241,6 +1241,19 @@ async function viewDashboard() {
     const R = d.ratings;
     const ratingBlock = (title, r) => h('div', { class: 'rating-sum' }, h('p', { class: 'kpi-value small-kpi' }, fmtAvg(r.avg)),
       h('p', { class: 'muted small' }, `${title} · ${fmtNum(r.n)} arviota`), r.n ? hBars(r.dist.map(x => ({ label: String(x.value), value: x.n })), { compact: true, unit: 'arviota' }) : null);
+    // Kohtaamisen sijainti nostetaan arvioiden viereen (ja jätetään pois alempaa jakaumista)
+    const loc = d.distributions.find(q => q.key === 'sijainti');
+    const dists = d.distributions.filter(q => q.key !== 'sijainti');
+    const locationCard = h('div', { class: 'card' }, h('div', { class: 'kpi-head' }, h('h2', null, 'Kohtaamisen sijainti'),
+        infoTip('Kirjauksiin merkitty sijainti. Luku on kirjausten (lomaketallennusten) määrä; ryhmäkirjaus on yksi kirjaus.')),
+      loc ? [h('p', { class: 'muted small' }, `${fmtNum(loc.answered)} kirjausta vastannut`), hBars(loc.items, { keepOrder: true, unit: 'kirjausta' })]
+        : h('p', { class: 'muted' }, 'Ei sijaintitietoja valituilla rajauksilla.'));
+    // Palveluohjaukset näytetään vain, kun Asiakaspolut-toiminto on käytössä
+    const referralCard = state.me.features && state.me.features.paths ? h('div', { class: 'card' }, h('div', { class: 'kpi-head' }, h('h2', null, 'Palveluohjaukset'),
+        infoTip('Yksilökohtaamisissa tehdyt palveluohjaukset. Toteutumisaste = toteutuneet / (toteutuneet + ei toteutuneet).')),
+      h('p', { class: 'kpi-value small-kpi' }, fmtNum(d.referrals.total)), h('p', { class: 'muted small' }, 'ohjausta'),
+      h('p', null, h('strong', null, fmtPct(d.referrals.rate)), ' toteutumisaste', h('span', { class: 'muted' }, ` · ${fmtNum(d.referrals.toteutui)} toteutui, ${fmtNum(d.referrals.ei_toteutunut)} ei, ${fmtNum(d.referrals.avoin)} avoinna`)),
+      p.pathScope !== 'none' ? h('a', { href: '#/asiakaspolut' }, 'Asiakaspolut ja ohjaukset palveluittain →') : null) : null;
     body.replaceChildren(...[
       !T.rows ? h('div', { class: 'notice info' }, 'Valituilla rajauksilla ei ole kirjauksia.') : null,
       h('div', { class: 'dash-row r1' }, kpi1, kpi2, donutCard),
@@ -1256,14 +1269,11 @@ async function viewDashboard() {
         h('div', { class: 'card' }, h('div', { class: 'kpi-head' }, h('h2', null, 'Arviot kohtaamisen hyödystä'),
           infoTip('Asteikko 1–5 (1 = ei lainkaan hyötyä, 5 = erittäin hyödyllinen). Asiakkaan arvio vain, jos se on kysytty.')),
           h('div', { class: 'grid-2 tight' }, ratingBlock('Työntekijän arvio, keskiarvo', R.worker), ratingBlock('Asiakkaan arvio, keskiarvo', R.client))),
-        h('div', { class: 'card' }, h('div', { class: 'kpi-head' }, h('h2', null, 'Palveluohjaukset'),
-          infoTip('Yksilökohtaamisissa tehdyt palveluohjaukset. Toteutumisaste = toteutuneet / (toteutuneet + ei toteutuneet).')),
-          h('p', { class: 'kpi-value small-kpi' }, fmtNum(d.referrals.total)), h('p', { class: 'muted small' }, 'ohjausta'),
-          h('p', null, h('strong', null, fmtPct(d.referrals.rate)), ' toteutumisaste', h('span', { class: 'muted' }, ` · ${fmtNum(d.referrals.toteutui)} toteutui, ${fmtNum(d.referrals.ei_toteutunut)} ei, ${fmtNum(d.referrals.avoin)} avoinna`)),
-          p.pathScope !== 'none' ? h('a', { href: '#/asiakaspolut' }, 'Asiakaspolut ja ohjaukset palveluittain →') : null)),
+        locationCard),
+      referralCard ? h('div', { class: 'dash-row r3' }, referralCard) : null,
       placesRow(d.places),
-      d.distributions.length ? h('h2', { class: 'sub-head' }, dashState.project_id ? 'Vastausjakaumat (yhteiset ja hankekohtaiset kysymykset)' : 'Vastausjakaumat (yhteiset kysymykset – valitse hanke nähdäksesi hankekohtaiset)') : null,
-      d.distributions.length ? h('div', { class: 'dist-grid' }, d.distributions.map(q => h('div', { class: 'card' },
+      dists.length ? h('h2', { class: 'sub-head' }, dashState.project_id ? 'Vastausjakaumat (yhteiset ja hankekohtaiset kysymykset)' : 'Vastausjakaumat (yhteiset kysymykset – valitse hanke nähdäksesi hankekohtaiset)') : null,
+      dists.length ? h('div', { class: 'dist-grid' }, dists.map(q => h('div', { class: 'card' },
         h('h3', null, q.label, q.project ? h('span', { class: 'tag' }, ' hankekohtainen') : null),
         h('p', { class: 'muted small' }, `${fmtNum(q.answered)} kirjausta vastannut${q.multiple ? ' · voi valita useita' : ''}`),
         hBars(q.items, { keepOrder: true, unit: 'kirjausta' })))) : null,
