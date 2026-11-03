@@ -443,7 +443,15 @@ function renderEncounterForm(opts) {
   function renderDynamic() {
     const parts = [];
     drawTypeHelp();
-    if (!s.encounter_type) { dynamic.replaceChildren(); return; }
+    // Lomake jatkuu vasta, kun sekä hanke että kirjauksen tyyppi on valittu
+    // (nimimerkit ja hankekohtaiset kysymykset riippuvat hankkeesta).
+    if (!s.project_id || !s.encounter_type) {
+      const missing = [!s.project_id ? 'hanke' : null, !s.encounter_type ? 'kohtaamisen tyyppi' : null].filter(Boolean).join(' ja ');
+      dynamic.replaceChildren(h('div', { class: 'notice info next-step' }, `Valitse ensin ${missing}, niin lomake jatkuu.`));
+      submitBtn.disabled = true;
+      return;
+    }
+    submitBtn.disabled = false;
     if (s.encounter_type === 'ryhma') {
       parts.push(h('section', { class: 'card section' },
         h('div', { class: 'section-title' }, h('h2', null, 'Ryhmän tiedot')),
@@ -481,8 +489,6 @@ function renderEncounterForm(opts) {
       if (own.length) parts.push(h('section', { class: 'card section' },
         h('div', { class: 'section-title' }, h('h2', null, p ? p.name : 'Hanke'), h('span', { class: 'tag' }, 'Hankekohtaiset kysymykset')),
         own.map(q => renderQuestion(q, s.answers))));
-    } else {
-      parts.push(h('div', { class: 'notice info' }, 'Valitse hanke, niin näet myös hankekohtaiset kysymykset.'));
     }
     dynamic.replaceChildren(...parts);
     syncLocation();
