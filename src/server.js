@@ -420,7 +420,7 @@ function effectivePermissions(role) {
 }
 
 app.get('/api/me', requireAuth, (req, res) => {
-  const projects = db.prepare(`SELECT id, code, name, active, digital FROM projects WHERE id IN (${req.projectIds.map(() => '?').join(',') || 'NULL'}) ORDER BY sort, name`).all(...req.projectIds);
+  const projects = db.prepare(`SELECT id, code, name, active, digital, color FROM projects WHERE id IN (${req.projectIds.map(() => '?').join(',') || 'NULL'}) ORDER BY sort, name`).all(...req.projectIds);
   res.json({
     user: { id: req.user.id, email: req.user.email, name: req.user.name, role: req.user.role, roleLabel: ROLES[req.user.role].label,
             mustChangePassword: !!req.user.must_change_password, authMethod: req.user.auth_method, mfaEnabled: !!req.user.mfa_enabled, recorderRole: RECORDER_ROLES[DEFAULT_RECORDER_ROLE_INDEX[req.user.role]] },
@@ -855,6 +855,13 @@ app.post('/api/users/:id/reset-password', requireAuth, requirePerm('manageUsers'
 // ---------------------------------------------------------------------------
 // Ylläpito: hankkeet
 // ---------------------------------------------------------------------------
+// Teemaväri: '#rrggbb' tai '#rrggbb,#rrggbb'; tyhjä = ei väriä; false = virheellinen
+function normColor(v) {
+  if (v == null || v === '') return null;
+  const parts = String(v).toLowerCase().split(',').map(x => x.trim()).filter(Boolean);
+  if (!parts.length || parts.length > 2 || !parts.every(x => /^#[0-9a-f]{6}$/.test(x))) return false;
+  return parts.join(',');
+}
 app.get('/api/projects', requireAuth, requirePerm('manageProjects'), (req, res) => {
   res.json({ projects: db.prepare(`SELECT p.*, (SELECT COUNT(*) FROM encounters e WHERE e.project_id = p.id AND e.deleted_at IS NULL) encounter_rows
                                    FROM projects p ORDER BY sort, name`).all() });
@@ -866,7 +873,9 @@ app.post('/api/projects', requireAuth, requirePerm('manageProjects'), (req, res)
   if (name.length < 2) return bad(res, 'Anna hankkeen nimi.');
   if (db.prepare('SELECT 1 FROM projects WHERE code = ?').get(code)) return bad(res, 'Tunnus on jo käytössä.');
   const sort = (db.prepare('SELECT MAX(sort) m FROM projects').get().m || 0) + 10;
-  const id = db.prepare('INSERT INTO projects (code, name, sort, digital) VALUES (?, ?, ?, ?)').run(code, name, sort, req.body.digital ? 1 : 0).lastInsertRowid;
+  const color = normColor(req.body.color);
+  if (color === false) return bad(res, 'Virheellinen väri.');
+  const id = db.prepare('INSERT INTO projects (code, name, sort, digital, color) VALUES (?, ?, ?, 0, ?)').run(code, name, sort, color).lastInsertRowid;
   audit(req.user.id, 'project_create', 'project', id, { code, name, digital: !!req.body.digital });
   res.status(201).json({ id });
 });
@@ -874,8 +883,10 @@ app.put('/api/projects/:id', requireAuth, requirePerm('manageProjects'), (req, r
   const id = Number(req.params.id);
   const name = String(req.body.name || '').trim();
   if (name.length < 2) return bad(res, 'Anna hankkeen nimi.');
-  const r = db.prepare('UPDATE projects SET name = ?, active = ?, digital = ?, sort = COALESCE(?, sort) WHERE id = ?')
-    .run(name, req.body.active === false ? 0 : 1, req.body.digital ? 1 : 0, Number.isInteger(req.body.sort) ? req.body.sort : null, id);
+  const color = normColor(req.body.color);
+  if (color === false) return bad(res, 'Virheellinen väri.');
+  const r = db.prepare('UPDATE projects SET name = ?, active = ?, color = ?, sort = COALESCE(?, sort) WHERE id = ?')
+    .run(name, req.body.active === false ? 0 : 1, color, Number.isInteger(req.body.sort) ? req.body.sort : null, id);
   if (!r.changes) return bad(res, 'Hanketta ei löydy.', 404);
   audit(req.user.id, 'project_update', 'project', id, req.body);
   res.json({ ok: true });

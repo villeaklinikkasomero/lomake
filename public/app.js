@@ -382,9 +382,9 @@ function renderEncounterForm(opts) {
     : projects.length <= 8
       ? h('div', { class: 'field', id: 'fw-project' }, h('div', { class: 'label', id: 'l-project' }, 'Hanke', h('span', { class: 'req' }, '*')),
           h('div', { class: 'options project-cards', role: 'radiogroup', 'aria-labelledby': 'l-project' },
-            projects.map(p => h('label', { class: 'opt' },
+            projects.map(p => paintProject(h('label', { class: 'opt' },
               h('input', { type: 'radio', name: 'project', value: p.id, checked: p.id === s.project_id, onchange: () => { s.project_id = p.id; resetClientCheck(s); drawPerformer(); renderDynamic(); } }),
-              h('span', null, h('span', { class: 'opt-title' }, p.name))))))
+              h('span', null, h('span', { class: 'opt-title' }, p.name))), p))))
       : h('div', { class: 'field', id: 'fw-project' }, h('label', { for: 'f-project' }, 'Hanke', h('span', { class: 'req' }, '*')),
         h('select', { id: 'f-project', required: true, onchange: (e) => { s.project_id = Number(e.target.value) || null; resetClientCheck(s); drawPerformer(); renderDynamic(); } },
           h('option', { value: '' }, '– Valitse hanke –'),
@@ -693,6 +693,19 @@ function showFieldError(fieldId, msg, fallbackBox) {
   if (input) setTimeout(() => input.focus({ preventScroll: true }), 350);
 }
 
+// Hankkeen teemaväri: asetetaan CSS-muuttujina (--pc1, --pc2); kahden värin hankkeessa raita on kaksivärinen
+const projectColors = (p) => (p && p.color ? String(p.color).split(',') : []);
+function paintProject(el, p) {
+  const [c1, c2] = projectColors(p);
+  if (!c1) return el;
+  el.style.setProperty('--pc1', c1); el.style.setProperty('--pc2', c2 || c1);
+  el.classList.add('has-pc');
+  return el;
+}
+const projectDot = (p) => paintProject(h('span', { class: 'pdot', 'aria-hidden': 'true' }), p);
+const BRAND_SWATCHES = [['#0037d3', 'Sininen'], ['#00a0f4', 'Vaaleansininen'], ['#008900', 'Vihreä'], ['#00ea00', 'Kirkkaanvihreä'],
+  ['#ffe000', 'Keltainen'], ['#a437b8', 'Violetti'], ['#000000', 'Musta'], ['#919396', 'Harmaa']];
+
 // Täydennysehdotukset tekstikenttään (ARIA-combobox). Haku alkaa 2 merkistä.
 let suggestSeq = 0;
 function attachSuggest(input, q, answers, set) {
@@ -843,7 +856,7 @@ async function viewList() {
         h('th', { class: 'num' }, 'Kohtaamisia'), h('th', { class: 'num' }, 'Henkilöitä'), p.viewScope !== 'own' ? h('th', null, 'Toteuttaja') : null, h('th', null, 'Tallennettu'))),
       h('tbody', null, r.rows.map(row => h('tr', { class: 'clickable', tabindex: '0', onclick: () => go('#/kirjaukset/' + row.id),
         onkeydown: (e) => { if (e.key === 'Enter') go('#/kirjaukset/' + row.id); } },
-        h('td', { class: 'cell-title' }, h('strong', null, fmtDate(row.encounter_date)), ' · ', row.project_name, row.is_test ? [' ', h('span', { class: 'badge grey' }, 'testi')] : null),
+        h('td', { class: 'cell-title' }, h('strong', null, fmtDate(row.encounter_date)), ' · ', projectDot(me.projects.find(x => x.id === row.project_id)), row.project_name, row.is_test ? [' ', h('span', { class: 'badge grey' }, 'testi')] : null),
         h('td', { 'data-label': 'Tyyppi' }, h('span', { class: 'badge ' + (row.encounter_type === 'ryhma' ? 'blue' : '') }, typeLabel(row.encounter_type))),
         h('td', { class: 'num', 'data-label': 'Kohtaamisia' }, fmtNum(row.encounter_count)), h('td', { class: 'num', 'data-label': 'Henkilöitä' }, row.person_count == null ? '–' : fmtNum(row.person_count)),
         p.viewScope !== 'own' ? h('td', { 'data-label': 'Toteuttaja' }, row.performer_type === VOLUNTEER ? 'Vapaaehtoinen' : (row.performed_by_name || row.created_by_name),
@@ -1553,17 +1566,48 @@ async function viewProjects() {
     const name = h('input', { type: 'text', id: 'p-name', value: p ? p.name : '' });
     const active = h('input', { type: 'checkbox', checked: p ? !!p.active : true });
     const msg = h('div', { class: 'notice err', hidden: true });
+    // Teemaväri: 1–2 väriä säätiön paletista tai vapaasti
+    let colors = projectColors(p);
+    const preview = h('div', { class: 'options project-cards color-preview' });
+    const colorBox = h('div');
+    const drawColors = () => {
+      const slot = (i) => {
+        const inp = h('input', { type: 'color', value: colors[i] || '#0037d3', 'aria-label': i ? 'Toinen väri' : 'Väri' });
+        inp.addEventListener('input', () => { colors[i] = inp.value; drawPreview(); });
+        return h('div', { class: 'color-slot' }, inp,
+          h('div', { class: 'swatches', role: 'group', 'aria-label': 'Säätiön värit' }, BRAND_SWATCHES.map(([c, n]) => {
+            const b = h('button', { type: 'button', class: 'swatch' + (colors[i] === c ? ' on' : ''), title: n, 'aria-label': n, 'aria-pressed': String(colors[i] === c), onclick: () => { colors[i] = c; drawColors(); } });
+            b.style.background = c; return b; })));
+      };
+      colorBox.replaceChildren(...[
+        colors.length ? slot(0) : null,
+        colors.length > 1 ? slot(1) : null,
+        h('div', { class: 'actions' },
+          !colors.length ? h('button', { type: 'button', class: 'btn btn-secondary btn-sm', onclick: () => { colors = ['#0037d3']; drawColors(); } }, 'Lisää väri') : null,
+          colors.length === 1 ? h('button', { type: 'button', class: 'btn btn-secondary btn-sm', onclick: () => { colors.push('#00a0f4'); drawColors(); } }, 'Lisää toinen väri') : null,
+          colors.length === 2 ? h('button', { type: 'button', class: 'btn btn-secondary btn-sm', onclick: () => { colors.pop(); drawColors(); } }, 'Poista toinen väri') : null,
+          colors.length ? h('button', { type: 'button', class: 'btn btn-secondary btn-sm', onclick: () => { colors = []; drawColors(); } }, 'Ei väriä') : null),
+      ].filter(Boolean));
+      drawPreview();
+    };
+    const drawPreview = () => preview.replaceChildren(paintProject(h('label', { class: 'opt' }, h('input', { type: 'radio', name: 'pv', checked: false }),
+      h('span', null, h('span', { class: 'opt-title' }, name.value || 'Hanke'))), { color: colors.join(',') }));
+    name.addEventListener('input', drawPreview);
+    drawColors();
     editorBox.replaceChildren(h('div', { class: 'card editor' }, h('h2', null, isNew ? 'Uusi hanke' : 'Muokkaa hanketta'),
       h('div', { class: 'row' },
         h('div', { class: 'field' }, h('label', { for: 'p-code' }, 'Tunnus'), h('p', { class: 'help' }, 'Pysyvä, esim. KATUKLINIKKA. Ei voi muuttaa myöhemmin.'), code),
         h('div', { class: 'field' }, h('label', { for: 'p-name' }, 'Nimi lomakkeella'), h('p', { class: 'help' }, 'Näkyy kirjaajille ja raporteissa.'), name)),
+      h('div', { class: 'field' }, h('div', { class: 'label' }, 'Teemaväri'),
+        h('p', { class: 'help' }, 'Näkyy raitana hankevalinnassa ja kirjauslistassa, jotta oman hankkeen löytää nopeasti. Digipalveluiden värit ovat niiden verkkosivuilta.'),
+        colorBox, h('div', { class: 'label small' }, 'Esikatselu'), preview),
       !isNew ? h('div', { class: 'field' }, h('label', { class: 'switch' }, active, 'Käytössä (näkyy lomakkeella)'),
         h('p', { class: 'help' }, 'Käytöstä poistetun hankkeen vanhat kirjaukset säilyvät raporteissa.')) : null,
       msg, h('div', { class: 'actions' },
         h('button', { class: 'btn btn-primary', type: 'button', onclick: async () => {
           try {
-            if (isNew) await api('/projects', { method: 'POST', body: { code: code.value, name: name.value } });
-            else await api('/projects/' + p.id, { method: 'PUT', body: { name: name.value, active: active.checked } });
+            if (isNew) await api('/projects', { method: 'POST', body: { code: code.value, name: name.value, color: colors.join(',') } });
+            else await api('/projects/' + p.id, { method: 'PUT', body: { name: name.value, active: active.checked, color: colors.join(',') } });
             state.form = null; await loadMe(); toast('Tallennettu.'); viewProjects();
           } catch (ex) { msg.textContent = ex.message; msg.hidden = false; }
         } }, 'Tallenna'),
@@ -1577,7 +1621,7 @@ async function viewProjects() {
     h('div', { class: 'table-wrap' }, h('table', null,
       h('thead', null, h('tr', null, h('th', null, 'Hanke'), h('th', null, 'Tunnus'), h('th', { class: 'num' }, 'Kirjauksia'), h('th', null, 'Tila'))),
       h('tbody', null, projects.map(p => h('tr', { class: 'clickable', tabindex: '0', onclick: () => openEditor(p), onkeydown: (e) => { if (e.key === 'Enter') openEditor(p); } },
-        h('td', null, h('strong', null, p.name)), h('td', { class: 'small' }, p.code), h('td', { class: 'num' }, fmtNum(p.encounter_rows)),
+        h('td', null, projectDot(p), h('strong', null, p.name)), h('td', { class: 'small' }, p.code), h('td', { class: 'num' }, fmtNum(p.encounter_rows)),
         h('td', null, p.active ? h('span', { class: 'badge green' }, 'Käytössä') : h('span', { class: 'badge grey' }, 'Ei käytössä'))))))));
 }
 

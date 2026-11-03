@@ -250,6 +250,16 @@ once('sijainti_joka_kerta', () => {
 once('kaupunki_katu_digialustalla', () => {
   db.prepare("UPDATE questions SET digital_mode = 'hide' WHERE key IN ('kaupunki', 'kadunnimi')").run();
 });
+// Hankkeen teemaväri (yksi tai kaksi hex-väriä pilkulla erotettuna) helpottaa hankkeen löytämistä lomakkeella.
+// Digipalveluiden värit ovat niiden verkkosivujen pääväreistä; muille säätiön väripaletista.
+if (!db.prepare('PRAGMA table_info(projects)').all().some(c => c.name === 'color')) {
+  db.exec('ALTER TABLE projects ADD COLUMN color TEXT');
+}
+once('hankevarit', () => {
+  const set = db.prepare('UPDATE projects SET color = ? WHERE code = ? AND color IS NULL');
+  for (const [code, color] of [['AK21', '#008900,#00a0f4'], ['DOPINGLINKKI', '#ffe000'], ['LASINEN', '#a437b8'],
+    ['KATUKLINIKKA', '#0037d3'], ['JALMA', '#00ea00'], ['OSIS', '#919396'], ['VOLJY', '#000000']]) set.run(color, code);
+});
 // Asiakkaalta kysytty arvio vain yksilökohtaamisiin (ryhmän vastaus ei voi olla yksi luku)
 once('asiakkaan_arvio_yksilo', () => {
   db.prepare("UPDATE questions SET applies_to = 'yksilo' WHERE key = 'asiakkaan_arvio'").run();
