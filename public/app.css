@@ -724,3 +724,10 @@ svg .series.cmp { stroke: #8a8f96; stroke-width: 2; stroke-dasharray: 5 4; }
 .dash-filter-bottom .cmp-field { margin: 0; min-width: 200px; }
 .dash-filter-bottom > a.btn { margin-left: auto; }
 @media (max-width: 640px) { .dash-filter-bottom { align-items: stretch; } .dash-filter-bottom > a.btn { margin-left: 0; } }
+
+/* Napautettavat palkit (paikkakunta rajaukseksi) */
+.hbars.pickable .hbar { width: calc(100% + .5rem); background: none; border: 0; padding: .15rem .25rem; margin: 0 -.25rem; border-radius: 6px; font: inherit; color: inherit; text-align: left; cursor: pointer; }
+.hbars.pickable .hbar:hover { background: var(--blue-50, #eef3ff); }
+.hbars.pickable .hbar.active { background: var(--blue-50, #eef3ff); box-shadow: inset 0 0 0 1px var(--blue, #0037D3); }
+.hbars.pickable .hbar.active .hbar-label { font-weight: 700; color: var(--blue, #0037D3); }
+.btn.mt { margin-top: .75rem; }

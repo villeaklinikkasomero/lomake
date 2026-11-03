@@ -97,6 +97,8 @@ Määrittelydokumentin dashboard-mallin mukainen näkymä (valikossa **Tilastot*
 - **Uusin kirjaus tallennettu** kertoo rajauksiin osuvan uusimman kirjauksen tallennus- tai korjausajan. Tilastot lasketaan aina suoraan tietokannasta, joten ne ovat ajan tasalla.
 
 
+**Paikkakunnat ja kadut:** kortit *Kohtaamiset paikkakunnittain* ja *Kohtaamiset kaduittain* näyttävät kirjauksiin merkityt kaupungit ja kadut. Kirjoitusasut yhdistetään kirjainkoosta ja välilyönneistä riippumatta. Paikkakuntaa napauttamalla, tai rajausten valinnalla *Paikkakunta*, koko näkymä rajautuu siihen, ja katukortti näyttää kyseisen paikkakunnan kadut. Kohtaamiset, joilla ei ole paikkakuntaa (esim. digialustalla), näytetään omana lukunaan. Kaikki kadut ovat myös Excel-viennissä.
+
 **Vertailuluvut** näytetään vain pyydettäessä (rajausten kohta *Vertailu*):
 - *Edellinen jakso*: yhtä pitkä jakso juuri ennen valittua aikaväliä.
 - *Vuotta aiemmin*: sama aikaväli edellisenä vuonna.

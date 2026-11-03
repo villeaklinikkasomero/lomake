@@ -21,7 +21,7 @@ function shiftYear(from, to) {
   return [back(from), back(to)];
 }
 
-function buildWhere({ from, to, projectIds, projectId, types, role, ika, sukupuoli }) {
+function buildWhere({ from, to, projectIds, projectId, types, role, ika, sukupuoli, kaupunki }) {
   const w = ['e.deleted_at IS NULL', `e.project_id IN (${projectIds.map(() => '?').join(',') || 'NULL'})`];
   const p = [...projectIds];
   if (from) { w.push('e.encounter_date >= ?'); p.push(from); }
@@ -34,7 +34,44 @@ function buildWhere({ from, to, projectIds, projectId, types, role, ika, sukupuo
     w.push('EXISTS (SELECT 1 FROM encounter_answers a WHERE a.encounter_id = e.id AND a.question_id = ? AND a.value = ?)');
     p.push(qid(key), val);
   }
+  if (kaupunki) {
+    w.push('EXISTS (SELECT 1 FROM encounter_answers a WHERE a.encounter_id = e.id AND a.question_id = ? AND lower(trim(a.value)) = ?)');
+    p.push(qid('kaupunki'), String(kaupunki).trim().toLowerCase());
+  }
   return { sql: w.join(' AND '), params: p };
+}
+
+// Paikkakunnat ja kadut (vapaatekstiä: kirjoitusasut yhdistetään kirjainkoosta ja välilyönneistä riippumatta).
+// Näytettäväksi nimeksi valitaan yleisin kirjoitusasu.
+function places(filters, W) {
+  const cq = qid('kaupunki'), sq = qid('kadunnimi');
+  const group = (where, params, qidv, extraJoin = '', extraSelect = '') => db.prepare(`SELECT lower(trim(a.value)) k, trim(a.value) v, ${extraSelect}
+      COUNT(*) rows, SUM(e.encounter_count) encounters FROM encounters e
+      JOIN encounter_answers a ON a.encounter_id = e.id AND a.question_id = ? ${extraJoin}
+      WHERE ${where} AND trim(a.value) <> '' GROUP BY k, v ${extraSelect ? ', ck' : ''}`).all(qidv, ...params);
+  const merge = (rows, keyOf) => {
+    const m = new Map();
+    for (const r of rows) {
+      const key = keyOf(r); const o = m.get(key) || { label: r.v, best: 0, rows: 0, encounters: 0, city: r.cv || null };
+      o.rows += r.rows; o.encounters += r.encounters;
+      if (r.rows > o.best) { o.best = r.rows; o.label = r.v; if (r.cv) o.city = r.cv; }
+      m.set(key, o);
+    }
+    return [...m.values()].sort((a, b) => b.encounters - a.encounters || a.label.localeCompare(b.label, 'fi'));
+  };
+  // Paikkakunnat ilman paikkakuntarajausta (rajaus valitsee yhden niistä)
+  const WC = buildWhere({ ...filters, kaupunki: null });
+  const cities = merge(group(WC.sql, WC.params, cq), r => r.k);
+  const totalEnc = db.prepare(`SELECT COALESCE(SUM(e.encounter_count), 0) n FROM encounters e WHERE ${WC.sql}`).get(...WC.params).n;
+  const withCity = cities.reduce((t, c) => t + c.encounters, 0);
+  const streetRows = group(W.sql, W.params, sq,
+    'LEFT JOIN encounter_answers c ON c.encounter_id = e.id AND c.question_id = ' + Number(cq), 'lower(trim(c.value)) ck, trim(c.value) cv,');
+  const streets = merge(streetRows, r => r.k + '|' + (filters.kaupunki ? '' : (r.ck || '')));
+  const strip = (x) => ({ label: x.label, city: x.city, rows: x.rows, encounters: x.encounters });
+  return {
+    cities: cities.map(strip), withoutCity: Math.max(0, totalEnc - withCity),
+    streets: streets.slice(0, 20).map(strip), streetCount: streets.length,
+  };
 }
 
 function totals(W) {
@@ -116,7 +153,7 @@ function dashboard(filters) {
     totals: cur, previous: prev, monthly, monthlyPrev, byProject,
     ratings: { worker: ratingStats('tyontekijan_arvio'), client: ratingStats('asiakkaan_arvio') },
     referrals: { ...ref, rate: ref.toteutui + ref.ei_toteutunut ? ref.toteutui / (ref.toteutui + ref.ei_toteutunut) : null },
-    distributions, updated,
+    distributions, updated, places: places(filters, W),
     options: { roles: RECORDER_ROLES, ika: opt('ika'), sukupuoli: opt('sukupuoli') },
   };
 }

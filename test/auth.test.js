@@ -68,7 +68,8 @@ test('paikallinen tunnus: salasana + TOTP-käyttöönotto, uudelleenkäytön est
   assert.equal((await c('GET', '/api/me')).status, 401, 'ei vielä kirjautunut');
   const secret = r.data.secret.replace(/\s/g, '');
   assert.equal((await c('POST', '/api/login/mfa', { code: '000000' })).status, 401);
-  r = await c('POST', '/api/login/mfa', { code: auth.totp(secret) });
+  const code1 = auth.totp(secret);
+  r = await c('POST', '/api/login/mfa', { code: code1 });
   assert.equal(r.status, 200, JSON.stringify(r.data));
   assert.equal((await c('GET', '/api/me')).status, 200);
   const row = db.prepare("SELECT mfa_secret, mfa_enabled FROM users WHERE email='admin@t.fi'").get();
@@ -77,7 +78,7 @@ test('paikallinen tunnus: salasana + TOTP-käyttöönotto, uudelleenkäytön est
   const c2 = client();
   r = await c2('POST', '/api/login', { email: 'admin@t.fi', password: 'Admin-salasana-1' });
   assert.equal(r.data.mfa, 'verify');
-  assert.equal((await c2('POST', '/api/login/mfa', { code: auth.totp(secret) })).status, 401, 'koodin uudelleenkäyttö estetty');
+  assert.equal((await c2('POST', '/api/login/mfa', { code: code1 })).status, 401, 'koodin uudelleenkäyttö estetty');
   // Seuraavan aika-askeleen koodi kelpaa (±1 askel sallittu)
   assert.equal((await c2('POST', '/api/login/mfa', { code: auth.totp(secret, Date.now() + 30000) })).status, 200);
   // Admin luo tuntityöntekijän ja nollaa hänen MFA:nsa

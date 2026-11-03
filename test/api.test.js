@@ -563,3 +563,21 @@ test('nimimerkki: ääkköset ja kirjainkoko eivät estä löytymistä; vanha ti
   assert.ok(clients.findClient(p.KATUKLINIKKA, 'pöllö ilves'));
   assert.ok(clients.findClient(p.KATUKLINIKKA, 'pollo ilves'), 'päivityksen jälkeen myös ilman ääkkösiä');
 });
+
+test('tilastot: paikkakunnat ja kadut, kirjoitusasut yhdistetään, paikkakuntarajaus', async () => {
+  const p = P(); const tv = users.tiimivetaja;
+  const ans = (kaupunki, kadunnimi) => ({ tyontekijan_arvio: '4', sijainti: 'Kadulla tai muulla julkisella paikalla', kaupunki, kadunnimi });
+  await tv('POST', '/encounters', basePayload(p.KATUKLINIKKA, { encounter_date: '2021-03-01', answers: ans('Lahti', 'Aleksanterinkatu') }));
+  await tv('POST', '/encounters', basePayload(p.KATUKLINIKKA, { encounter_date: '2021-03-02', answers: ans('lahti ', 'aleksanterinkatu') }));
+  await tv('POST', '/encounters', basePayload(p.KATUKLINIKKA, { encounter_date: '2021-03-03', answers: ans('Lahti', 'Vesijärvenkatu') }));
+  await tv('POST', '/encounters', basePayload(p.KATUKLINIKKA, { encounter_date: '2021-03-04', answers: ans('Kotka', 'Keskuskatu') }));
+  const d = await users.admin('GET', '/dashboard?from=2021-03-01&to=2021-03-31');
+  const lahti = d.data.places.cities.find(c => c.label === 'Lahti');
+  assert.equal(lahti.encounters, 3, JSON.stringify(d.data.places));
+  const alek = d.data.places.streets.find(s => s.label === 'Aleksanterinkatu');
+  assert.equal(alek.encounters, 2); assert.equal(alek.city, 'Lahti');
+  const f = await users.admin('GET', '/dashboard?from=2021-03-01&to=2021-03-31&kaupunki=LAHTI');
+  assert.equal(f.data.totals.encounters, 3);
+  assert.ok(!f.data.places.streets.some(s => s.label === 'Keskuskatu'));
+  assert.ok(f.data.places.cities.length >= 2, 'paikkakuntalista ei rajaudu itseensä');
+});

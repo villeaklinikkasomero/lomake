@@ -1122,7 +1122,10 @@ function niceStep(max) { const raw = max / 4; const p = 10 ** Math.floor(Math.lo
 // Vaakapylväät HTML:nä (yksi sarja, arvo tekstinä)
 function hBars(items, opts = {}) {
   const max = Math.max(1, ...items.map(i => i.value));
-  return h('div', { class: 'hbars' + (opts.compact ? ' compact' : '') }, items.map(i => h('div', { class: 'hbar', title: `${i.label}: ${fmtNum(i.value)}${opts.unit ? ' ' + opts.unit : ''}` },
+  // opts.onPick: rivit ovat painikkeita (esim. paikkakunnan valinta rajaukseksi)
+  return h('div', { class: 'hbars' + (opts.compact ? ' compact' : '') + (opts.onPick ? ' pickable' : '') }, items.map(i => h(opts.onPick ? 'button' : 'div', {
+    class: 'hbar' + (i.active ? ' active' : ''), type: opts.onPick ? 'button' : null, 'aria-pressed': opts.onPick ? String(!!i.active) : null,
+    onclick: opts.onPick ? () => opts.onPick(i) : null, title: `${i.label}: ${fmtNum(i.value)}${opts.unit ? ' ' + opts.unit : ''}` },
     h('div', { class: 'hbar-label' }, i.label),
     h('div', { class: 'hbar-track' }, i.value > 0 ? (() => { const el = h('div', { class: 'hbar-fill' }); el.style.width = `${(i.value / max) * 100}%`; return el; })() : null),
     h('div', { class: 'hbar-value' }, fmtNum(i.value)))));
@@ -1131,7 +1134,7 @@ function hBars(items, opts = {}) {
 // ---------------------------------------------------------------------------
 // Tilastot (dashboard) – määrittelydokumentin mallin mukaan
 // ---------------------------------------------------------------------------
-const dashState = { from: '', to: '', project_id: '', types: ['yksilo', 'ryhma'], role: '', ika: '', sukupuoli: '', compare: 'none' };
+const dashState = { from: '', to: '', project_id: '', types: ['yksilo', 'ryhma'], role: '', ika: '', sukupuoli: '', kaupunki: '', compare: 'none' };
 const COMPARE = { none: 'Ei vertailua', prev: 'Edellinen jakso', year: 'Vuotta aiemmin' };
 const SERIES = [
   { key: 'encounters', label: 'Kohtaamiset yhteensä', cls: 's1' },
@@ -1161,7 +1164,7 @@ async function viewDashboard() {
 
   function query() {
     const q = new URLSearchParams({ from: dashState.from, to: dashState.to, types: dashState.types.join(',') });
-    for (const k of ['project_id', 'role', 'ika', 'sukupuoli']) if (dashState[k]) q.set(k, dashState[k]);
+    for (const k of ['project_id', 'role', 'ika', 'sukupuoli', 'kaupunki']) if (dashState[k]) q.set(k, dashState[k]);
     if (dashState.compare !== 'none') q.set('compare', dashState.compare);
     return q;
   }
@@ -1178,7 +1181,7 @@ async function viewDashboard() {
       el.addEventListener('change', () => { const set = new Set(dashState.types); el.checked ? set.add(v) : set.delete(v);
         if (!set.size) { el.checked = true; return; } dashState.types = ['yksilo', 'ryhma'].filter(x => set.has(x)); load(); });
       return h('label', { class: 'opt' }, el, h('span', null, t)); };
-    const active = ['project_id', 'role', 'ika', 'sukupuoli'].filter(k => dashState[k]).length + (dashState.types.length < 2 ? 1 : 0);
+    const active = ['project_id', 'role', 'ika', 'sukupuoli', 'kaupunki'].filter(k => dashState[k]).length + (dashState.types.length < 2 ? 1 : 0);
     const det = h('details', { class: 'dash-filter-details', open: filtersOpen || null },
       h('summary', null, `Rajaukset · ${fmtDate(dashState.from)}–${fmtDate(dashState.to)}${active ? ` · ${active} lisärajausta` : ''}${dashState.compare !== 'none' ? ' · vertailu' : ''}`));
     det.addEventListener('toggle', () => { filtersOpen = det.open; });
@@ -1189,7 +1192,9 @@ async function viewDashboard() {
         me.projects.length > 1 ? sel('project_id', 'd-proj', 'Hanke', me.projects.map(x => [x.id, x.name]), 'Kaikki hankkeet') : null,
         sel('role', 'd-role', 'Kirjaajan rooli', opts.roles.map(r => [r, r]), 'Kaikki'),
         sel('ika', 'd-ika', 'Ikä (arvio)', opts.ika.map(r => [r, r]), 'Kaikki'),
-        sel('sukupuoli', 'd-sp', 'Sukupuoli', opts.sukupuoli.map(r => [r, r]), 'Kaikki')),
+        sel('sukupuoli', 'd-sp', 'Sukupuoli', opts.sukupuoli.map(r => [r, r]), 'Kaikki'),
+        opts.cities.length || dashState.kaupunki ? sel('kaupunki', 'd-city', 'Paikkakunta',
+          [...opts.cities.map(c => [c.label, c.label]), ...(dashState.kaupunki && !opts.cities.some(c => c.label.toLowerCase() === dashState.kaupunki.toLowerCase()) ? [[dashState.kaupunki, dashState.kaupunki]] : [])], 'Kaikki') : null),
       h('div', { class: 'dash-filter-row' },
         h('div', { class: 'actions presets' }, presets.map(([t, f, to]) => h('button', { type: 'button',
           class: 'btn btn-sm ' + (dashState.from === f && dashState.to === to ? 'btn-primary' : 'btn-secondary'),
@@ -1209,7 +1214,7 @@ async function viewDashboard() {
     body.classList.add('refreshing');
     let d;
     try { d = await api('/dashboard?' + query()); } catch (ex) { body.classList.remove('refreshing'); toast(ex.message, true); return; }
-    opts = d.options; drawFilters();
+    opts = { ...d.options, cities: d.places.cities }; drawFilters();
     updated.textContent = d.updated ? `Uusin kirjaus tallennettu ${fmtDateTime(d.updated)}` : 'Ei kirjauksia valituilla rajauksilla';
     const T = d.totals, P = d.previous || {};
     const cmpOn = !!d.previous;
@@ -1256,6 +1261,7 @@ async function viewDashboard() {
           h('p', { class: 'kpi-value small-kpi' }, fmtNum(d.referrals.total)), h('p', { class: 'muted small' }, 'ohjausta'),
           h('p', null, h('strong', null, fmtPct(d.referrals.rate)), ' toteutumisaste', h('span', { class: 'muted' }, ` · ${fmtNum(d.referrals.toteutui)} toteutui, ${fmtNum(d.referrals.ei_toteutunut)} ei, ${fmtNum(d.referrals.avoin)} avoinna`)),
           p.pathScope !== 'none' ? h('a', { href: '#/asiakaspolut' }, 'Asiakaspolut ja ohjaukset palveluittain →') : null)),
+      placesRow(d.places),
       d.distributions.length ? h('h2', { class: 'sub-head' }, dashState.project_id ? 'Vastausjakaumat (yhteiset ja hankekohtaiset kysymykset)' : 'Vastausjakaumat (yhteiset kysymykset – valitse hanke nähdäksesi hankekohtaiset)') : null,
       d.distributions.length ? h('div', { class: 'dist-grid' }, d.distributions.map(q => h('div', { class: 'card' },
         h('h3', null, q.label, q.project ? h('span', { class: 'tag' }, ' hankekohtainen') : null),
@@ -1263,6 +1269,26 @@ async function viewDashboard() {
         hBars(q.items, { keepOrder: true, unit: 'kirjausta' })))) : null,
     ].filter(Boolean));
     body.classList.remove('refreshing');
+  }
+
+  // Paikkakunnat ja kadut. Paikkakunnan napautus rajaa koko näkymän siihen.
+  function placesRow(pl) {
+    const city = dashState.kaupunki;
+    const top = pl.cities.slice(0, 12);
+    const rest = pl.cities.slice(12).reduce((t, c) => t + c.encounters, 0);
+    const cityCard = h('div', { class: 'card' }, h('div', { class: 'kpi-head' }, h('h2', null, 'Kohtaamiset paikkakunnittain'),
+        infoTip('Kirjauksiin merkitty kaupunki. Kirjoitusasut yhdistetään kirjainkoosta riippumatta. Napauta paikkakuntaa rajataksesi tilastot siihen; napauta uudelleen poistaaksesi rajauksen.')),
+      top.length ? hBars([...top.map(c => ({ label: c.label, value: c.encounters, active: city && c.label.toLowerCase() === city.toLowerCase() })),
+        ...(rest ? [{ label: `Muut (${pl.cities.length - 12})`, value: rest, more: true }] : [])], {
+        unit: 'kohtaamista', onPick: (i) => { if (i.more) return; dashState.kaupunki = i.active ? '' : i.label; load(); } }) : h('p', { class: 'muted' }, 'Ei paikkakuntatietoja valituilla rajauksilla.'),
+      pl.withoutCity ? h('p', { class: 'muted small' }, `Ilman paikkakuntaa ${fmtNum(pl.withoutCity)} kohtaamista (esim. digialustalla).`) : null);
+    const streetCard = h('div', { class: 'card' }, h('div', { class: 'kpi-head' }, h('h2', null, city ? `Kadut – ${city}` : 'Kohtaamiset kaduittain'),
+        infoTip('Kirjauksiin merkitty kadunnimi. Kadunnimi on kirjattu vain osaan kohtaamisista, joten luvut eivät summaudu kaikkiin kohtaamisiin.')),
+      pl.streets.length ? hBars(pl.streets.map(st => ({ label: city || !st.city ? st.label : `${st.label}, ${st.city}`, value: st.encounters })), { unit: 'kohtaamista' })
+        : h('p', { class: 'muted' }, 'Ei kadunnimiä valituilla rajauksilla.'),
+      pl.streetCount > pl.streets.length ? h('p', { class: 'muted small' }, `Näytetään ${pl.streets.length} yleisintä ${fmtNum(pl.streetCount)} kadusta. Kaikki kadut ovat Excel-viennissä.`) : null,
+      city ? h('button', { type: 'button', class: 'btn btn-secondary btn-sm mt', onclick: () => { dashState.kaupunki = ''; load(); } }, 'Näytä kaikki paikkakunnat') : null);
+    return h('div', { class: 'dash-row r3' }, cityCard, streetCard);
   }
 
   $app.replaceChildren(
