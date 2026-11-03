@@ -1189,16 +1189,18 @@ async function viewDashboard() {
         me.projects.length > 1 ? sel('project_id', 'd-proj', 'Hanke', me.projects.map(x => [x.id, x.name]), 'Kaikki hankkeet') : null,
         sel('role', 'd-role', 'Kirjaajan rooli', opts.roles.map(r => [r, r]), 'Kaikki'),
         sel('ika', 'd-ika', 'Ikä (arvio)', opts.ika.map(r => [r, r]), 'Kaikki'),
-        sel('sukupuoli', 'd-sp', 'Sukupuoli', opts.sukupuoli.map(r => [r, r]), 'Kaikki'),
-        h('div', { class: 'field' }, h('label', { for: 'd-cmp' }, 'Vertailu'),
-          (() => { const el = h('select', { id: 'd-cmp' }, Object.entries(COMPARE).map(([v, t]) => h('option', { value: v, selected: dashState.compare === v }, t)));
-            el.addEventListener('change', () => { dashState.compare = el.value; load(); }); return el; })())),
+        sel('sukupuoli', 'd-sp', 'Sukupuoli', opts.sukupuoli.map(r => [r, r]), 'Kaikki')),
       h('div', { class: 'dash-filter-row' },
         h('div', { class: 'actions presets' }, presets.map(([t, f, to]) => h('button', { type: 'button',
           class: 'btn btn-sm ' + (dashState.from === f && dashState.to === to ? 'btn-primary' : 'btn-secondary'),
           onclick: () => { dashState.from = f; dashState.to = to; load(); } }, t))),
         h('div', { class: 'type-checks', role: 'group', 'aria-label': 'Kohtaamisen tyyppi' }, h('span', { class: 'label' }, 'Kohtaamisen tyyppi'),
-          typeBox('yksilo', 'Yksilökohtaaminen'), typeBox('ryhma', 'Ryhmä')),
+          typeBox('yksilo', 'Yksilökohtaaminen'), typeBox('ryhma', 'Ryhmä'))),
+      // Vertailu pikavalintojen alle, Excel-vienti oikealle
+      h('div', { class: 'dash-filter-row dash-filter-bottom' },
+        h('div', { class: 'field cmp-field' }, h('label', { for: 'd-cmp' }, 'Vertailu'),
+          (() => { const el = h('select', { id: 'd-cmp' }, Object.entries(COMPARE).map(([v, t]) => h('option', { value: v, selected: dashState.compare === v }, t)));
+            el.addEventListener('change', () => { dashState.compare = el.value; load(); }); return el; })()),
         p.exportScope !== 'none' ? h('a', { class: 'btn btn-secondary', href: '/api/export?' + new URLSearchParams({ from: dashState.from, to: dashState.to, projects: dashState.project_id || '' }),
           title: 'Raakadata valitulta aikaväliltä ja hankkeelta (muut rajaukset eivät koske vientiä)' }, '⤓ Lataa raakadata (Excel)') : null));
   }
