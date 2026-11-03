@@ -711,13 +711,16 @@ let suggestSeq = 0;
 function attachSuggest(input, q, answers, set) {
   const listId = 'sg-' + q.key + '-' + (++suggestSeq);
   const list = h('ul', { class: 'suggest-list', id: listId, role: 'listbox', hidden: true, 'aria-label': 'Ehdotukset' });
+  // Kadunnimet tulevat osin OpenStreetMapista: lähdemerkintä listan alle (ODbL)
+  const attr = q.key === 'kadunnimi' ? h('p', { class: 'suggest-attr' }, 'Kadunnimet: © OpenStreetMapin tekijät') : null;
+  const pop = h('div', { class: 'suggest-pop', hidden: true }, list, attr);
   Object.assign(input, { autocomplete: 'off' });
   input.setAttribute('role', 'combobox'); input.setAttribute('aria-autocomplete', 'list');
   input.setAttribute('aria-expanded', 'false'); input.setAttribute('aria-controls', listId);
   input.setAttribute('autocapitalize', 'words'); input.setAttribute('spellcheck', 'false');
   let items = [], active = -1, timer = null, seq = 0;
   const cache = new Map();
-  const close = () => { list.hidden = true; input.setAttribute('aria-expanded', 'false'); input.removeAttribute('aria-activedescendant'); active = -1; };
+  const close = () => { list.hidden = true; pop.hidden = true; input.setAttribute('aria-expanded', 'false'); input.removeAttribute('aria-activedescendant'); active = -1; };
   const choose = (v) => { input.value = v; set(v); close(); input.dispatchEvent(new Event('change', { bubbles: true })); };
   const mark = (v, typed) => {
     const i = v.toLocaleLowerCase('fi').indexOf(typed.toLocaleLowerCase('fi'));
@@ -727,7 +730,7 @@ function attachSuggest(input, q, answers, set) {
     list.replaceChildren(...items.map((v, i) => h('li', { id: `${listId}-${i}`, role: 'option', class: i === active ? 'active' : null, 'aria-selected': i === active ? 'true' : 'false',
       onmousedown: (e) => e.preventDefault(), onclick: () => choose(v) }, mark(v, typed))));
     const open = items.length > 0;
-    list.hidden = !open; input.setAttribute('aria-expanded', String(open));
+    list.hidden = !open; pop.hidden = !open; input.setAttribute('aria-expanded', String(open));
     if (active >= 0) input.setAttribute('aria-activedescendant', `${listId}-${active}`); else input.removeAttribute('aria-activedescendant');
   };
   const load = async () => {
@@ -743,7 +746,10 @@ function attachSuggest(input, q, answers, set) {
     items = r.filter(v => v.toLocaleLowerCase('fi') !== typed.toLocaleLowerCase('fi')); active = -1; draw(typed);
   };
   input.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(load, 150); });
-  input.addEventListener('focus', () => { if (input.value.trim().length >= 2) load(); });
+  input.addEventListener('focus', () => {
+    if (q.key === 'kadunnimi') input.placeholder = answers.kaupunki ? '' : 'Valitse ensin kaupunki, niin saat katuehdotukset';
+    if (input.value.trim().length >= 2) load();
+  });
   input.addEventListener('blur', () => setTimeout(close, 120));
   input.addEventListener('keydown', (e) => {
     if (list.hidden) return;
@@ -752,7 +758,7 @@ function attachSuggest(input, q, answers, set) {
     else if (e.key === 'Enter' && active >= 0) { e.preventDefault(); choose(items[active]); }
     else if (e.key === 'Escape') { e.preventDefault(); close(); }
   });
-  return h('div', { class: 'suggest' }, input, list);
+  return h('div', { class: 'suggest' }, input, pop);
 }
 
 function renderQuestion(q, answers) {

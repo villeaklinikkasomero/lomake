@@ -528,3 +528,30 @@ test('täydennysehdotukset: kunnat ja aiemmin kirjatut, kadut kaupungin mukaan, 
   // Hankerajaus: hanketyöntekijä (vain Katuklinikka) näkee Katuklinikan kirjaukset
   assert.ok((await users.hanketyontekija('GET', '/suggest?key=kadunnimi&q=häm')).data.items.includes('Hämeenkatu'));
 });
+
+test('kadunnimet: kunnan kadut OpenStreetMapista (testipalvelin), välimuisti, vain kunnan nimi lähtee', async () => {
+  const http = require('http');
+  const seen = [];
+  const mock = http.createServer((req, res) => {
+    let body = ''; req.on('data', c => { body += c; }); req.on('end', () => {
+      const qtext = decodeURIComponent(body.replace(/^data=/, '').replace(/\+/g, ' '));
+      seen.push(qtext);
+      const names = qtext.includes('"Oulu"') ? ['Kirkkokatu', 'Isokatu', 'Hallituskatu', 'Kajaaninkatu'] : [];
+      res.setHeader('Content-Type', 'application/json');
+      res.end(JSON.stringify({ elements: names.map(n => ({ type: 's', tags: { name: n } })) }));
+    });
+  }).listen(0);
+  await new Promise(r => mock.once('listening', r));
+  process.env.OVERPASS_URL = `http://127.0.0.1:${mock.address().port}/api/interpreter`;
+  try {
+    let r = await users.tiimivetaja('GET', '/suggest?key=kadunnimi&q=kir&kaupunki=oulu');
+    assert.deepEqual(r.data.items, ['Kirkkokatu']);
+    assert.equal(seen.length, 1); assert.ok(!seen[0].includes('kir'), 'kirjoitettu teksti ei lähde palveluun');
+    r = await users.tiimivetaja('GET', '/suggest?key=kadunnimi&q=kaj&kaupunki=Oulu');
+    assert.deepEqual(r.data.items, ['Kajaaninkatu']);
+    assert.equal(seen.length, 1, 'välimuisti');
+    // Muu kuin Suomen kunta ei aiheuta hakua
+    await users.tiimivetaja('GET', '/suggest?key=kadunnimi&q=kir&kaupunki=Atlantis');
+    assert.equal(seen.length, 1);
+  } finally { mock.close(); delete process.env.OVERPASS_URL; }
+});

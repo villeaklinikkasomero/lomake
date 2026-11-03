@@ -253,7 +253,8 @@ function completeLogin(req, res, u, method, done) {
 const MUNICIPALITIES = require('./kunnat.json');
 const fold = (v) => String(v || '').normalize('NFKC').trim().toLocaleLowerCase('fi');
 const suggestLimiter = rateLimit({ windowMs: 60 * 1000, limit: 120, standardHeaders: true, legacyHeaders: false, message: { error: 'Liian monta hakua.' } });
-app.get('/api/suggest', requireAuth, requirePerm('record'), suggestLimiter, (req, res) => {
+const streets = require('./streets');
+app.get('/api/suggest', requireAuth, requirePerm('record'), suggestLimiter, async (req, res) => {
   const key = String(req.query.key || '');
   const q = fold(req.query.q);
   const qrow = db.prepare("SELECT id FROM questions WHERE key = ? AND type = 'text' AND suggest = 1").get(key);
@@ -276,6 +277,15 @@ app.get('/api/suggest', requireAuth, requirePerm('record'), suggestLimiter, (req
   if (key === 'kaupunki') {
     const known = new Set(rows.map(r => fold(r.value)));
     for (const m of MUNICIPALITIES) if (!known.has(fold(m))) rows.push({ value: m, n: 0 });
+  }
+  // Kadunnimet: valitun kunnan kadut OpenStreetMapista (vain kun kaupunki on Suomen kunta)
+  const municipality = city && MUNICIPALITIES.find(m => fold(m) === city);
+  if (key === 'kadunnimi' && municipality) {
+    const names = await streets.streetsFor(municipality).catch(() => null);
+    if (names) {
+      const known = new Set(rows.map(r => fold(r.value)));
+      for (const n of names) if (!known.has(fold(n)) && fold(n).includes(q)) rows.push({ value: n, n: 0 });
+    }
   }
   // Alusta alkavat ensin, sitten sanan alusta, sitten muualta; käytetyimmät ensin
   const rank = (v) => { const f = fold(v); return f.startsWith(q) ? 0 : f.split(/[\s-]+/).some(w => w.startsWith(q)) ? 1 : f.includes(q) ? 2 : 9; };
