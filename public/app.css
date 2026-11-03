@@ -645,3 +645,5 @@ details.info[open] > summary { background: var(--blue); color: #fff; }
   .project-cards .opt > span::before { display: none; }
 }
 .project-cards .opt > span { justify-content: center !important; }
+.project-cards .opt > span { flex-wrap: nowrap !important; flex-direction: column !important; justify-content: center !important; align-items: flex-start !important; }
+.project-cards .opt > span > .opt-title, .project-cards .opt > span > .opt-desc { flex: 0 0 auto !important; }

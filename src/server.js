@@ -259,7 +259,7 @@ app.get('/api/form', requireAuth, (req, res) => {
 app.post('/api/encounters', requireAuth, requirePerm('record'), (req, res) => {
   const v = validateEncounter(req.body, req.user, req.projectIds);
   if (v.error) return bad(res, v.error);
-  const cp = clients.prepareClientPart(req.body, v.data.encounter_type, sensitiveHit);
+  const cp = clients.prepareClientPart(req.body, v.data.encounter_type, sensitiveHit, v.data.project_id);
   if (cp.error) return bad(res, cp.error);
   const id = crypto.randomUUID();
   db.transaction(() => {
@@ -445,8 +445,10 @@ const clientLimiter = rateLimit({ windowMs: 15 * 60 * 1000, limit: Number(proces
 app.post('/api/clients/lookup', requireAuth, requirePerm('record'), clientLimiter, (req, res) => {
   if (!clients.ENABLED) return bad(res, 'Asiakastunnisteet eivät ole käytössä.', 503);
   const ref = String(req.body.ref || '');
+  const projectId = Number(req.body.project_id);
+  if (!req.projectIds.includes(projectId)) return bad(res, 'Valitse ensin hanke.');
   const err = clients.validateRef(ref, sensitiveHit); if (err) return bad(res, err);
-  const c = clients.findClient(ref);
+  const c = clients.findClient(projectId, ref);
   audit(req.user.id, 'client_lookup', 'client', null, { mode: req.body.mode === 'new' ? 'new' : 'existing', found: !!c });
   if (req.body.mode === 'new') return res.json({ available: !c });
   if (!c) return res.json({ found: false });
@@ -454,7 +456,9 @@ app.post('/api/clients/lookup', requireAuth, requirePerm('record'), clientLimite
 });
 app.post('/api/clients/generate', requireAuth, requirePerm('record'), clientLimiter, (req, res) => {
   if (!clients.ENABLED) return bad(res, 'Asiakastunnisteet eivät ole käytössä.', 503);
-  res.json({ code: clients.generateUniqueCode() });
+  const projectId = Number(req.body.project_id);
+  if (!req.projectIds.includes(projectId)) return bad(res, 'Valitse ensin hanke.');
+  res.json({ code: clients.generateUniqueCode(projectId) });
 });
 
 // ---------------------------------------------------------------------------

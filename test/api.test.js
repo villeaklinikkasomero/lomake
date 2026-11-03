@@ -262,13 +262,13 @@ test('testidata jakautuu testityöntekijöille ja poistuu heidän kanssaan', asy
 // ---------------------------------------------------------------------------
 // Asiakastunnisteet ja palveluohjaukset
 // ---------------------------------------------------------------------------
-test('asiakastunniste: tiiviste kannassa, yksilöllinen säätiötasolla, ohjaus seuraa hankkeesta toiseen', async () => {
+test('asiakastunniste: hankekohtainen tiiviste, ei hankkeiden välistä linkitystä, ohjaus seurataan hankkeen sisällä', async () => {
   const p = P(); const ht = users.hanketyontekija; const tv = users.tiimivetaja;
   const svc = (await ht('GET', '/form')).data.referralServices;
   assert.ok(svc.length >= 5);
 
   // Uusi asiakas Katuklinikalla nimimerkillä, ohjaus päihdepalveluihin
-  let r = await ht('POST', '/clients/lookup', { ref: 'Revontuli 77', mode: 'new' });
+  let r = await ht('POST', '/clients/lookup', { ref: 'Revontuli 77', mode: 'new', project_id: p.KATUKLINIKKA });
   assert.deepEqual(r.data, { available: true });
   r = await ht('POST', '/encounters', basePayload(p.KATUKLINIKKA, { client_mode: 'new', client_ref: 'Revontuli 77', referrals: [svc[0].id] }));
   assert.equal(r.status, 201, JSON.stringify(r.data));
@@ -279,52 +279,77 @@ test('asiakastunniste: tiiviste kannassa, yksilöllinen säätiötasolla, ohjaus
     db.prepare('SELECT * FROM clients').all(), db.prepare('SELECT * FROM encounters').all(),
     db.prepare('SELECT * FROM audit_log').all(), db.prepare('SELECT * FROM referrals').all()]).toLowerCase();
   assert.ok(!dump.includes('revontuli'), 'tunniste ei saa näkyä kannassa');
-  assert.match(db.prepare('SELECT ref_hash FROM clients ORDER BY id DESC LIMIT 1').get().ref_hash, /^[0-9a-f]{64}$/);
+  const katu = db.prepare('SELECT * FROM clients ORDER BY id DESC LIMIT 1').get();
+  assert.match(katu.ref_hash, /^[0-9a-f]{64}$/);
+  assert.equal(katu.project_id, p.KATUKLINIKKA);
 
-  // Sama tunniste ei kelpaa uudelle asiakkaalle – myöskään eri kirjoitusasulla tai toisessa hankkeessa
-  r = await tv('POST', '/encounters', basePayload(p.AK21, { client_mode: 'new', client_ref: 'REVONTULI-77' }));
+  // Hankkeen sisällä tunniste on yksilöllinen (myös eri kirjoitusasulla)
+  r = await ht('POST', '/encounters', basePayload(p.KATUKLINIKKA, { client_mode: 'new', client_ref: 'REVONTULI-77' }));
   assert.equal(r.status, 400); assert.match(r.data.error, /jo toisen asiakkaan/);
-  r = await tv('POST', '/clients/lookup', { ref: 'revontuli77', mode: 'new' });
-  assert.equal(r.data.available, false);
-  // Tuntematon palaava asiakas
-  r = await tv('POST', '/encounters', basePayload(p.AK21, { client_mode: 'existing', client_ref: 'Ei Ole Olemassa' }));
-  assert.equal(r.status, 400);
 
-  // Palaava asiakas toisessa hankkeessa (AK21): avoin ohjaus näkyy ja sen voi kuitata
-  r = await tv('POST', '/clients/lookup', { ref: 'revontuli 77' });
+  // Toisessa hankkeessa (AK21) sama nimimerkki on eri asiakas: ei löydy, ja sen voi ottaa uudelle asiakkaalle
+  r = await tv('POST', '/clients/lookup', { ref: 'revontuli 77', project_id: p.AK21 });
+  assert.equal(r.data.found, false);
+  r = await tv('POST', '/clients/lookup', { ref: 'revontuli77', mode: 'new', project_id: p.AK21 });
+  assert.equal(r.data.available, true);
+  r = await tv('POST', '/encounters', basePayload(p.AK21, { client_mode: 'new', client_ref: 'Revontuli 77' }));
+  assert.equal(r.status, 201, JSON.stringify(r.data));
+  const ak = db.prepare('SELECT * FROM clients ORDER BY id DESC LIMIT 1').get();
+  assert.notEqual(ak.id, katu.id);
+  assert.notEqual(ak.ref_hash, katu.ref_hash, 'saman nimimerkin tiivisteet eri hankkeissa eivät saa täsmätä');
+  // AK21:n haku ei näe Katuklinikan ohjausta
+  r = await tv('POST', '/clients/lookup', { ref: 'Revontuli 77', project_id: p.AK21 });
+  assert.equal(r.data.summary.open_referrals.length, 0);
+  // Hakua ei voi tehdä hankkeeseen, johon ei ole oikeutta
+  assert.equal((await ht('POST', '/clients/lookup', { ref: 'Revontuli 77', project_id: p.AK21 })).status, 400);
+
+  // Palaava asiakas samassa hankkeessa: avoin ohjaus näkyy ja sen voi kuitata
+  r = await tv('POST', '/clients/lookup', { ref: 'revontuli 77', project_id: p.KATUKLINIKKA });
   assert.equal(r.data.found, true);
   assert.equal(r.data.summary.encounters, 1);
   assert.equal(r.data.summary.open_referrals.length, 1);
-  assert.equal(r.data.summary.open_referrals[0].service, svc[0].name);
-  assert.ok(!JSON.stringify(r.data).includes('Katuklinikka'), 'yhteenveto ei paljasta toisen hankkeen nimeä');
   const refId = r.data.summary.open_referrals[0].id;
-  r = await tv('POST', '/encounters', basePayload(p.AK21, { client_mode: 'existing', client_ref: 'Revontuli77',
+  r = await tv('POST', '/encounters', basePayload(p.KATUKLINIKKA, { client_mode: 'existing', client_ref: 'Revontuli77',
     referral_updates: [{ id: refId, status: 'toteutui' }] }));
   assert.equal(r.status, 201, JSON.stringify(r.data));
   const ref = db.prepare('SELECT * FROM referrals WHERE id = ?').get(refId);
   assert.equal(ref.status, 'toteutui'); assert.equal(ref.status_encounter_id, r.data.id);
-  // Samaa ohjausta ei voi kuitata uudelleen
-  r = await tv('POST', '/encounters', basePayload(p.AK21, { client_mode: 'existing', client_ref: 'Revontuli77', referral_updates: [{ id: refId, status: 'ei_toteutunut' }] }));
+  // Toisen hankkeen asiakkaalle ei voi kuitata tämän hankkeen ohjausta
+  const other = db.prepare("INSERT INTO referrals (encounter_id, client_id, service_id, referred_on, status) VALUES (?, ?, ?, ?, 'avoin')").run(firstId, katu.id, svc[1].id, today).lastInsertRowid;
+  r = await tv('POST', '/encounters', basePayload(p.AK21, { client_mode: 'existing', client_ref: 'Revontuli 77', referral_updates: [{ id: other, status: 'toteutui' }] }));
   assert.equal(r.status, 400);
 
   // Kirjauksen tiedot: ei tunnistetta, vain tieto linkityksestä ja ohjaukset
   const det = await tv('GET', '/encounters/' + firstId);
   assert.equal(det.data.encounter.client_linked, true);
   assert.equal(det.data.encounter.client_id, undefined);
-  assert.equal(det.data.encounter.referrals[0].status, 'toteutui');
 
-  // Satunnaistunnus
-  const g = await ht('POST', '/clients/generate');
+  // Satunnaistunnus (hankekohtainen)
+  const g = await ht('POST', '/clients/generate', { project_id: p.KATUKLINIKKA });
   assert.match(g.data.code, /^[2-9A-Z]{3}-[2-9A-Z]{4}$/);
   r = await ht('POST', '/encounters', basePayload(p.KATUKLINIKKA, { client_mode: 'new', client_ref: g.data.code, client_generated: true }));
   assert.equal(r.status, 201);
   // Tunniste ei saa näyttää henkilötunnukselta
-  r = await ht('POST', '/clients/lookup', { ref: '010190-123A', mode: 'new' });
+  r = await ht('POST', '/clients/lookup', { ref: '010190-123A', mode: 'new', project_id: p.KATUKLINIKKA });
   assert.equal(r.status, 400);
   // Ryhmäkirjaukseen ei liitetä asiakasta
   r = await ht('POST', '/encounters', basePayload(p.KATUKLINIKKA, { encounter_type: 'ryhma', encounter_count: 4, client_mode: 'existing', client_ref: 'Revontuli77' }));
   assert.equal(r.status, 201);
   assert.equal(db.prepare('SELECT client_id FROM encounters WHERE id = ?').get(r.data.id).client_id, null);
+});
+
+test('vanhat säätiötasoiset asiakkaat jaetaan hankekohtaisiksi ja päivittyvät haulla', async () => {
+  const clients = require('../src/clients');
+  const crypto = require('crypto');
+  const p = P();
+  // Simuloidaan vanhaa riviä: säätiötasoinen tiiviste, merkitty legacy
+  const legacy = crypto.createHmac('sha256', 'kehitys-avain-ei-tuotantoon').update('asiakas:' + clients.normalize('Vanha Kettu')).digest('hex');
+  const cid = db.prepare('INSERT INTO clients (project_id, ref_hash, legacy) VALUES (?, ?, 1)').run(p.JALMA, legacy).lastInsertRowid;
+  const c = clients.findClient(p.JALMA, 'vanha kettu');
+  assert.equal(c.id, cid);
+  const row = db.prepare('SELECT * FROM clients WHERE id = ?').get(cid);
+  assert.equal(row.legacy, 0); assert.equal(row.ref_hash, clients.hashRef(p.JALMA, 'Vanha Kettu'));
+  assert.equal(clients.findClient(p.VOLJY, 'vanha kettu'), undefined, 'toisen hankkeen haku ei löydä');
 });
 
 test('asiakaspolut: koosteet adminille ja tiimivetäjälle, ei muille; Excel ilman tunnistetta', async () => {
@@ -349,9 +374,9 @@ test('säilytysaika katkaisee vanhan linkityksen', async () => {
   const p = P();
   const r = await users.admin('POST', '/encounters', basePayload(p.JALMA, { encounter_date: '2020-01-02', client_mode: 'new', client_ref: 'Vanha Asiakas', referrals: [1] }));
   assert.equal(r.status, 201, JSON.stringify(r.data));
-  assert.ok(clients.findClient('vanha asiakas'));
+  assert.ok(clients.findClient(p.JALMA, 'vanha asiakas'));
   clients.applyRetention();
-  assert.equal(clients.findClient('vanha asiakas'), undefined);
+  assert.equal(clients.findClient(p.JALMA, 'vanha asiakas'), undefined);
   assert.equal(db.prepare('SELECT client_id FROM encounters WHERE id = ?').get(r.data.id).client_id, null);
   assert.equal(db.prepare('SELECT status FROM referrals WHERE encounter_id = ?').get(r.data.id).status, 'ei_seurattavissa');
 });

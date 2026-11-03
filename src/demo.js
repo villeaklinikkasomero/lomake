@@ -192,10 +192,12 @@ function createDemoData({ count, userId, validate, user, projectIds }) {
       // Asiakastunniste ja palveluohjaukset
       if (p.encounter_type === 'yksilo') {
         const part = { client: null, services: [], updates: [] };
+        // Asiakas on hankekohtainen: sama testiasiakas eri hankkeissa on eri asiakas
+        const ckey = `${p._client}:${p.project_id}`;
         if (p._client != null && clients.ENABLED) {
-          const known = clientIds.get(p._client);
+          const known = clientIds.get(ckey);
           part.client = known ? { mode: 'existing', id: known }
-            : { mode: 'new', hash: clients.hashRef(`testiasiakas-${seed}-${p._client}`), generated: 1 };
+            : { mode: 'new', projectId: p.project_id, hash: clients.hashRef(p.project_id, `testiasiakas-${seed}-${p._client}`), generated: 1 };
           if (known) {
             for (const ref of db.prepare("SELECT id FROM referrals WHERE client_id = ? AND status = 'avoin'").all(known)) {
               if (Math.random() < 0.75) part.updates.push({ id: ref.id, status: Math.random() < 0.7 ? 'toteutui' : 'ei_toteutunut' });
@@ -206,7 +208,7 @@ function createDemoData({ count, userId, validate, user, projectIds }) {
           part.services.push(services[Math.floor(Math.random() * services.length)]);
         }
         const cid = clients.applyClientPart(part, { encounterId: id, encounterDate: p.encounter_date, userId: w ? w.id : userId, isTest: 1 });
-        if (cid && p._client != null) clientIds.set(p._client, cid);
+        if (cid && p._client != null) clientIds.set(ckey, cid);
       }
       created++;
     }

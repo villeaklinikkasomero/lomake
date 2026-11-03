@@ -303,21 +303,29 @@ function renderEncounterForm(opts) {
       ? h('div', { class: 'field', id: 'fw-project' }, h('div', { class: 'label', id: 'l-project' }, 'Hanke', h('span', { class: 'req' }, '*')),
           h('div', { class: 'options project-cards', role: 'radiogroup', 'aria-labelledby': 'l-project' },
             projects.map(p => h('label', { class: 'opt' },
-              h('input', { type: 'radio', name: 'project', value: p.id, checked: p.id === s.project_id, onchange: () => { s.project_id = p.id; renderDynamic(); } }),
+              h('input', { type: 'radio', name: 'project', value: p.id, checked: p.id === s.project_id, onchange: () => { s.project_id = p.id; resetClientCheck(s); renderDynamic(); } }),
               h('span', null, h('span', { class: 'opt-title' }, p.name), p.digital ? h('span', { class: 'opt-desc' }, 'Digipalvelu') : null)))))
       : h('div', { class: 'field', id: 'fw-project' }, h('label', { for: 'f-project' }, 'Hanke', h('span', { class: 'req' }, '*')),
-        h('select', { id: 'f-project', required: true, onchange: (e) => { s.project_id = Number(e.target.value) || null; renderDynamic(); } },
+        h('select', { id: 'f-project', required: true, onchange: (e) => { s.project_id = Number(e.target.value) || null; resetClientCheck(s); renderDynamic(); } },
           h('option', { value: '' }, '– Valitse hanke –'),
           projects.map(p => h('option', { value: p.id, selected: p.id === s.project_id }, p.name))));
 
   // Kirjaajan rooli tulee käyttäjäprofiilista (korjattaessa säilyy alkuperäinen).
   const roleField = h('p', { class: 'small muted' }, 'Kirjaaja: ', h('strong', null, init.id ? init.recorder_role : me.user.recorderRole));
 
+  // Valitun tyypin laskentaohje näytetään suoraan valinnan alla
+  const typeHelp = h('div', { class: 'type-help' });
+  const drawTypeHelp = () => typeHelp.replaceChildren(s.encounter_type === 'yksilo'
+    ? h('details', { class: 'define' }, h('summary', null, 'Mikä lasketaan yhdeksi kohtaamiseksi?'),
+        h('p', null, 'Yksi yhtenäinen keskustelu yhden kohderyhmään kuuluvan henkilön kanssa = yksi kohtaaminen. Jatkokysymys samassa keskustelussa kuuluu samaan kohtaamiseen.'),
+        h('p', null, 'Jos dialogi on luonteeltaan jatkuvaa (esim. tukihenkilötyöskentely), kohtaamiseksi lasketaan ne päivät, jolloin vuorovaikutusta on tapahtunut. Digialustalla yksi kysymys–vastaus-kokonaisuus jatkokysymyksineen = yksi kohtaaminen.'))
+    : '');
   const typeField = h('div', { class: 'field', id: 'fw-type' }, h('div', { class: 'label', id: 'l-type' }, 'Valitse, mitä raportoit', h('span', { class: 'req' }, '*')),
     h('div', { class: 'segmented', role: 'radiogroup', 'aria-labelledby': 'l-type' },
       [['yksilo', 'Yksi kohtaaminen', 'Yksi henkilö, yksi keskustelu'], ['ryhma', 'Ryhmä tai useita kohtaamisia', 'Ryhmä tai useampi kohtaaminen kerralla']].map(([v, t, d]) => h('label', { class: 'opt' },
         h('input', { type: 'radio', name: 'encounter_type', value: v, checked: s.encounter_type === v, onchange: () => { s.encounter_type = v; renderDynamic(); } }),
-        h('span', null, h('span', { class: 'opt-title' }, t), h('span', { class: 'opt-desc' }, d))))));
+        h('span', null, h('span', { class: 'opt-title' }, t), h('span', { class: 'opt-desc' }, d))))),
+    typeHelp);
 
   const basics = h('section', { class: 'card section' },
     h('div', { class: 'section-title' }, h('h2', null, 'Perustiedot')),
@@ -336,6 +344,7 @@ function renderEncounterForm(opts) {
   // --- Dynaaminen osa: yksilö/ryhmä, yhteiset ja hankekohtaiset kysymykset
   function renderDynamic() {
     const parts = [];
+    drawTypeHelp();
     if (!s.encounter_type) { dynamic.replaceChildren(); return; }
     if (s.encounter_type === 'ryhma') {
       parts.push(h('section', { class: 'card section' },
@@ -353,15 +362,11 @@ function renderEncounterForm(opts) {
             h('input', { type: 'number', id: 'f-persons', inputmode: 'numeric', enterkeyhint: 'next', min: '1', max: '9999', step: '1', value: s.person_count,
               oninput: (e) => { s.person_count = e.target.value; } })))));
     } else {
-      const warn = h('div', { class: 'field-warn', hidden: true });
-      parts.push(h('section', { class: 'card section' },
-        h('div', { class: 'section-title' }, h('h2', null, 'Yksilökohtaamisen tiedot')),
-        h('details', { class: 'define' }, h('summary', null, 'Mikä lasketaan yhdeksi kohtaamiseksi?'),
-          h('p', null, 'Yksi yhtenäinen keskustelu yhden kohderyhmään kuuluvan henkilön kanssa = yksi kohtaaminen. Jatkokysymys samassa keskustelussa kuuluu samaan kohtaamiseen.'),
-          h('p', null, 'Jos dialogi on luonteeltaan jatkuvaa (esim. tukihenkilötyöskentely), kohtaamiseksi lasketaan ne päivät, jolloin vuorovaikutusta on tapahtunut. Digialustalla yksi kysymys–vastaus-kokonaisuus jatkokysymyksineen = yksi kohtaaminen.')),
-        opts.allowClient ? null : (init.client_linked || (init.referrals && init.referrals.length)
-          ? h('p', { class: 'help' }, 'Asiakastunnistetta ja palveluohjauksia ei muuteta korjauksessa.') : null)));
+      // Yksilökohtaamisella ei ole omia täytettäviä kenttiä: määritelmä on tyyppivalinnan alla
       if (opts.allowClient) parts.push(renderClientSection(s, opts));
+      else if (init.client_linked || (init.referrals && init.referrals.length)) {
+        parts.push(h('div', { class: 'notice info small' }, 'Asiakastunnistetta ja palveluohjauksia ei muuteta korjauksessa.'));
+      }
     }
 
     const visible = (q) => (q.applies_to === 'kaikki' || q.applies_to === s.encounter_type) && !digitalHidden(q);
@@ -458,9 +463,12 @@ function renderEncounterForm(opts) {
 // Asiakastunniste ja palveluohjaus (lomakkeen osio)
 // ---------------------------------------------------------------------------
 const normalizeRef = (v) => String(v || '').normalize('NFKC').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '');
+// Tunniste on hankekohtainen: hankkeen vaihtuessa aiempi tarkistus ei enää päde
+function resetClientCheck(s) { Object.assign(s.client, { checkedRef: null, summary: null, available: null, updates: {} }); }
 async function lookupClient(s) {
   const ref = s.client.ref;
-  const r = await api('/clients/lookup', { method: 'POST', body: { ref, mode: s.client.mode === 'new' ? 'new' : 'existing' } });
+  if (!s.project_id) throw new Error('Valitse ensin hanke. Asiakastunnisteet ovat hankekohtaisia.');
+  const r = await api('/clients/lookup', { method: 'POST', body: { ref, project_id: s.project_id, mode: s.client.mode === 'new' ? 'new' : 'existing' } });
   s.client.checkedRef = ref;
   if (s.client.mode === 'new') { s.client.available = r.available; s.client.summary = null; }
   else { s.client.summary = r.found ? r.summary : null; s.client.available = null; s.client.updates = {}; }
@@ -476,7 +484,10 @@ function renderClientSection(s, opts) {
 
   function draw(focusInput) {
     const parts = [];
-    if (opts.clientTracking) {
+    if (opts.clientTracking && !s.project_id) {
+      parts.push(h('div', { class: 'field', id: 'fw-client' }, h('div', { class: 'label' }, 'Asiakkaan tunniste'),
+        h('p', { class: 'help' }, 'Valitse ensin hanke. Asiakastunnisteet ovat hankekohtaisia.')));
+    } else if (opts.clientTracking) {
       const status = h('div', { class: 'client-status' + (c.mode === 'new' ? ' reserve' : ''), 'aria-live': 'polite' });
       const input = h('input', { type: 'text', id: 'f-client', maxlength: '40', autocomplete: 'off', autocapitalize: 'off', spellcheck: 'false',
         enterkeyhint: 'search', class: 'input-narrow mono', value: c.ref, placeholder: c.mode === 'new' ? 'esim. nimimerkki tai luotu tunnus' : 'nimimerkki tai tunnus',
@@ -498,7 +509,7 @@ function renderClientSection(s, opts) {
           else {
             const sm = c.summary;
             out.push(h('div', { class: 'notice ok client-found' }, h('strong', null, '✓ Tunnistettu asiakas'),
-              h('span', null, ` · ${fmtNum(sm.encounters)} ${sm.encounters === 1 ? 'aiempi kohtaaminen' : 'aiempaa kohtaamista'} säätiön palveluissa`),
+              h('span', null, ` · ${fmtNum(sm.encounters)} ${sm.encounters === 1 ? 'aiempi kohtaaminen' : 'aiempaa kohtaamista'} tässä hankkeessa`),
               sm.first_month ? h('span', null, ` · ensimmäinen ${fmtMonth(sm.first_month)}`) : null));
             if (sm.open_referrals.length) {
               out.push(h('div', { class: 'followups' }, h('div', { class: 'label' }, 'Aiemmat ohjaukset – toteutuiko?'),
@@ -519,7 +530,7 @@ function renderClientSection(s, opts) {
         }
         if (c.mode === 'new' && c.generated && c.ref) {
           out.push(h('div', { class: 'notice info' }, h('p', null, 'Kerro tunnus asiakkaalle: ', h('strong', { class: 'code-big' }, c.ref)),
-            h('p', { class: 'small' }, 'Asiakas voi käyttää samaa tunnusta kaikissa säätiön palveluissa. Tunnusta ei voi hakea järjestelmästä myöhemmin.')));
+            h('p', { class: 'small' }, 'Tunnus on käytössä vain tässä hankkeessa. Sitä ei voi hakea järjestelmästä myöhemmin.')));
         }
         status.replaceChildren(...out);
       }
@@ -534,7 +545,8 @@ function renderClientSection(s, opts) {
           h('div', { class: 'actions client-row' }, input,
             c.mode === 'existing' ? h('button', { type: 'button', class: 'btn btn-secondary', onclick: check }, 'Hae')
               : h('button', { type: 'button', class: 'btn btn-secondary', onclick: async () => {
-                  try { const r = await api('/clients/generate', { method: 'POST' }); c.ref = r.code; c.generated = true; c.checkedRef = r.code; c.available = true; draw(); }
+                  if (!s.project_id) { toast('Valitse ensin hanke.', true); return; }
+                  try { const r = await api('/clients/generate', { method: 'POST', body: { project_id: s.project_id } }); c.ref = r.code; c.generated = true; c.checkedRef = r.code; c.available = true; draw(); }
                   catch (ex) { toast(ex.message, true); } } }, 'Luo satunnainen tunnus')),
           status]));
       setTimeout(() => { drawStatus(); if (focusInput) input.focus(); }, 0);
@@ -555,7 +567,7 @@ function renderClientSection(s, opts) {
   return h('section', { class: 'card section' },
     h('div', { class: 'section-title' }, h('h2', null, 'Asiakkaan tunniste ja palveluohjaus')),
     h('details', { class: 'define' }, h('summary', null, 'Miksi tunniste ja miten se suojataan?'),
-      h('p', null, 'Tunnisteella voidaan seurata, ohjautuuko asiakas palveluihin. Sama tunniste toimii kaikissa säätiön palveluissa, joten asiakkaalla on vain yksi tunniste.'),
+      h('p', null, 'Tunnisteella voidaan seurata, ohjautuuko asiakas palveluihin. Tunniste on hankekohtainen: sama nimimerkki voi olla eri hankkeissa eri asiakkaalla, eikä hankkeiden tietoja yhdistetä.'),
       h('p', null, 'Tunnistetta ei tallenneta selväkielisenä: järjestelmään jää vain salattu tiiviste, josta tunnistetta ei voi palauttaa. Tunniste ei näy kirjauksissa, raporteissa eikä Excel-viennissä.')),
     body);
 }
@@ -1166,7 +1178,6 @@ async function viewPaths() {
         tile(fmtNum(d.clients.total), 'tunnistettua asiakasta', 'kohdattu valitulla aikavälillä'),
         tile(fmtNum(d.clients.new), 'uutta asiakasta', 'ensimmäinen kohtaaminen aikavälillä'),
         tile(fmtNum(d.clients.returning), 'palaavaa asiakasta', 'vähintään 2 kohtaamista'),
-        tile(fmtSup(d.clients.multi_service), 'useamman palvelun asiakasta', 'kohdattu vähintään kahdessa hankkeessa'),
         tile(fmtPct(d.coverage.share), 'tunnisteen käyttöaste', `${fmtNum(d.coverage.with_client)} / ${fmtNum(d.coverage.yksilo_rows)} yksilökohtaamisesta`)),
       h('h2', { class: 'sub-head' }, 'Palveluohjaukset'),
       h('div', { class: 'stats stats-grid' },
@@ -1179,7 +1190,7 @@ async function viewPaths() {
           hBars([['Toteutui', R.toteutui], ['Ei toteutunut', R.ei_toteutunut], ['Avoin', R.avoin], ['Ei seurattavissa', R.ei_seurattavissa]]
             .map(([label, value]) => ({ label, value })), { unit: 'ohjausta' })),
         h('div', { class: 'card' }, h('h2', null, 'Kohtaamisia asiakasta kohden'), hBars(d.visitBuckets, { unit: 'asiakasta' }),
-          h('p', { class: 'help small' }, 'Kaikki asiakkaan kohtaamiset säätiön palveluissa loppupäivään asti.'))),
+          h('p', { class: 'help small' }, 'Asiakkaan kohtaamiset hankkeessa loppupäivään asti.'))),
       h('div', { class: 'card' }, h('h2', null, 'Ohjaukset palveluittain'),
         d.services.length ? h('div', { class: 'table-wrap' }, h('table', { class: 'cards-mobile' },
           h('thead', null, h('tr', null, h('th', null, 'Palvelu'), h('th', { class: 'num' }, 'Ohjauksia'), h('th', { class: 'num' }, 'Toteutui'),
@@ -1190,18 +1201,11 @@ async function viewPaths() {
             h('td', { class: 'num', 'data-label': 'Ei seurattavissa' }, fmtNum(sv.ei_seurattavissa)),
             h('td', { class: 'num', 'data-label': 'Toteutumisaste' }, h('strong', null, fmtPct(sv.rate))))))))
           : h('p', { class: 'muted' }, 'Ei ohjauksia valitulla aikavälillä.'),
-        h('p', { class: 'help small' }, 'Toteutumisaste = toteutuneet / (toteutuneet + ei toteutuneet). Avoimet ja seurannan ulkopuoliset eivät vaikuta osuuteen.')),
-      h('div', { class: 'card' }, h('h2', null, 'Samat asiakkaat useammassa palvelussa'),
-        d.overlap.length ? h('div', { class: 'table-wrap' }, h('table', { class: 'cards-mobile' },
-          h('thead', null, h('tr', null, h('th', null, 'Hankkeet'), h('th', { class: 'num' }, 'Yhteisiä asiakkaita'))),
-          h('tbody', null, d.overlap.map(o => h('tr', null, h('td', { class: 'cell-title' }, `${o.a} + ${o.b}`),
-            h('td', { class: 'num', 'data-label': 'Yhteisiä asiakkaita' }, o.clients == null ? h('span', { class: 'muted' }, 'alle 3') : h('strong', null, fmtNum(o.clients))))))))
-          : h('p', { class: 'muted' }, 'Ei yhteisiä asiakkaita valitulla aikavälillä.'),
-        h('p', { class: 'help small' }, 'Tietosuojasyistä alle kolmen asiakkaan määriä ei näytetä.'))].filter(Boolean));
+        h('p', { class: 'help small' }, 'Toteutumisaste = toteutuneet / (toteutuneet + ei toteutuneet). Avoimet ja seurannan ulkopuoliset eivät vaikuta osuuteen.'))].filter(Boolean));
   }
   $app.replaceChildren(
     h('div', { class: 'page-head' }, h('div', null, h('h1', null, 'Asiakaspolut'),
-      h('p', { class: 'muted' }, 'Tunnistettujen asiakkaiden käyttämät palvelut ja palveluohjausten toteutuminen. Kaikki luvut ovat koosteita, eikä yksittäisiä asiakkaita näytetä.'))),
+      h('p', { class: 'muted' }, 'Hankekohtaisesti tunnistettujen asiakkaiden palaaminen ja palveluohjausten toteutuminen. Kaikki luvut ovat koosteita, eikä yksittäisiä asiakkaita näytetä.'))),
     staffFilterBar(load, pathState), box);
   await load();
 }

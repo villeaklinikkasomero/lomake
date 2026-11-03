@@ -12,7 +12,7 @@ ADMIN_EMAIL=oma@osoite.fi SESSION_SECRET=pitka-satunnainen-merkkijono npm start
 
 Ensimmäisellä käynnistyksellä luodaan admin-käyttäjä. Väliaikainen salasana tulostuu konsoliin (tai sen voi antaa `ADMIN_PASSWORD`-muuttujalla), ja se vaihdetaan ensimmäisellä kirjautumisella. Muut asetukset löytyvät tiedostosta `.env.example`. Docker: `docker build -t kohtaamiset . && docker run -p 3000:3000 -v kohtaamiset:/data -e SESSION_SECRET=… kohtaamiset`.
 
-Testit: `npm test` (18 testiä: roolit, validointi, tunnistetietojen esto, Excel-vienti ja kysymysten versiointi).
+Testit: `npm test` (19 testiä: roolit, validointi, tunnistetietojen esto, Excel-vienti ja kysymysten versiointi).
 
 ## Ulkoasu
 
@@ -33,7 +33,7 @@ Ulkoasu noudattaa A-klinikkasäätiön graafista ohjeistoa (15.12.2023):
 | Excel-vienti | kaikki hankkeet | omat hankkeet | – | – |
 | Työntekijäseuranta | kaikki | omien hankkeiden kirjaukset | – | – |
 | Tilastot (dashboard) | kaikki | omat hankkeet | omat hankkeet | – |
-| Asiakaspolut (koosteet) | kaikki | omien hankkeiden kirjaukset | – | – |
+| Asiakaspolut (koosteet, hankekohtaiset) | kaikki | omien hankkeiden kirjaukset | – | – |
 | Asiakastunnisteen haku kirjatessa | ✓ | ✓ | ✓ | ✓ |
 | Käyttäjät, hankkeet, kysymykset, loki | ✓ | – | – | – |
 
@@ -81,26 +81,27 @@ Tiimivetäjä näkee vain omien hankkeidensa kirjaukset, vaikka työntekijä kir
 
 ## Asiakastunnisteet ja palveluohjaukset
 
-**Tarkoitus:** seurata, ohjautuvatko asiakkaat palveluihin, myös silloin kun he käyttävät useampaa säätiön palvelua.
+**Tarkoitus:** seurata hankkeen sisällä, palaako asiakas ja ohjautuuko hän palveluihin.
 
-**Kirjaaminen** (yksilökohtaaminen):
-- **Ei tunnistetta / Palaava asiakas / Uusi asiakas.** Uudelle asiakkaalle keksitään nimimerkki tai luodaan satunnainen tunnus (esim. `88Y-C7QR`).
-- **Yksi tunniste koko säätiössä.** Sama tunniste ei voi kuulua kahdelle asiakkaalle. Kirjainkoko, välilyönnit ja väliviivat eivät vaikuta tunnistamiseen.
-- **Palaavan asiakkaan haku** näyttää kirjaajalle vain aiempien kohtaamisten määrän, ensimmäisen kohtaamisen kuukauden ja avoimet ohjaukset (palvelu ja päivämäärä). Avoimet ohjaukset voi kuitata: *toteutui* tai *ei toteutunut*. Muiden hankkeiden nimiä tai kirjauksia ei näytetä.
+**Tunnisteet ovat hankekohtaisia.** Jokaisella hankkeella on omat nimimerkkinsä. Sama nimimerkki voi olla eri hankkeissa eri asiakkaalla, eikä hankkeiden välillä ole asiakaslinkitystä. Hanke on mukana tiivisteen laskennassa, joten saman nimimerkin tiivisteet eri hankkeissa eivät täsmää edes tietokannassa.
+
+**Kirjaaminen** (yksilökohtaaminen, hanke valittuna):
+- **Ei tunnistetta / Palaava asiakas / Uusi asiakas.** Uudelle asiakkaalle keksitään nimimerkki tai luodaan satunnainen tunnus (esim. `88Y-C7QR`). Tunniste on yksilöllinen hankkeen sisällä, ja kirjainkoko, välilyönnit ja väliviivat eivät vaikuta tunnistamiseen.
+- **Palaavan asiakkaan haku** näyttää vain kohtaamisten määrän tässä hankkeessa, ensimmäisen kohtaamisen kuukauden ja hankkeen avoimet ohjaukset. Avoimet ohjaukset voi kuitata: *toteutui* tai *ei toteutunut*.
 - **Ohjattiinko asiakas palveluun?** Palvelulistaa ylläpidetään kohdassa Hallinta → Ohjauspalvelut. Ilman tunnistetta ohjauksen tila on *ei seurattavissa*.
 
-**Asiakaspolut-sivu** (admin ja tiimivetäjä): tunnistetut, uudet, palaavat ja useamman palvelun asiakkaat, tunnisteen käyttöaste, ohjaukset palveluittain, toteutumisaste, mediaaniaika toteutumiseen, kohtaamiset asiakasta kohden sekä hankkeiden yhteiset asiakkaat. Kaikki luvut ovat koosteita. Alle kolmen asiakkaan määrät piilotetaan.
+**Asiakaspolut-sivu** (admin ja tiimivetäjä): tunnistetut, uudet ja palaavat asiakkaat, tunnisteen käyttöaste, ohjaukset palveluittain, toteutumisaste, mediaaniaika toteutumiseen ja kohtaamiset asiakasta kohden. Kaikki luvut ovat koosteita, eikä hankkeiden välisiä lukuja ole.
 
 **Suojaus:**
-- Tunnistetta ei tallenneta selväkielisenä. Kantaan jää vain `HMAC-SHA256(PSEUDONYM_KEY, vakioitu tunniste)`. Avain on vain palvelimen ympäristömuuttujassa, joten tietokannasta tai sen varmuuskopiosta tunnisteita ei voi palauttaa eikä arvata.
-- Tunniste ei näy kirjauksissa, raporteissa, tapahtumalokissa eikä Excel-viennissä. Excelissä on vain sarakkeet ”Tunnistettu asiakas (kyllä/ei)” ja ”Ohjattu palveluun”.
-- Tunnistehakuja rajoitetaan käyttäjäkohtaisesti (oletus 60 / 15 min, `CLIENT_LOOKUP_LIMIT`), ja jokainen haku kirjataan lokiin ilman tunnistetta.
-- Säilytysaika: jos asiakasta ei ole kohdattu `CLIENT_RETENTION_MONTHS` kuukauteen (oletus 24), linkitys katkaistaan automaattisesti. Kirjaukset säilyvät tilastoissa, mutta niitä ei voi enää yhdistää samaan asiakkaaseen.
-- Aiemmat selväkieliset nimimerkit muutetaan tiivisteiksi ja poistetaan automaattisesti ensimmäisellä käynnistyksellä.
+- Kantaan tallennetaan vain `HMAC-SHA256(PSEUDONYM_KEY, hanke + vakioitu tunniste)`. Avain on vain palvelimen ympäristömuuttujassa.
+- Tunniste ei näy kirjauksissa, raporteissa, tapahtumalokissa eikä Excel-viennissä.
+- Tunnistehakuja rajoitetaan käyttäjäkohtaisesti (`CLIENT_LOOKUP_LIMIT`), ja haku on mahdollinen vain omiin hankkeisiin.
+- Säilytysaika: linkitys katkaistaan, jos asiakasta ei ole kohdattu `CLIENT_RETENTION_MONTHS` kuukauteen (oletus 24).
+- **Siirto aiemmasta versiosta:** aiemmin säätiötasoiset asiakkaat jaetaan julkaisussa automaattisesti hankekohtaisiksi. Asiakas, joka oli kohdattu kahdessa hankkeessa, muuttuu kahdeksi erilliseksi asiakkaaksi. Vanhat tiivisteet päivittyvät hankekohtaisiksi sitä mukaa, kun niitä haetaan.
 
-**Käyttöönotto Renderissä:** lisää palvelun Environment-välilehdelle `PSEUDONYM_KEY`, joka on pitkä satunnainen merkkijono (esim. `openssl rand -base64 32`). Ota avaimesta kopio turvalliseen paikkaan, esimerkiksi salasanojen hallintaan. **Älä vaihda avainta käytön aikana:** vaihto katkaisee kaikki asiakaslinkitykset. Ilman avainta tunnisteominaisuus on pois päältä, ja muu sovellus toimii normaalisti.
+**Käyttöönotto Renderissä:** `PSEUDONYM_KEY` ympäristömuuttujaksi. Älä vaihda avainta käytön aikana.
 
-**Ennen tuotantokäyttöä:** linkitys koskee pseudonymisoituja henkilötietoja ja todennäköisesti terveystietoja. Käy käsittely läpi tietosuojavastaavan kanssa (vaikutustenarviointi, käsittelyperuste, säilytysaika, asiakkaille kerrottavat tiedot).
+**Ennen tuotantokäyttöä:** käy käsittely läpi tietosuojavastaavan kanssa (vaikutustenarviointi, käsittelyperuste, säilytysaika).
 
 ## Testidata (admin)
 

@@ -7,8 +7,10 @@
 //    ympäristömuuttujassa olevalla avaimella (PSEUDONYM_KEY). Pelkällä
 //    tietokannalla (esim. varmuuskopio tai vuoto) tunnisteita ei voi palauttaa
 //    eikä arvata.
-//  - Tunniste on säätiön laajuinen: sama asiakas tunnistetaan kaikissa
-//    hankkeissa, ja kaksi asiakasta ei voi saada samaa tunnistetta.
+//  - Tunniste on HANKEKOHTAINEN: hanke on mukana tiivisteen laskennassa, joten
+//    saman nimimerkin tiivisteet eri hankkeissa eivät ole yhdistettävissä.
+//    Hankkeen sisällä kaksi asiakasta ei voi saada samaa tunnistetta.
+//    Hankkeiden välistä asiakaslinkitystä ei ole.
 //  - Linkitys katkaistaan automaattisesti, kun asiakasta ei ole kohdattu
 //    CLIENT_RETENTION_MONTHS kuukauteen (oletus 24).
 //  - Avainta EI saa vaihtaa käytön aikana: vaihto katkaisee kaikki linkitykset.
@@ -25,11 +27,14 @@ const RETENTION_MONTHS = Number(process.env.CLIENT_RETENTION_MONTHS || 24);
 db.exec(`
 CREATE TABLE IF NOT EXISTS clients (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
-  ref_hash    TEXT NOT NULL UNIQUE,          -- HMAC(avain, vakioitu tunniste); ei selväkielistä tunnistetta
+  project_id  INTEGER REFERENCES projects(id),
+  ref_hash    TEXT NOT NULL,                 -- HMAC(avain, hanke + vakioitu tunniste); ei selväkielistä tunnistetta
+  legacy      INTEGER NOT NULL DEFAULT 0,    -- 1 = vanha säätiötasoinen tiiviste, päivitetään hankekohtaiseksi ensimmäisellä haulla
   generated   INTEGER NOT NULL DEFAULT 0,    -- 1 = järjestelmän luoma satunnaistunnus
   created_at  TEXT NOT NULL DEFAULT (datetime('now')),
   created_by  INTEGER REFERENCES users(id),
-  is_test     INTEGER NOT NULL DEFAULT 0
+  is_test     INTEGER NOT NULL DEFAULT 0,
+  UNIQUE (project_id, ref_hash)
 );
 
 CREATE TABLE IF NOT EXISTS referral_services (
@@ -39,8 +44,8 @@ CREATE TABLE IF NOT EXISTS referral_services (
   sort    INTEGER NOT NULL DEFAULT 0
 );
 
--- Palveluohjaus. Tila päivitetään asiakkaan myöhemmässä kohtaamisessa
--- (missä tahansa hankkeessa). Ilman asiakastunnistetta tila on 'ei_seurattavissa'.
+-- Palveluohjaus. Tila päivitetään asiakkaan myöhemmässä kohtaamisessa saman
+-- hankkeen sisällä. Ilman asiakastunnistetta tila on 'ei_seurattavissa'.
 CREATE TABLE IF NOT EXISTS referrals (
   id                  INTEGER PRIMARY KEY AUTOINCREMENT,
   encounter_id        TEXT NOT NULL REFERENCES encounters(id) ON DELETE CASCADE,
@@ -60,6 +65,35 @@ if (!db.prepare('PRAGMA table_info(encounters)').all().some(c => c.name === 'cli
 }
 db.exec('CREATE INDEX IF NOT EXISTS ix_enc_client ON encounters(client_id)');
 
+// Migraatio: säätiötasoiset asiakkaat → hankekohtaiset. Taulu rakennetaan uudelleen
+// (UNIQUE-ehto muuttuu), ja asiakas, joka on kohdattu useassa hankkeessa, jaetaan
+// hankekohtaisiksi asiakkaiksi. Hankkeiden välinen yhteys katkeaa.
+if (!db.prepare('PRAGMA table_info(clients)').all().some(c => c.name === 'project_id')) {
+  db.pragma('foreign_keys = OFF');
+  db.transaction(() => {
+    db.exec(`CREATE TABLE clients_new (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER REFERENCES projects(id), ref_hash TEXT NOT NULL,
+      legacy INTEGER NOT NULL DEFAULT 0, generated INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      created_by INTEGER REFERENCES users(id), is_test INTEGER NOT NULL DEFAULT 0, UNIQUE (project_id, ref_hash));
+      INSERT INTO clients_new (id, ref_hash, legacy, generated, created_at, created_by, is_test)
+        SELECT id, ref_hash, 1, generated, created_at, created_by, is_test FROM clients;
+      DROP TABLE clients;
+      ALTER TABLE clients_new RENAME TO clients;`);
+    const ins = db.prepare('INSERT INTO clients (project_id, ref_hash, legacy, generated, created_at, created_by, is_test) VALUES (?, ?, 1, ?, ?, ?, ?)');
+    for (const c of db.prepare('SELECT * FROM clients').all()) {
+      const projects = db.prepare('SELECT DISTINCT project_id FROM encounters WHERE client_id = ? ORDER BY project_id').all(c.id).map(r => r.project_id);
+      if (!projects.length) { db.prepare('DELETE FROM clients WHERE id = ?').run(c.id); continue; }
+      db.prepare('UPDATE clients SET project_id = ? WHERE id = ?').run(projects[0], c.id);
+      for (const pid of projects.slice(1)) {
+        const nid = ins.run(pid, c.ref_hash, c.generated, c.created_at, c.created_by, c.is_test).lastInsertRowid;
+        db.prepare('UPDATE encounters SET client_id = ? WHERE client_id = ? AND project_id = ?').run(nid, c.id, pid);
+        db.prepare('UPDATE referrals SET client_id = ? WHERE client_id = ? AND encounter_id IN (SELECT id FROM encounters WHERE project_id = ?)').run(nid, c.id, pid);
+      }
+    }
+  })();
+  db.pragma('foreign_keys = ON');
+}
+
 if (db.prepare('SELECT COUNT(*) n FROM referral_services').get().n === 0) {
   const ins = db.prepare('INSERT INTO referral_services (name, sort) VALUES (?, ?)');
   ['Päihde- ja riippuvuuspalvelut', 'Terveysneuvonta tai terveyspalvelut', 'Mielenterveyspalvelut', 'Sosiaalipalvelut',
@@ -73,7 +107,12 @@ if (db.prepare('SELECT COUNT(*) n FROM referral_services').get().n === 0) {
 function normalize(ref) {
   return String(ref || '').normalize('NFKC').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '');
 }
-function hashRef(ref) {
+// Hankekohtainen tiiviste: sama nimimerkki eri hankkeissa → eri tiiviste
+function hashRef(projectId, ref) {
+  return crypto.createHmac('sha256', KEY).update(`asiakas:p${Number(projectId)}:` + normalize(ref)).digest('hex');
+}
+// Vanha (ennen hankekohtaisuutta) tiiviste – käytetään vain vanhojen rivien päivittämiseen
+function legacyHash(ref) {
   return crypto.createHmac('sha256', KEY).update('asiakas:' + normalize(ref)).digest('hex');
 }
 const CODE_ALPHABET = '23456789ABCDEFGHJKMNPQRSTVWXYZ'; // ei sekoittuvia merkkejä (0/O, 1/I/L, U)
@@ -89,10 +128,19 @@ function validateRef(ref, sensitiveHit) {
   return null;
 }
 
-function findClient(ref) { return db.prepare('SELECT * FROM clients WHERE ref_hash = ?').get(hashRef(ref)); }
+// Hakee asiakkaan hankkeen sisältä. Vanha säätiötasoinen rivi päivitetään samalla hankekohtaiseksi.
+function findClient(projectId, ref) {
+  const hash = hashRef(projectId, ref);
+  const c = db.prepare('SELECT * FROM clients WHERE project_id = ? AND ref_hash = ?').get(projectId, hash);
+  if (c) return c;
+  const old = db.prepare('SELECT * FROM clients WHERE project_id = ? AND legacy = 1 AND ref_hash = ?').get(projectId, legacyHash(ref));
+  if (!old) return undefined;
+  db.prepare('UPDATE clients SET ref_hash = ?, legacy = 0 WHERE id = ?').run(hash, old.id);
+  return { ...old, ref_hash: hash, legacy: 0 };
+}
 
-function generateUniqueCode() {
-  for (let i = 0; i < 20; i++) { const c = newCode(); if (!findClient(c)) return c; }
+function generateUniqueCode(projectId) {
+  for (let i = 0; i < 20; i++) { const c = newCode(); if (!findClient(projectId, c)) return c; }
   throw new Error('Tunnuksen luonti epäonnistui.');
 }
 
@@ -113,7 +161,7 @@ function clientSummary(clientId) {
  * Tarkistaa lomakkeen asiakastunniste- ja ohjausosan uutta kirjausta varten.
  * Palauttaa { error } tai { client: {mode, hash, id}, services: [id], updates: [{id, status}] }.
  */
-function prepareClientPart(body, type, sensitiveHit) {
+function prepareClientPart(body, type, sensitiveHit, projectId) {
   const out = { client: null, services: [], updates: [] };
   if (type !== 'yksilo') return out;
   const mode = body.client_mode || 'none';
@@ -122,11 +170,11 @@ function prepareClientPart(body, type, sensitiveHit) {
     if (!ENABLED) return { error: 'Asiakastunnisteet eivät ole käytössä (PSEUDONYM_KEY puuttuu palvelimelta).' };
     const ref = String(body.client_ref || '');
     const err = validateRef(ref, sensitiveHit); if (err) return { error: err };
-    const hash = hashRef(ref);
-    const existing = db.prepare('SELECT id FROM clients WHERE ref_hash = ?').get(hash);
-    if (mode === 'existing' && !existing) return { error: 'Asiakastunnistetta ei löydy. Tarkista kirjoitusasu tai valitse ”Uusi asiakas”.' };
-    if (mode === 'new' && existing) return { error: 'Tunniste on jo toisen asiakkaan käytössä. Valitse toinen tunniste tai luo satunnainen tunnus.' };
-    out.client = { mode, hash, id: existing ? existing.id : null, generated: !!body.client_generated };
+    const hash = hashRef(projectId, ref);
+    const existing = findClient(projectId, ref);
+    if (mode === 'existing' && !existing) return { error: 'Asiakastunnistetta ei löydy tästä hankkeesta. Tarkista kirjoitusasu tai valitse ”Uusi asiakas”.' };
+    if (mode === 'new' && existing) return { error: 'Tunniste on jo toisen asiakkaan käytössä tässä hankkeessa. Valitse toinen tunniste tai luo satunnainen tunnus.' };
+    out.client = { mode, hash, projectId, id: existing ? existing.id : null, generated: !!body.client_generated };
   }
   const services = Array.isArray(body.referrals) ? [...new Set(body.referrals.map(Number))] : [];
   if (services.length) {
@@ -153,8 +201,8 @@ function applyClientPart(part, { encounterId, encounterDate, userId, isTest = 0 
   if (part.client) {
     clientId = part.client.id;
     if (part.client.mode === 'new') {
-      clientId = db.prepare('INSERT INTO clients (ref_hash, generated, created_by, is_test) VALUES (?, ?, ?, ?)')
-        .run(part.client.hash, part.client.generated ? 1 : 0, userId, isTest).lastInsertRowid;
+      clientId = db.prepare('INSERT INTO clients (project_id, ref_hash, generated, created_by, is_test) VALUES (?, ?, ?, ?, ?)')
+        .run(part.client.projectId, part.client.hash, part.client.generated ? 1 : 0, userId, isTest).lastInsertRowid;
     }
     db.prepare('UPDATE encounters SET client_id = ? WHERE id = ?').run(clientId, encounterId);
   }
@@ -168,15 +216,15 @@ function applyClientPart(part, { encounterId, encounterDate, userId, isTest = 0 
 // Vanhat selväkieliset nimimerkit (ennen tätä versiota) muutetaan tiivisteiksi ja poistetaan.
 function migratePlaintextPseudonyms() {
   if (!ENABLED) return 0;
-  const rows = db.prepare('SELECT id, pseudonym, is_test FROM encounters WHERE pseudonym IS NOT NULL').all();
+  const rows = db.prepare('SELECT id, project_id, pseudonym, is_test FROM encounters WHERE pseudonym IS NOT NULL').all();
   if (!rows.length) return 0;
   db.transaction(() => {
     for (const r of rows) {
       let clientId = null;
       if (normalize(r.pseudonym).length >= 3) {
-        const hash = hashRef(r.pseudonym);
-        const c = db.prepare('SELECT id FROM clients WHERE ref_hash = ?').get(hash);
-        clientId = c ? c.id : db.prepare('INSERT INTO clients (ref_hash, is_test) VALUES (?, ?)').run(hash, r.is_test || 0).lastInsertRowid;
+        const hash = hashRef(r.project_id, r.pseudonym);
+        const c = db.prepare('SELECT id FROM clients WHERE project_id = ? AND ref_hash = ?').get(r.project_id, hash);
+        clientId = c ? c.id : db.prepare('INSERT INTO clients (project_id, ref_hash, is_test) VALUES (?, ?, ?)').run(r.project_id, hash, r.is_test || 0).lastInsertRowid;
       }
       db.prepare('UPDATE encounters SET client_id = COALESCE(?, client_id), pseudonym = NULL WHERE id = ?').run(clientId, r.id);
     }
@@ -217,33 +265,19 @@ function pathStats({ from, to, projectIds, projectId }) {
   const coverage = db.prepare(`SELECT COUNT(*) yksilo_rows, COUNT(e.client_id) with_client, COUNT(DISTINCT e.client_id) clients
                                FROM encounters e WHERE ${W} AND e.encounter_type = 'yksilo'`).get(...p);
 
-  // Asiakkaat, jotka kohdattiin rajauksella; heidän koko historiansa (kaikki hankkeet, loppupäivään asti)
+  // Asiakkaat, jotka kohdattiin rajauksella; heidän historiansa hankkeessa loppupäivään asti.
+  // Asiakas kuuluu aina yhteen hankkeeseen, joten hankkeiden välisiä lukuja ei ole.
   const toDate = to || '9999-12-31';
   const lifetime = db.prepare(`
     WITH c AS (SELECT DISTINCT e.client_id id FROM encounters e WHERE ${W} AND e.client_id IS NOT NULL)
-    SELECT c.id, COUNT(x.id) visits, COUNT(DISTINCT x.project_id) projects, MIN(x.encounter_date) first_date,
-           group_concat(DISTINCT x.project_id) project_list
+    SELECT c.id, COUNT(x.id) visits, MIN(x.encounter_date) first_date
     FROM c JOIN encounters x ON x.client_id = c.id AND x.deleted_at IS NULL AND x.encounter_date <= ?
     GROUP BY c.id`).all(...p, toDate);
 
   const newClients = lifetime.filter(c => !from || c.first_date >= from).length;
   const returning = lifetime.filter(c => c.visits >= 2).length;
-  const multi = lifetime.filter(c => c.projects >= 2).length;
   const buckets = [['1 kohtaaminen', 1, 1], ['2–3', 2, 3], ['4–9', 4, 9], ['10 tai enemmän', 10, Infinity]]
     .map(([label, lo, hi]) => ({ label, value: lifetime.filter(c => c.visits >= lo && c.visits <= hi).length }));
-
-  // Hankkeiden päällekkäisyys (asiakkaat, jotka on kohdattu molemmissa)
-  const names = Object.fromEntries(db.prepare('SELECT id, name FROM projects').all().map(r => [r.id, r.name]));
-  const pairs = new Map();
-  for (const c of lifetime) {
-    const ids = [...new Set(String(c.project_list).split(',').map(Number))].sort((a, b) => a - b);
-    for (let i = 0; i < ids.length; i++) for (let j = i + 1; j < ids.length; j++) {
-      const k = ids[i] + '-' + ids[j]; pairs.set(k, (pairs.get(k) || 0) + 1);
-    }
-  }
-  const overlap = [...pairs.entries()].map(([k, n]) => { const [a, b] = k.split('-').map(Number);
-    return { a: names[a], b: names[b], clients: n >= 3 ? n : null }; })     // null = alle 3, piilotettu
-    .sort((x, y) => (y.clients || 0) - (x.clients || 0));
 
   // Ohjaukset, jotka tehtiin rajauksen kirjauksissa
   const refs = db.prepare(`SELECT r.status, rs.name service, rs.id service_id,
@@ -265,9 +299,8 @@ function pathStats({ from, to, projectIds, projectId }) {
   return {
     enabled: ENABLED,
     coverage: { ...coverage, share: coverage.yksilo_rows ? coverage.with_client / coverage.yksilo_rows : null },
-    clients: { total: lifetime.length, new: newClients, returning, multi_service: multi >= 3 || multi === 0 ? multi : null },
+    clients: { total: lifetime.length, new: newClients, returning },
     visitBuckets: buckets,
-    overlap,
     referrals: { total: refs.length, ...byStatus, rate: rate(byStatus), median_days: median },
     services,
   };
