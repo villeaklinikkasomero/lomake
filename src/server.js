@@ -150,7 +150,7 @@ function validateEncounter(body, user, projectIds, existing) {
   const answers = [];
   const given = body.answers && typeof body.answers === 'object' ? body.answers : {};
   // Sijainti valitaan joka kerta; jos se on "Digialustalla", kaupunkia ja katua ei kysytä eikä tallenneta
-  const onDigital = given.sijainti === DIGITAL_LOCATION;
+  const onDigital = String(given.sijainti || '').trim().toLowerCase() === DIGITAL_LOCATION.toLowerCase();
   for (const q of activeQuestionsFor(projectId, type)) {
     if (onDigital && q.digital_mode === 'hide') continue;
     let v = given[q.key];

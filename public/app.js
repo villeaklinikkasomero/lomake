@@ -292,7 +292,7 @@ function renderEncounterForm(opts) {
   };
   const qs = opts.questions;
   // Kun sijainniksi valitaan "Digialustalla", kaupunki ja kadunnimi piilotetaan (kysymyksen asetus digital_mode = 'hide')
-  const digitalHidden = (q) => q.digital_mode === 'hide' && s.answers.sijainti === DIGITAL_LOCATION;
+  const digitalHidden = (q) => q.digital_mode === 'hide' && String(s.answers.sijainti || '').trim().toLowerCase() === DIGITAL_LOCATION.toLowerCase();
   const syncLocation = () => { for (const q of qs) if (q.digital_mode === 'hide') { const el = dynamic.querySelector('#fw-' + q.key); if (el) el.hidden = digitalHidden(q); } };
 
   const errBox = h('div', { class: 'notice err', hidden: true, role: 'alert' });
@@ -1499,8 +1499,7 @@ async function viewQuestions() {
           } catch (ex) { msg.textContent = ex.message; msg.hidden = false; }
         } }, 'Tallenna'),
         h('button', { class: 'btn btn-secondary', type: 'button', onclick: () => editorBox.replaceChildren() }, 'Peruuta'))));
-    optsBox.addEventListener('input', syncDigital);
-    renderOpts(); syncDigital();
+    renderOpts();
     editorBox.scrollIntoView({ behavior: 'smooth', block: 'start' });
     label.focus();
   }

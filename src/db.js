@@ -228,6 +228,10 @@ function once(name, fn) {
 once('sijainti_joka_kerta', () => {
   db.prepare("UPDATE questions SET digital_mode = 'show', digital_value = NULL WHERE digital_mode = 'fixed'").run();
 });
+// Kaupunki ja kadunnimi piiloon, kun sijainti on Digialustalla (varmistus vanhoille tietokannoille)
+once('kaupunki_katu_digialustalla', () => {
+  db.prepare("UPDATE questions SET digital_mode = 'hide' WHERE key IN ('kaupunki', 'kadunnimi')").run();
+});
 // Asiakkaalta kysytty arvio vain yksilökohtaamisiin (ryhmän vastaus ei voi olla yksi luku)
 once('asiakkaan_arvio_yksilo', () => {
   db.prepare("UPDATE questions SET applies_to = 'yksilo' WHERE key = 'asiakkaan_arvio'").run();
