@@ -14,6 +14,13 @@ function shiftPeriod(from, to) {
   return [pf.toISOString().slice(0, 10), pt.toISOString().slice(0, 10)];
 }
 
+// Sama jakso vuotta aiemmin (29.2. → 28.2.)
+function shiftYear(from, to) {
+  const back = (d) => { const [y, m, dd] = d.split('-').map(Number); const last = new Date(Date.UTC(y - 1, m, 0)).getUTCDate();
+    return `${y - 1}-${String(m).padStart(2, '0')}-${String(Math.min(dd, last)).padStart(2, '0')}`; };
+  return [back(from), back(to)];
+}
+
 function buildWhere({ from, to, projectIds, projectId, types, role, ika, sukupuoli }) {
   const w = ['e.deleted_at IS NULL', `e.project_id IN (${projectIds.map(() => '?').join(',') || 'NULL'})`];
   const p = [...projectIds];
@@ -53,13 +60,18 @@ function totals(W) {
 function dashboard(filters) {
   const W = buildWhere(filters);
   const cur = totals(W);
-  const [pf, pt] = shiftPeriod(filters.from, filters.to);
-  const prev = totals(buildWhere({ ...filters, from: pf, to: pt }));
+  // Vertailu valinnan mukaan: ei vertailua, edellinen yhtä pitkä jakso tai sama jakso vuotta aiemmin
+  const compare = ['prev', 'year'].includes(filters.compare) ? filters.compare : 'none';
+  const [pf, pt] = compare === 'year' ? shiftYear(filters.from, filters.to) : shiftPeriod(filters.from, filters.to);
+  const PW = compare === 'none' ? null : buildWhere({ ...filters, from: pf, to: pt });
+  const prev = PW ? totals(PW) : null;
 
-  const monthly = db.prepare(`SELECT substr(e.encounter_date, 1, 7) month, COUNT(*) rows, SUM(e.encounter_count) encounters,
+  const monthlyFor = (w) => db.prepare(`SELECT substr(e.encounter_date, 1, 7) month, COUNT(*) rows, SUM(e.encounter_count) encounters,
       COALESCE(SUM(CASE WHEN e.encounter_type = 'yksilo' THEN e.encounter_count END), 0) yksilo,
       COALESCE(SUM(CASE WHEN e.encounter_type = 'ryhma' THEN e.encounter_count END), 0) ryhma
-    FROM encounters e WHERE ${W.sql} GROUP BY month ORDER BY month`).all(...W.params);
+    FROM encounters e WHERE ${w.sql} GROUP BY month ORDER BY month`).all(...w.params);
+  const monthly = monthlyFor(W);
+  const monthlyPrev = PW ? monthlyFor(PW) : null;
 
   const byProject = db.prepare(`SELECT p.id, p.name, COUNT(*) rows, SUM(e.encounter_count) encounters
     FROM encounters e JOIN projects p ON p.id = e.project_id WHERE ${W.sql} GROUP BY p.id ORDER BY encounters DESC`).all(...W.params);
@@ -100,8 +112,8 @@ function dashboard(filters) {
 
   const opt = (key) => { const q = db.prepare('SELECT options FROM questions WHERE key = ?').get(key); return q && q.options ? JSON.parse(q.options) : []; };
   return {
-    period: { from: filters.from, to: filters.to, prevFrom: pf, prevTo: pt },
-    totals: cur, previous: prev, monthly, byProject,
+    period: { from: filters.from, to: filters.to, compare, prevFrom: PW ? pf : null, prevTo: PW ? pt : null },
+    totals: cur, previous: prev, monthly, monthlyPrev, byProject,
     ratings: { worker: ratingStats('tyontekijan_arvio'), client: ratingStats('asiakkaan_arvio') },
     referrals: { ...ref, rate: ref.toteutui + ref.ei_toteutunut ? ref.toteutui / (ref.toteutui + ref.ei_toteutunut) : null },
     distributions, updated,
@@ -109,4 +121,4 @@ function dashboard(filters) {
   };
 }
 
-module.exports = { dashboard, shiftPeriod };
+module.exports = { dashboard, shiftPeriod, shiftYear };

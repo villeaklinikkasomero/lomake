@@ -496,6 +496,13 @@ test('tilastot: koosteet, rajaukset, vertailujakso ja oikeudet', async () => {
   assert.ok(a.data.monthly.length >= 1 && a.data.byProject.length >= 2);
   assert.ok(a.data.distributions.some(d => d.key === 'ika'));
   // Tyyppirajaus
+  // Vertailu vain pyydettäessä
+  assert.equal(a.data.previous, null); assert.equal(a.data.monthlyPrev, null);
+  const y = await users.admin('GET', `/dashboard?from=2024-02-29&to=2024-12-31&compare=year`);
+  assert.equal(y.data.period.prevFrom, '2023-02-28'); assert.equal(y.data.period.prevTo, '2023-12-31');
+  assert.ok(y.data.previous && Array.isArray(y.data.monthlyPrev));
+  const pr = await users.admin('GET', `/dashboard?from=2026-01-01&to=2026-01-31&compare=prev`);
+  assert.equal(pr.data.period.prevFrom, '2025-12-01'); assert.equal(pr.data.period.prevTo, '2025-12-31');
   const g = await users.admin('GET', `/dashboard?from=2020-01-01&to=${today}&types=ryhma`);
   assert.equal(g.data.totals.yksilo, 0);
   // Ikärajaus

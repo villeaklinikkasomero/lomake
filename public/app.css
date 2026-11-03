@@ -716,3 +716,6 @@ details.info[open] > summary { background: var(--blue); color: #fff; }
 .project-cards .opt.has-pc > span::before { left: calc(.75rem + 6px); }
 @media (max-width: 640px) { .project-cards .opt.has-pc > span { padding-left: calc(.65rem + 8px); } }
 .suggest-attr { margin: 0; padding: .35rem .9rem .5rem; font-size: .75rem; color: var(--muted, #5b6573); border-top: 1px solid #eef0f3; }
+/* Vertailujakso kaaviossa: harmaa katkoviiva */
+svg .series.cmp { stroke: #8a8f96; stroke-width: 2; stroke-dasharray: 5 4; }
+.key-line.cmp { background: repeating-linear-gradient(90deg, #8a8f96 0 5px, transparent 5px 8px); }

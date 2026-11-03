@@ -96,6 +96,13 @@ Määrittelydokumentin dashboard-mallin mukainen näkymä (valikossa **Tilastot*
 - Kaikki luvut ovat koosteita. Tunnisteita, nimimerkkejä ja vapaatekstejä ei näytetä.
 - **Uusin kirjaus tallennettu** kertoo rajauksiin osuvan uusimman kirjauksen tallennus- tai korjausajan. Tilastot lasketaan aina suoraan tietokannasta, joten ne ovat ajan tasalla.
 
+
+**Vertailuluvut** näytetään vain pyydettäessä (rajausten kohta *Vertailu*):
+- *Edellinen jakso*: yhtä pitkä jakso juuri ennen valittua aikaväliä.
+- *Vuotta aiemmin*: sama aikaväli edellisenä vuonna.
+
+Vertailu näyttää muutosprosentin ja vertailujakson luvun kohtaamisten kokonaismäärässä ja eri henkilöiden arviossa. Kuukausikaaviossa vertailujakson kokonaismäärä näkyy harmaana katkoviivana, ja se on mukana myös taulukkonäkymässä.
+
 ## Työntekijäseuranta (admin ja tiiminvetäjä)
 
 **Työntekijät**-sivulla näkyy jokaisen kirjaajan yhteenveto valitulta aikaväliltä ja hankkeesta: kohtaamiset, kirjaukset, yksilö- ja ryhmäkirjaukset, aktiivipäivät, kohtaamiset aktiivipäivää kohden sekä työntekijän ja asiakkaan arvioiden keskiarvot. Sarakkeen otsikkoa klikkaamalla taulukko järjestyy kyseisen sarakkeen mukaan. Listalla näkyvät myös työntekijät, jotka eivät ole vielä kirjanneet mitään.

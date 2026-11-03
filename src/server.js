@@ -719,7 +719,8 @@ app.get('/api/dashboard', requireAuth, (req, res) => {
   if (!types.length) return bad(res, 'Valitse vähintään yksi kohtaamisen tyyppi.');
   const role = RECORDER_ROLES.includes(req.query.role) ? req.query.role : null;
   res.json(dashboard({ from, to, projectIds, projectId, types, role,
-    ika: req.query.ika ? String(req.query.ika) : null, sukupuoli: req.query.sukupuoli ? String(req.query.sukupuoli) : null }));
+    ika: req.query.ika ? String(req.query.ika) : null, sukupuoli: req.query.sukupuoli ? String(req.query.sukupuoli) : null,
+    compare: String(req.query.compare || 'none') }));
 });
 
 // Ohjauspalveluiden ylläpito (admin)
