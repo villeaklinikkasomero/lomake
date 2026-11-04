@@ -15,6 +15,8 @@ const bcrypt = require('bcryptjs');
 let server, base;
 before(async () => {
   ensureAdmin();
+  // Hankekohtaiset 2027-kysymykset eivät ole pakollisia yleistesteissä (omat testinsä alla)
+  db.prepare('UPDATE questions SET required = 0 WHERE project_id IS NOT NULL').run();
   db.prepare("UPDATE users SET email='admin@t.fi', password_hash=?, must_change_password=0 WHERE role='admin'").run(bcrypt.hashSync('Admin-salasana-1', 4));
   server = app.listen(0); await new Promise(r => server.once('listening', r));
   base = `http://127.0.0.1:${server.address().port}`;
@@ -76,12 +78,12 @@ test('kirjaus: validointi, hankerajaus ja tunnistetietojen esto', async () => {
 test('ryhmäkirjaus ja hankekohtainen kysymys', async () => {
   const p = P(); const tv = users.tiimivetaja;
   const r = await tv('POST', '/encounters', basePayload(p.AK21, { encounter_type: 'ryhma', encounter_count: 25, person_count: 8, pseudonym: 'ei tallennu',
-    answers: { tyontekijan_arvio: '5', ika: '18–29 vuotta', ak21_toimintamuoto: 'Selvä suunta -ryhmä' } }));
+    answers: { tyontekijan_arvio: '5', ika: '18–29 vuotta', ak21_toimintamuoto_2027: 'Selvä suunta -ryhmä' } }));
   assert.equal(r.status, 201, JSON.stringify(r.data));
   const d = await tv('GET', '/encounters/' + r.data.id);
   assert.equal(d.data.encounter.pseudonym, undefined);   // selväkielistä nimimerkkiä ei palauteta
   assert.equal(d.data.encounter.client_linked, false);
-  assert.equal(d.data.encounter.answers.ak21_toimintamuoto, 'Selvä suunta -ryhmä');
+  assert.equal(d.data.encounter.answers.ak21_toimintamuoto_2027, 'Selvä suunta -ryhmä');
   assert.equal(d.data.encounter.answers.ika, undefined);     // ikä koskee vain yksilökohtaamisia
 });
 
@@ -151,7 +153,7 @@ test('Excel-vienti: rivit, sarakkeet, ei nimimerkkejä', async () => {
   const ws = wb.getWorksheet('Kohtaamiset');
   const headers = ws.getRow(1).values.slice(1);
   assert.ok(headers.includes('Kohtaamisen ajankohta') && headers.includes('Tallennettu') && headers.includes('Tunniste'));
-  assert.ok(headers.some(h => /Toimintamuoto/.test(h)));
+  assert.ok(headers.some(h => /toimintamuodossa/.test(h)));
   assert.ok(!headers.some(h => /nimimerk/i.test(h)));
   const total = db.prepare('SELECT COUNT(*) n FROM encounters WHERE deleted_at IS NULL').get().n;
   assert.equal(ws.rowCount - 1, total);
@@ -580,4 +582,65 @@ test('tilastot: paikkakunnat ja kadut, kirjoitusasut yhdistetään, paikkakuntar
   assert.equal(f.data.totals.encounters, 3);
   assert.ok(!f.data.places.streets.some(s => s.label === 'Keskuskatu'));
   assert.ok(f.data.places.cities.length >= 2, 'paikkakuntalista ei rajaudu itseensä');
+});
+
+test('kirjaustyypit: tavoittaminen tilastoidaan erikseen, admin lisää tyypin', async () => {
+  const p = P(); const tv = users.tiimivetaja;
+  const types = (await tv('GET', '/me')).data.recordTypes.map(t => t.key);
+  assert.deepEqual(types, ['yksilo', 'ryhma', 'tavoittaminen']);
+  // Tavoittamisen muoto pakollinen, tavoitettujen määrä pakollinen
+  let r = await tv('POST', '/encounters', { project_id: p.JALMA ?? p.KATUKLINIKKA, encounter_date: '2022-05-05', encounter_type: 'tavoittaminen', answers: {} });
+  assert.equal(r.status, 400);
+  r = await tv('POST', '/encounters', { project_id: p.KATUKLINIKKA, encounter_date: '2022-05-05', encounter_type: 'tavoittaminen', encounter_count: 40,
+    answers: { tavoittamisen_muoto: 'Luento', tyontekijan_arvio: '4', ika: '18–29 vuotta' } });
+  assert.equal(r.status, 201, JSON.stringify(r.data));
+  const e = db.prepare('SELECT * FROM encounters WHERE id = ?').get(r.data.id);
+  assert.equal(e.kind, 'tavoittaminen'); assert.equal(e.person_count, null);
+  const d = await users.admin('GET', '/dashboard?from=2022-05-01&to=2022-05-31');
+  assert.equal(d.data.totals.reach, 40); assert.equal(d.data.totals.encounters, 0, 'tavoitetut eivät ole kohtaamisia');
+  // Ikä ei koske tavoittamista
+  assert.equal((await tv('GET', '/encounters/' + r.data.id)).data.encounter.answers.ika, undefined);
+  // Admin lisää tyypin, tiiminvetäjä ei
+  assert.equal((await tv('POST', '/record-types', { label: 'Puhelinneuvonta', kind: 'yksilo' })).status, 403);
+  const n = await users.admin('POST', '/record-types', { label: 'Puhelinneuvonta', description: 'Yksi puhelu', kind: 'yksilo' });
+  assert.equal(n.status, 201); assert.equal(n.data.key, 'puhelinneuvonta');
+  r = await tv('POST', '/encounters', basePayload(p.KATUKLINIKKA, { encounter_type: 'puhelinneuvonta' }));
+  assert.equal(r.status, 201, JSON.stringify(r.data));
+  assert.equal(db.prepare('SELECT kind FROM encounters WHERE id = ?').get(r.data.id).kind, 'yksilo');
+  // Pois käytöstä: uusia kirjauksia ei voi tehdä
+  await users.admin('PUT', '/record-types/puhelinneuvonta', { label: 'Puhelinneuvonta', active: false });
+  assert.equal((await tv('POST', '/encounters', basePayload(p.KATUKLINIKKA, { encounter_type: 'puhelinneuvonta' }))).status, 400);
+});
+
+test('ehdolliset kysymykset: näkyvät ja vaaditaan vain ehdon täyttyessä; lukujen alaraja', async () => {
+  const p = P(); const tv = users.tiimivetaja;
+  db.prepare("UPDATE questions SET required = 1 WHERE key IN ('voljy_asumistuki','voljy_asuminen_toimenpiteet','voljy_asuminen_tulos')").run();
+  db.prepare('INSERT OR IGNORE INTO user_projects (user_id, project_id) SELECT id, ? FROM users WHERE email = ?').run(p.VOLJY, 'tv@t.fi');
+  const base = (answers) => ({ project_id: p.VOLJY, encounter_date: today, encounter_type: 'yksilo', answers: { tyontekijan_arvio: '4', ...answers } });
+  // Ei asumistukea → jatkokysymyksiä ei vaadita eikä tallenneta
+  let r = await tv('POST', '/encounters', base({ voljy_asumistuki: 'Ei', voljy_asuminen_toimenpiteet: '3' }));
+  assert.equal(r.status, 201, JSON.stringify(r.data));
+  assert.equal((await tv('GET', '/encounters/' + r.data.id)).data.encounter.answers.voljy_asuminen_toimenpiteet, undefined);
+  // Asumistuki annettu → jatkokysymykset pakollisia
+  r = await tv('POST', '/encounters', base({ voljy_asumistuki: 'Kyllä' }));
+  assert.equal(r.status, 400);
+  r = await tv('POST', '/encounters', base({ voljy_asumistuki: 'Kyllä', voljy_asuminen_toimenpiteet: '-1', voljy_asuminen_tulos: ['Häätö ehkäistiin'] }));
+  assert.equal(r.status, 400, 'negatiivinen luku hylätään');
+  r = await tv('POST', '/encounters', base({ voljy_asumistuki: 'Kyllä', voljy_asuminen_toimenpiteet: '2', voljy_asuminen_tulos: ['Häätö ehkäistiin'] }));
+  assert.equal(r.status, 201, JSON.stringify(r.data));
+  // Toteuttajan rooliin sidottu ehto (Päihdelinkki: vain ammattilaiset)
+  const q = db.prepare("SELECT show_if FROM questions WHERE key = 'ak21_selkiytyminen'").get();
+  assert.ok(JSON.parse(q.show_if).key === '_toteuttaja');
+  db.prepare("UPDATE questions SET required = 1 WHERE key = 'ak21_selkiytyminen'").run();
+  r = await tv('POST', '/encounters', basePayload(p.AK21, { performer: 'vapaaehtoinen' }));
+  assert.equal(r.status, 201, 'vapaaehtoiselta ei kysytä ' + JSON.stringify(r.data));
+  r = await tv('POST', '/encounters', basePayload(p.AK21));
+  assert.equal(r.status, 400, 'ammattilaiselta kysytään');
+  db.prepare("UPDATE questions SET required = 0 WHERE key = 'ak21_selkiytyminen'").run();
+  // Admin voi asettaa ehdon ja tyypit kysymykselle
+  const nq = await users.admin('POST', '/questions', { key: 'testi_ehto', label: 'Testiehto', type: 'text', project_id: p.VOLJY, applies: ['yksilo'],
+    show_if: { key: 'voljy_asumistuki', values: ['Kyllä'] } });
+  assert.equal(nq.status, 201, JSON.stringify(nq.data));
+  const bad = await users.admin('POST', '/questions', { key: 'testi_ehto2', label: 'Testi', type: 'text', show_if: { key: 'voljy_asumistuki', values: ['Kyllä'] } });
+  assert.equal(bad.status, 400, 'yhteinen kysymys ei voi riippua hankekohtaisesta');
 });

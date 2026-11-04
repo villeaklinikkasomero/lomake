@@ -56,6 +56,7 @@ function buildWorkbook({ from, to, projectIds }) {
     }
   }
 
+  const typeLabels = Object.fromEntries(db.prepare('SELECT key, label FROM record_types').all().map(t => [t.key, t.label]));
   const wb = new ExcelJS.Workbook();
   wb.creator = 'Kohtaamisten raportointi';
   wb.created = new Date();
@@ -68,8 +69,9 @@ function buildWorkbook({ from, to, projectIds }) {
     { header: 'Hanketunnus', key: 'project_code', width: 14 },
     { header: 'Toteuttajan rooli', key: 'recorder_role', width: 40 },
     { header: 'Kirjattu toisen puolesta', key: 'on_behalf', width: 12 },
-    { header: 'Kirjauksen tyyppi', key: 'encounter_type', width: 16 },
+    { header: 'Kirjauksen tyyppi', key: 'encounter_type', width: 22 },
     { header: 'Kohtaamisten määrä', key: 'encounter_count', width: 12 },
+    { header: 'Tavoitettujen määrä', key: 'reach_count', width: 12 },
     { header: 'Eri henkilöiden määrä (ryhmä)', key: 'person_count', width: 14 },
     { header: 'Tunnistettu asiakas (yksilö)', key: 'client_linked', width: 14 },
     ...(featureEnabled('paths') ? [{ header: 'Ohjattu palveluun', key: 'referrals', width: 36 }] : []),
@@ -93,10 +95,11 @@ function buildWorkbook({ from, to, projectIds }) {
       project_code: e.project_code,
       recorder_role: e.recorder_role,
       on_behalf: e.performer_type === 'vapaaehtoinen' || (e.performed_by != null && e.performed_by !== e.created_by) ? 'kyllä' : 'ei',
-      encounter_type: e.encounter_type === 'ryhma' ? 'Ryhmä' : 'Yksi kohtaaminen',
-      encounter_count: e.encounter_count,
-      person_count: e.encounter_type === 'ryhma' ? e.person_count : null,
-      client_linked: e.encounter_type === 'yksilo' ? (e.client_id ? 'kyllä' : 'ei') : null,
+      encounter_type: typeLabels[e.encounter_type] || e.encounter_type,
+      encounter_count: e.kind === 'tavoittaminen' ? null : e.encounter_count,
+      reach_count: e.kind === 'tavoittaminen' ? e.encounter_count : null,
+      person_count: e.kind === 'ryhma' ? e.person_count : null,
+      client_linked: e.kind === 'yksilo' ? (e.client_id ? 'kyllä' : 'ei') : null,
       referrals: refMap.get(e.id) || null,
       created_at: utcToLocalDate(e.created_at),
       updated_at: utcToLocalDate(e.updated_at),
@@ -134,7 +137,7 @@ function buildWorkbook({ from, to, projectIds }) {
   info.getRow(1).font = { bold: true };
   for (const c of base) info.addRow({ header: c.header, key: c.key, project: 'Yhteinen', type: 'perustieto', applies: 'kaikki', active: 'kyllä' });
   questions.forEach((q, i) => info.addRow({ header: qCols[i].header, key: q.key, project: q.project_name || 'Yhteinen', type: q.type,
-    applies: q.applies_to, active: q.active ? 'kyllä' : 'ei' }));
+    applies: q.applies ? JSON.parse(q.applies).map(k => typeLabels[k] || k).join('; ') : 'kaikki', active: q.active ? 'kyllä' : 'ei' }));
   info.addRow({});
   info.addRow({ header: `Aikaväli ${from} – ${to}. Rivejä ${encounters.length}, kohtaamisia yhteensä ${encounters.reduce((s, e) => s + e.encounter_count, 0)}.` });
   info.addRow({ header: 'Asiakastunnisteet (nimimerkit) eivät sisälly vientiin tietosuojasyistä. Sarake ”Tunnistettu asiakas” kertoo vain, käytettiinkö tunnistetta.' });

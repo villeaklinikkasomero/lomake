@@ -22,10 +22,14 @@ const fmtDate = (s) => { if (!s) return ''; const [y, m, d] = s.slice(0, 10).spl
 const fmtDateTime = (s) => { if (!s) return ''; const d = new Date(s.replace(' ', 'T') + 'Z');
   return d.toLocaleString('fi-FI', { day: 'numeric', month: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit' }); };
 const fmtNum = (n) => Number(n || 0).toLocaleString('fi-FI');
-const typeLabel = (t) => (t === 'ryhma' ? 'Ryhmä' : 'Yksi kohtaaminen');
+// Kirjaustyypit tulevat palvelimelta (Hallinta → Kirjaustyypit)
+const recordTypes = () => (state.me && state.me.recordTypes) || [];
+const recordType = (key) => recordTypes().find(t => t.key === key) || null;
+const typeLabel = (t) => (recordType(t) || {}).label || t;
+const typeKind = (t) => (recordType(t) || {}).kind || t;
+const countLabel = (rt) => (rt && rt.count_label) || (rt && rt.kind === 'tavoittaminen' ? 'Tavoitettujen määrä' : 'Kohtaamisten määrä');
 const DIGITAL_LOCATION = 'Digialustalla';
 const VOLUNTEER = 'vapaaehtoinen';
-const APPLIES = { kaikki: 'Kaikki kirjaukset', yksilo: 'Vain yksilökohtaamiset', ryhma: 'Vain ryhmät' };
 const QTYPES = { text: 'Lyhyt teksti', textarea: 'Pitkä teksti', number: 'Luku', choice: 'Valinta (yksi)', multichoice: 'Valinta (useita)', rating: 'Arvio 1–5', date: 'Päivämäärä' };
 
 let toastTimer;
@@ -84,6 +88,7 @@ const ROUTES = [
   { re: /^#\/hallinta\/kayttajat$/, view: viewUsers, perm: (p) => p.manageUsers },
   { re: /^#\/hallinta\/hankkeet$/, view: viewProjects, perm: (p) => p.manageProjects },
   { re: /^#\/hallinta\/kysymykset$/, view: viewQuestions, perm: (p) => p.manageQuestions },
+  { re: /^#\/hallinta\/kirjaustyypit$/, view: viewRecordTypes, perm: (p) => p.manageQuestions },
   { re: /^#\/hallinta\/loki$/, view: viewAudit, perm: (p) => p.manageUsers },
   { re: /^#\/hallinta\/testidata$/, view: viewDemo, perm: (p) => p.manageUsers },
   { re: /^#\/hallinta\/toiminnot$/, view: viewFeatures, perm: (p) => p.manageUsers },
@@ -331,11 +336,13 @@ async function viewRecord() {
 
 function showSaved(payload, id) {
   const p = state.me.projects.find(x => x.id === payload.project_id);
-  const count = payload.encounter_type === 'ryhma' ? Number(payload.encounter_count) : 1;
+  const kind = typeKind(payload.encounter_type);
+  const count = kind === 'yksilo' ? 1 : Number(payload.encounter_count);
+  const unit = kind === 'tavoittaminen' ? (count === 1 ? 'tavoitettu' : 'tavoitettua') : (count === 1 ? 'kohtaaminen' : 'kohtaamista');
   $app.replaceChildren(h('div', { class: 'narrow' }, h('div', { class: 'card success' },
     h('div', { class: 'check', 'aria-hidden': 'true' }, '✓'),
     h('h1', null, 'Kirjaus tallennettu'),
-    h('p', { class: 'muted' }, `${p ? p.name : ''} · ${fmtDate(payload.encounter_date)} · ${typeLabel(payload.encounter_type)} · ${fmtNum(count)} ${count === 1 ? 'kohtaaminen' : 'kohtaamista'}`),
+    h('p', { class: 'muted' }, `${p ? p.name : ''} · ${fmtDate(payload.encounter_date)} · ${typeLabel(payload.encounter_type)} · ${fmtNum(count)} ${unit}`),
     h('div', { class: 'actions' },
       h('button', { class: 'btn btn-primary btn-lg', type: 'button', onclick: () => { route(); } }, 'Kirjaa seuraava'),
       h('button', { class: 'btn btn-secondary', type: 'button', onclick: () => { state.lastBasics = null; route(); } }, 'Tyhjä lomake'),
@@ -368,7 +375,25 @@ function renderEncounterForm(opts) {
   const qs = opts.questions;
   // Kun sijainniksi valitaan "Digialustalla", kaupunki ja kadunnimi piilotetaan (kysymyksen asetus digital_mode = 'hide')
   const digitalHidden = (q) => q.digital_mode === 'hide' && String(s.answers.sijainti || '').trim().toLowerCase() === DIGITAL_LOCATION.toLowerCase();
-  const syncLocation = () => { for (const q of qs) if (q.digital_mode === 'hide') { const el = dynamic.querySelector('#fw-' + q.key); if (el) el.hidden = digitalHidden(q); } };
+  const kind = () => typeKind(s.encounter_type);
+  // Toteuttajan rooli ehdollisia kysymyksiä varten (esim. vain ammattilaisille)
+  const performerRole = () => {
+    if (s.performer === VOLUNTEER) return me.recorderRoles[2];
+    if (s.performer === String(me.user.id)) return init.id && String(init.performed_by) === s.performer ? init.recorder_role : me.user.recorderRole;
+    const m = ((opts.members || {})[s.project_id] || []).find(x => String(x.id) === s.performer);
+    return m ? m.recorderRole : init.recorder_role;
+  };
+  const conditionMet = (c) => {
+    if (!c || !c.key) return true;
+    const v = c.key === '_toteuttaja' ? performerRole() : s.answers[c.key];
+    const vals = Array.isArray(v) ? v : v == null || v === '' ? [] : [String(v)];
+    return vals.some(x => c.values.includes(x));
+  };
+  const appliesTo = (q) => !q.applies || q.applies.includes(s.encounter_type);
+  // Kysymys näkyy, jos se koskee tyyppiä ja hanketta, ehto täyttyy eikä sijainti piilota sitä
+  const shown = (q) => appliesTo(q) && (q.project_id == null || q.project_id === s.project_id) && !digitalHidden(q) && conditionMet(q.show_if);
+  // Ehdolliset ja sijainnista riippuvat kentät piirretään aina ja piilotetaan tarvittaessa, jotta vastaukset säilyvät
+  const syncLocation = () => { for (const q of qs) if (q.digital_mode === 'hide' || q.show_if) { const el = dynamic.querySelector('#fw-' + q.key); if (el) el.hidden = !shown(q); } };
 
   const errBox = h('div', { class: 'notice err', hidden: true, role: 'alert' });
   const dynamic = h('div');
@@ -391,7 +416,7 @@ function renderEncounterForm(opts) {
           projects.map(p => h('option', { value: p.id, selected: p.id === s.project_id }, p.name))));
 
   // Kohtaamisen toteuttaja: oma nimi, toinen hankkeen käyttäjä tai vapaaehtoinen. Raportoinnin rooli määräytyy toteuttajasta.
-  const performerSelect = h('select', { id: 'f-performer', 'aria-describedby': 'h-performer', onchange: (e) => { s.performer = e.target.value; drawPerformerNote(); } });
+  const performerSelect = h('select', { id: 'f-performer', 'aria-describedby': 'h-performer', onchange: (e) => { s.performer = e.target.value; drawPerformerNote(); syncLocation(); } });
   const performerNote = h('p', { class: 'help help-below', id: 'h-performer' });
   const drawPerformerNote = () => performerNote.replaceChildren(s.performer === String(me.user.id)
     ? 'Valitse toinen henkilö, jos kirjaat kohtaamisen jonkun toisen puolesta.'
@@ -402,6 +427,7 @@ function renderEncounterForm(opts) {
     if (init.id && init.performer_type !== VOLUNTEER && init.performed_by && init.performed_by !== me.user.id && !list.some(m => m.id === init.performed_by)) list.push({ id: init.performed_by, name: init.performed_by_name || 'Alkuperäinen toteuttaja' });
     const values = [String(me.user.id), ...list.map(m => String(m.id)), VOLUNTEER];
     if (!values.includes(s.performer)) s.performer = String(me.user.id);
+    setTimeout(() => syncLocation(), 0);
     performerSelect.replaceChildren(
       h('option', { value: String(me.user.id) }, `Minä (${me.user.name})`),
       list.length ? h('optgroup', { label: 'Hankkeen työntekijät' }, list.map(m => h('option', { value: String(m.id) }, m.name))) : null,
@@ -414,16 +440,17 @@ function renderEncounterForm(opts) {
 
   // Valitun tyypin laskentaohje näytetään suoraan valinnan alla
   const typeHelp = h('div', { class: 'type-help' });
-  const drawTypeHelp = () => typeHelp.replaceChildren(s.encounter_type === 'yksilo'
+  const drawTypeHelp = () => typeHelp.replaceChildren(kind() === 'yksilo'
     ? h('details', { class: 'define' }, h('summary', null, 'Mikä lasketaan yhdeksi kohtaamiseksi?'),
         h('p', null, 'Yksi yhtenäinen keskustelu yhden kohderyhmään kuuluvan henkilön kanssa = yksi kohtaaminen. Jatkokysymys samassa keskustelussa kuuluu samaan kohtaamiseen.'),
         h('p', null, 'Jos dialogi on luonteeltaan jatkuvaa (esim. tukihenkilötyöskentely), kohtaamiseksi lasketaan ne päivät, jolloin vuorovaikutusta on tapahtunut. Digialustalla yksi kysymys–vastaus-kokonaisuus jatkokysymyksineen = yksi kohtaaminen.'))
     : '');
   const typeField = h('div', { class: 'field', id: 'fw-type' }, h('div', { class: 'label', id: 'l-type' }, 'Valitse, mitä raportoit', h('span', { class: 'req' }, '*')),
     h('div', { class: 'segmented', role: 'radiogroup', 'aria-labelledby': 'l-type' },
-      [['yksilo', 'Yksi kohtaaminen', 'Yksi henkilö, yksi keskustelu'], ['ryhma', 'Ryhmä tai useita kohtaamisia', 'Ryhmä tai useampi kohtaaminen kerralla']].map(([v, t, d]) => h('label', { class: 'opt' },
-        h('input', { type: 'radio', name: 'encounter_type', value: v, checked: s.encounter_type === v, onchange: () => { s.encounter_type = v; renderDynamic(); } }),
-        h('span', null, h('span', { class: 'opt-title' }, t), h('span', { class: 'opt-desc' }, d))))),
+      // Käytössä olevat tyypit; korjattaessa myös kirjauksen oma (mahdollisesti käytöstä poistettu) tyyppi
+      recordTypes().filter(t => t.active || t.key === init.encounter_type).map(t => h('label', { class: 'opt' },
+        h('input', { type: 'radio', name: 'encounter_type', value: t.key, checked: s.encounter_type === t.key, onchange: () => { s.encounter_type = t.key; renderDynamic(); } }),
+        h('span', null, h('span', { class: 'opt-title' }, t.label), t.description ? h('span', { class: 'opt-desc' }, t.description) : null)))),
     typeHelp);
 
   const basics = h('section', { class: 'card section' },
@@ -452,7 +479,15 @@ function renderEncounterForm(opts) {
       return;
     }
     submitBtn.disabled = false;
-    if (s.encounter_type === 'ryhma') {
+    const rt = recordType(s.encounter_type);
+    if (kind() === 'tavoittaminen') {
+      parts.push(h('section', { class: 'card section' },
+        h('div', { class: 'section-title' }, h('h2', null, `${rt.label}: tiedot`)),
+        h('div', { class: 'field', id: 'fw-count' }, h('label', { for: 'f-count' }, countLabel(rt), h('span', { class: 'req' }, '*')),
+          h('input', { type: 'number', id: 'f-count', class: 'input-narrow', inputmode: 'numeric', min: '1', max: '9999', step: '1', required: true, value: s.encounter_count,
+            'aria-describedby': 'h-count', oninput: (e) => { s.encounter_count = e.target.value; } }),
+          h('p', { class: 'help help-below', id: 'h-count' }, 'Tilaisuuteen osallistuneet tai tavoitetut henkilöt. Tavoitetut tilastoidaan erikseen kohtaamisista.'))));
+    } else if (kind() === 'ryhma') {
       parts.push(h('section', { class: 'card section' },
         h('div', { class: 'section-title' }, h('h2', null, 'Ryhmän tiedot')),
         h('details', { class: 'define' }, h('summary', null, 'Miten kohtaamiset lasketaan?'),
@@ -460,7 +495,7 @@ function renderEncounterForm(opts) {
           h('p', null, 'Jos dialogi on luonteeltaan jatkuvaa, esim. verkkokeskustelualustalla, kohtaamisten määrä = viestien määrä (ohjaajat) tai aktiiviset päivät × osallistujien määrä, riippuen siitä kumpi kuvaa parhaiten erillisten vuorovaikutustilanteiden määrää.')),
         h('div', { class: 'row' },
           // Ohjeet kentän alla, jotta kentät asettuvat samalle tasolle
-          h('div', { class: 'field', id: 'fw-count' }, h('label', { for: 'f-count' }, 'Kohtaamisten määrä', h('span', { class: 'req' }, '*')),
+          h('div', { class: 'field', id: 'fw-count' }, h('label', { for: 'f-count' }, countLabel(rt), h('span', { class: 'req' }, '*')),
             h('input', { type: 'number', id: 'f-count', inputmode: 'numeric', enterkeyhint: 'next', min: '1', max: '9999', step: '1', required: true, value: s.encounter_count,
               'aria-describedby': 'h-count', oninput: (e) => { s.encounter_count = e.target.value; } }),
             h('p', { class: 'help help-below', id: 'h-count' }, 'Kaikki ryhmän tai sarjan kohtaamiset yhteensä.')),
@@ -477,7 +512,7 @@ function renderEncounterForm(opts) {
     }
 
     // Sijainnista riippuvat kentät piirretään aina ja piilotetaan tarvittaessa (syncLocation), jotta vastaukset säilyvät
-    const visible = (q) => (q.applies_to === 'kaikki' || q.applies_to === s.encounter_type);
+    const visible = appliesTo;
     const common = qs.filter(q => q.project_id == null && visible(q));
     if (common.length) parts.push(h('section', { class: 'card section' },
       h('div', { class: 'section-title' }, h('h2', null, 'Yhteiset kysymykset')),
@@ -500,13 +535,12 @@ function renderEncounterForm(opts) {
     clearFieldErrors(form);
     const problem = clientValidate();
     if (problem) { showFieldError(problem[1], problem[0], errBox); return; }
-    const visible = (q) => (q.applies_to === 'kaikki' || q.applies_to === s.encounter_type) && (q.project_id == null || q.project_id === s.project_id) && !digitalHidden(q);
     const answers = {};
-    for (const q of qs) if (visible(q) && s.answers[q.key] != null && s.answers[q.key] !== '') answers[q.key] = s.answers[q.key];
+    for (const q of qs) if (shown(q) && s.answers[q.key] != null && s.answers[q.key] !== '') answers[q.key] = s.answers[q.key];
     const payload = { project_id: s.project_id, encounter_date: s.encounter_date, encounter_type: s.encounter_type,
-      encounter_count: s.encounter_type === 'ryhma' ? s.encounter_count : 1, person_count: s.encounter_type === 'ryhma' ? s.person_count : null,
+      encounter_count: kind() === 'yksilo' ? 1 : s.encounter_count, person_count: kind() === 'ryhma' ? s.person_count : null,
       answers, performer: s.performer };
-    if (opts.allowClient && s.encounter_type === 'yksilo') {
+    if (opts.allowClient && kind() === 'yksilo') {
       // Palaava asiakas: haetaan automaattisesti, jos hakua ei ole tehty
       if (s.client.mode === 'existing' && s.client.checkedRef !== s.client.ref) {
         try { await lookupClient(s); } catch (ex) { showFieldError('fw-client', ex.message, errBox); return; }
@@ -531,7 +565,7 @@ function renderEncounterForm(opts) {
 
   // Palauttaa [virheilmoitus, kentän kääreen id] tai null.
   function clientValidate() {
-    if (opts.allowClient && s.encounter_type === 'yksilo' && s.client.mode !== 'none') {
+    if (opts.allowClient && kind() === 'yksilo' && s.client.mode !== 'none') {
       const n = normalizeRef(s.client.ref);
       if (n.length < 3) return ['Anna asiakkaan tunniste (vähintään 3 kirjainta tai numeroa) tai valitse ”Ei tunnistetta”.', 'fw-client'];
       if (sensitiveHit(s.client.ref)) return ['Tunniste näyttää sisältävän tunnistetietoja. Älä käytä oikeaa nimeä tai yhteystietoja.', 'fw-client'];
@@ -540,16 +574,17 @@ function renderEncounterForm(opts) {
     if (s.encounter_date > me.today) return ['Kohtaamisen ajankohta ei voi olla tulevaisuudessa.', 'fw-date'];
     if (!s.project_id) return ['Valitse hanke.', 'fw-project'];
     if (!s.encounter_type) return ['Valitse, mitä raportoit.', 'fw-type'];
-    if (s.encounter_type === 'ryhma') {
+    if (kind() !== 'yksilo') {
       const n = Number(s.encounter_count);
-      if (!Number.isInteger(n) || n < 1 || n > 9999) return ['Kohtaamisten määrä on oltava 1–9999.', 'fw-count'];
+      if (!Number.isInteger(n) || n < 1 || n > 9999) return [`${countLabel(recordType(s.encounter_type))} on oltava 1–9999.`, 'fw-count'];
       if (s.person_count !== '' && s.person_count != null) { const p = Number(s.person_count); if (!Number.isInteger(p) || p < 1 || p > 9999) return ['Osallistujien määrä on oltava 1–9999 tai tyhjä.', 'fw-persons']; }
     }
     for (const q of qs) {
-      if (!(q.applies_to === 'kaikki' || q.applies_to === s.encounter_type) || !(q.project_id == null || q.project_id === s.project_id) || digitalHidden(q)) continue;
+      if (!shown(q)) continue;
       const v = s.answers[q.key];
       const empty = v == null || v === '' || (Array.isArray(v) && !v.length);
       if (q.required && empty) return [`Vastaa kysymykseen: ${q.label}`, 'fw-' + q.key];
+      if (!empty && q.type === 'number') { const n = Number(v), min = q.min_value ?? 0; if (!Number.isInteger(n) || n < min) return [`Anna kokonaisluku (vähintään ${min}): ${q.label}`, 'fw-' + q.key]; }
       if (!empty && typeof v === 'string' && ['text', 'textarea'].includes(q.type)) { const hit = sensitiveHit(v); if (hit) return [`Kenttä "${q.label}" näyttää sisältävän ${hit} näyttävää tietoa. Poista tunnistetiedot.`, 'fw-' + q.key]; }
     }
     return null;
@@ -789,7 +824,7 @@ function renderQuestion(q, answers) {
       break;
     }
     case 'number':
-      control = h('input', { type: 'number', id, class: 'input-narrow', value: answers[q.key] ?? '', oninput: (e) => set(e.target.value) });
+      control = h('input', { type: 'number', id, class: 'input-narrow', inputmode: 'numeric', step: '1', min: String(q.min_value ?? 0), value: answers[q.key] ?? '', oninput: (e) => set(e.target.value) });
       break;
     case 'date':
       control = h('input', { type: 'date', id, class: 'input-narrow', value: answers[q.key] || '', oninput: (e) => set(e.target.value) });
@@ -854,7 +889,7 @@ async function viewList() {
     me.projects.length > 1 ? h('div', { class: 'field' }, h('label', { for: 'l-proj' }, 'Hanke'),
       f('project_id', h('select', { id: 'l-proj' }, h('option', { value: '' }, 'Kaikki hankkeet'), me.projects.map(x => h('option', { value: x.id }, x.name))))) : null,
     h('div', { class: 'field' }, h('label', { for: 'l-type' }, 'Tyyppi'),
-      f('type', h('select', { id: 'l-type' }, h('option', { value: '' }, 'Kaikki'), h('option', { value: 'yksilo' }, 'Yksi kohtaaminen'), h('option', { value: 'ryhma' }, 'Ryhmä')))),
+      f('type', h('select', { id: 'l-type' }, h('option', { value: '' }, 'Kaikki'), recordTypes().map(t => h('option', { value: t.key }, t.label))))),
     staffSelect ? h('div', { class: 'field' }, h('label', { for: 'l-user' }, 'Työntekijä'), f('created_by', staffSelect)) : null,
   ));
 
@@ -863,9 +898,10 @@ async function viewList() {
     const qs = new URLSearchParams({ limit: PAGE, offset: listState.offset });
     for (const k of ['from', 'to', 'project_id', 'type', 'created_by']) if (listState[k]) qs.set(k, listState[k]);
     const r = await api('/encounters?' + qs);
-    stats.replaceChildren(
+    stats.replaceChildren(...[
       h('div', { class: 'stat' }, h('b', null, fmtNum(r.totalEncounters)), h('span', null, 'kohtaamista')),
-      h('div', { class: 'stat' }, h('b', null, fmtNum(r.total)), h('span', null, 'kirjausta (lomaketallennusta)')));
+      r.totalReach ? h('div', { class: 'stat' }, h('b', null, fmtNum(r.totalReach)), h('span', null, 'tavoitettua')) : null,
+      h('div', { class: 'stat' }, h('b', null, fmtNum(r.total)), h('span', null, 'kirjausta (lomaketallennusta)'))].filter(Boolean));
     if (!r.rows.length) { tableBox.replaceChildren(h('div', { class: 'card empty' }, 'Ei kirjauksia valituilla rajauksilla.')); pager.replaceChildren(); return; }
     tableBox.replaceChildren(h('div', { class: 'table-wrap' }, h('table', { class: 'cards-mobile' },
       h('thead', null, h('tr', null, h('th', null, 'Ajankohta · hanke'), h('th', null, 'Tyyppi'),
@@ -873,8 +909,9 @@ async function viewList() {
       h('tbody', null, r.rows.map(row => h('tr', { class: 'clickable', tabindex: '0', onclick: () => go('#/kirjaukset/' + row.id),
         onkeydown: (e) => { if (e.key === 'Enter') go('#/kirjaukset/' + row.id); } },
         h('td', { class: 'cell-title' }, h('strong', null, fmtDate(row.encounter_date)), ' · ', projectDot(me.projects.find(x => x.id === row.project_id)), row.project_name, row.is_test ? [' ', h('span', { class: 'badge grey' }, 'testi')] : null),
-        h('td', { 'data-label': 'Tyyppi' }, h('span', { class: 'badge ' + (row.encounter_type === 'ryhma' ? 'blue' : '') }, typeLabel(row.encounter_type))),
-        h('td', { class: 'num', 'data-label': 'Kohtaamisia' }, fmtNum(row.encounter_count)), h('td', { class: 'num', 'data-label': 'Henkilöitä' }, row.person_count == null ? '–' : fmtNum(row.person_count)),
+        h('td', { 'data-label': 'Tyyppi' }, h('span', { class: 'badge ' + (row.kind === 'ryhma' ? 'blue' : row.kind === 'tavoittaminen' ? 'green' : '') }, typeLabel(row.encounter_type))),
+        h('td', { class: 'num', 'data-label': row.kind === 'tavoittaminen' ? 'Tavoitettuja' : 'Kohtaamisia' }, fmtNum(row.encounter_count), row.kind === 'tavoittaminen' ? h('span', { class: 'small muted block' }, 'tavoitettua') : null),
+        h('td', { class: 'num', 'data-label': 'Henkilöitä' }, row.person_count == null ? '–' : fmtNum(row.person_count)),
         p.viewScope !== 'own' ? h('td', { 'data-label': 'Toteuttaja' }, row.performer_type === VOLUNTEER ? 'Vapaaehtoinen' : (row.performed_by_name || row.created_by_name),
           row.performer_type === VOLUNTEER || (row.performed_by && row.performed_by !== row.created_by) ? h('span', { class: 'small muted block' }, `kirjannut ${row.created_by_name}`) : null) : null,
         h('td', { class: 'small muted', 'data-label': 'Tallennettu' }, fmtDateTime(row.created_at), row.updated_at ? h('span', { class: 'badge grey' }, ' korjattu') : null)))))));
@@ -920,9 +957,9 @@ async function viewDetail(id) {
       h('div', { class: 'actions' }, e.canEdit ? h('a', { class: 'btn btn-primary', href: `#/kirjaukset/${e.id}/muokkaa` }, 'Korjaa') : null, delBtn)),
     h('div', { class: 'card' }, h('h2', null, 'Perustiedot'), h('dl', { class: 'kv' },
       h('dt', null, 'Tyyppi'), h('dd', null, typeLabel(e.encounter_type)),
-      h('dt', null, 'Kohtaamisten määrä'), h('dd', null, fmtNum(e.encounter_count)),
-      e.encounter_type === 'ryhma' ? [h('dt', null, 'Eri osallistujien määrä'), h('dd', null, e.person_count == null ? 'Ei tiedossa' : fmtNum(e.person_count))] : null,
-      e.encounter_type === 'yksilo' ? [h('dt', null, 'Asiakkaan tunniste'), h('dd', null, e.client_linked ? 'Tunnistettu asiakas (tunniste suojattu)' : 'Ei tunnistetta')] : null,
+      h('dt', null, countLabel(recordType(e.encounter_type) || { kind: e.kind })), h('dd', null, fmtNum(e.encounter_count)),
+      e.kind === 'ryhma' ? [h('dt', null, 'Eri osallistujien määrä'), h('dd', null, e.person_count == null ? 'Ei tiedossa' : fmtNum(e.person_count))] : null,
+      e.kind === 'yksilo' ? [h('dt', null, 'Asiakkaan tunniste'), h('dd', null, e.client_linked ? 'Tunnistettu asiakas (tunniste suojattu)' : 'Ei tunnistetta')] : null,
       e.referrals && e.referrals.length ? [h('dt', null, 'Ohjattu palveluun'), h('dd', null, e.referrals.map(r => h('div', null, r.service, ' ', referralBadge(r.status))))] : null,
       e.referral_updates && e.referral_updates.length ? [h('dt', null, 'Kuitatut ohjaukset'), h('dd', null, e.referral_updates.map(r => h('div', null, `${r.service} (ohjattu ${fmtDate(r.referred_on)}) `, referralBadge(r.status))))] : null,
       h('dt', null, 'Kohtaamisen toteutti'), h('dd', null, e.performer_type === VOLUNTEER ? 'Vapaaehtoinen, vertainen tai kokemusasiantuntija' : (e.performed_by_name || '–')),
@@ -1134,7 +1171,7 @@ function hBars(items, opts = {}) {
 // ---------------------------------------------------------------------------
 // Tilastot (dashboard) – määrittelydokumentin mallin mukaan
 // ---------------------------------------------------------------------------
-const dashState = { from: '', to: '', project_id: '', types: ['yksilo', 'ryhma'], role: '', ika: '', sukupuoli: '', kaupunki: '', compare: 'none' };
+const dashState = { from: '', to: '', project_id: '', types: null, role: '', ika: '', sukupuoli: '', kaupunki: '', compare: 'none' };
 const COMPARE = { none: 'Ei vertailua', prev: 'Edellinen jakso', year: 'Vuotta aiemmin' };
 const SERIES = [
   { key: 'encounters', label: 'Kohtaamiset yhteensä', cls: 's1' },
@@ -1163,7 +1200,8 @@ async function viewDashboard() {
   let filtersOpen = window.matchMedia('(min-width: 641px)').matches;
 
   function query() {
-    const q = new URLSearchParams({ from: dashState.from, to: dashState.to, types: dashState.types.join(',') });
+    const q = new URLSearchParams({ from: dashState.from, to: dashState.to });
+    if (dashState.types) q.set('types', dashState.types.join(','));
     for (const k of ['project_id', 'role', 'ika', 'sukupuoli', 'kaupunki']) if (dashState[k]) q.set(k, dashState[k]);
     if (dashState.compare !== 'none') q.set('compare', dashState.compare);
     return q;
@@ -1177,11 +1215,14 @@ async function viewDashboard() {
     const y = me.today.slice(0, 4);
     const presets = [['Tämä vuosi', `${y}-01-01`, me.today], ['Edellinen vuosi', `${+y - 1}-01-01`, `${+y - 1}-12-31`],
       ['30 pv', isoDaysAgo(29), me.today], ['Tämä kk', me.today.slice(0, 8) + '01', me.today]];
-    const typeBox = (v, t) => { const el = h('input', { type: 'checkbox', checked: dashState.types.includes(v) });
-      el.addEventListener('change', () => { const set = new Set(dashState.types); el.checked ? set.add(v) : set.delete(v);
-        if (!set.size) { el.checked = true; return; } dashState.types = ['yksilo', 'ryhma'].filter(x => set.has(x)); load(); });
+    // Kirjaustyypit (null = kaikki)
+    const allTypes = recordTypes().map(t => t.key);
+    const selTypes = () => dashState.types || allTypes;
+    const typeBox = (v, t) => { const el = h('input', { type: 'checkbox', checked: selTypes().includes(v) });
+      el.addEventListener('change', () => { const set = new Set(selTypes()); el.checked ? set.add(v) : set.delete(v);
+        if (!set.size) { el.checked = true; return; } const next = allTypes.filter(x => set.has(x)); dashState.types = next.length === allTypes.length ? null : next; load(); });
       return h('label', { class: 'opt' }, el, h('span', null, t)); };
-    const active = ['project_id', 'role', 'ika', 'sukupuoli', 'kaupunki'].filter(k => dashState[k]).length + (dashState.types.length < 2 ? 1 : 0);
+    const active = ['project_id', 'role', 'ika', 'sukupuoli', 'kaupunki'].filter(k => dashState[k]).length + (dashState.types ? 1 : 0);
     const det = h('details', { class: 'dash-filter-details', open: filtersOpen || null },
       h('summary', null, `Rajaukset · ${fmtDate(dashState.from)}–${fmtDate(dashState.to)}${active ? ` · ${active} lisärajausta` : ''}${dashState.compare !== 'none' ? ' · vertailu' : ''}`));
     det.addEventListener('toggle', () => { filtersOpen = det.open; });
@@ -1200,7 +1241,7 @@ async function viewDashboard() {
           class: 'btn btn-sm ' + (dashState.from === f && dashState.to === to ? 'btn-primary' : 'btn-secondary'),
           onclick: () => { dashState.from = f; dashState.to = to; load(); } }, t))),
         h('div', { class: 'type-checks', role: 'group', 'aria-label': 'Kohtaamisen tyyppi' }, h('span', { class: 'label' }, 'Kohtaamisen tyyppi'),
-          typeBox('yksilo', 'Yksilökohtaaminen'), typeBox('ryhma', 'Ryhmä'))),
+          recordTypes().filter(t => t.active || (dashState.types || []).includes(t.key)).map(t => typeBox(t.key, t.label)))),
       // Vertailu pikavalintojen alle, Excel-vienti oikealle
       h('div', { class: 'dash-filter-row dash-filter-bottom' },
         h('div', { class: 'field cmp-field' }, h('label', { for: 'd-cmp' }, 'Vertailu'),
@@ -1223,7 +1264,10 @@ async function viewDashboard() {
     const cmpText = (k) => (cmpOn ? ` Vertailujakso ${prevLabel}: ${fmtNum(P[k])}.` : '');
     const kpi1 = h('div', { class: 'card kpi' }, h('div', { class: 'kpi-head' }, h('h2', null, 'Kohtaamiset yhteensä'),
         infoTip(`Kaikkien kirjausten kohtaamisten summa (ryhmäkirjaukset mukaan lukien). ${fmtNum(T.rows)} lomaketallennusta.${cmpText('encounters')}`)),
-      h('p', { class: 'kpi-value' }, fmtNum(T.encounters)), changeBadge(T.encounters, pv('encounters'), prevLabel));
+      h('p', { class: 'kpi-value' }, fmtNum(T.encounters)), changeBadge(T.encounters, pv('encounters'), prevLabel),
+      // Tavoittaminen tilastoidaan erikseen kohtaamisista
+      T.reach ? h('div', { class: 'kpi-anon' }, h('p', { class: 'kpi-note' }, 'Lisäksi tavoitettu ', h('strong', null, fmtNum(T.reach)),
+        ` henkilöä (${fmtNum(T.reach_rows)} ${T.reach_rows === 1 ? 'tilaisuus' : 'tilaisuutta'})`, cmpOn ? h('span', { class: 'muted' }, ` · vertailujaksolla ${fmtNum(P.reach)}`) : null)) : null);
     const kpi2 = h('div', { class: 'card kpi kpi-alt' }, h('div', { class: 'kpi-head' }, h('h2', null, 'Eri henkilöiden määrä (arvio)'),
         infoTip(`Arvio = tunnistetut asiakkaat (${fmtNum(T.identified)}) + ryhmien ilmoitetut osallistujat (${fmtNum(T.group_persons)}). `
           + `Täysin anonyymit kohtaamiset (${fmtNum(T.anonymous)}) eivät sisälly arvioon: yksilökohtaamiset ilman nimimerkkiä (${fmtNum(T.anon_individual)}) `
@@ -1235,8 +1279,11 @@ async function viewDashboard() {
           (() => { const el = h('span'); el.style.width = `${Math.round((T.anonymous_share || 0) * 100)}%`; return el; })()),
         h('p', { class: 'kpi-note' }, h('strong', null, `${fmtNum(T.anonymous)} / ${fmtNum(T.encounters)}`), ` kohtaamisesta (${fmtPct(T.anonymous_share)}) täysin anonyymejä – eivät sisälly arvioon`),
         h('p', { class: 'kpi-note sub' }, `yksilö ilman nimimerkkiä ${fmtNum(T.anon_individual)} · ryhmät ilman osallistujamäärää ${fmtNum(T.anon_group)}`)) : null);
+    // Kohtaamiset kirjaustyypeittäin (tavoittaminen ei ole kohtaamisia)
+    const typeParts = d.byType.filter(t => t.kind !== 'tavoittaminen').map((t, i) => ({ label: t.label || t.key, value: t.count, cls: 's' + ((i % 3) + 1) }));
     const donutCard = h('div', { class: 'card' }, h('div', { class: 'kpi-head' }, h('h2', null, 'Kohtaamisen tyyppi'),
-      infoTip('Kohtaamisten määrä yksilö- ja ryhmäkirjauksissa.')), donut([{ label: 'Yksilökohtaaminen', value: T.yksilo, cls: 's1' }, { label: 'Ryhmä', value: T.ryhma, cls: 's2' }]));
+      infoTip('Kohtaamisten määrä kirjaustyypeittäin. Tavoittaminen näytetään erikseen kohtaamisten kortissa.')),
+      donut(typeParts.length ? typeParts : [{ label: 'Yksi kohtaaminen', value: 0, cls: 's1' }]));
 
     const R = d.ratings;
     const ratingBlock = (title, r) => h('div', { class: 'rating-sum' }, h('p', { class: 'kpi-value small-kpi' }, fmtAvg(r.avg)),
@@ -1260,7 +1307,7 @@ async function viewDashboard() {
       h('div', { class: 'dash-row r2' },
         h('div', { class: 'card' }, h('div', { class: 'kpi-head' }, h('h2', null, 'Kohtaamisten määrä kuukausittain'),
           infoTip('Kohtaamiset kohtaamisen ajankohdan mukaan. Vie osoitin kaavion päälle nähdäksesi kuukauden luvut.')),
-          lineChart(fillMonths(d.monthly, d.period.from, d.period.to), dashState.types,
+          lineChart(fillMonths(d.monthly, d.period.from, d.period.to), [...new Set((dashState.types || recordTypes().map(t => t.key)).map(typeKind))],
             cmpOn ? { data: fillMonths(d.monthlyPrev, d.period.prevFrom, d.period.prevTo), label: `Vertailujakso ${prevLabel}` } : null)),
         h('div', { class: 'card' }, h('div', { class: 'kpi-head' }, h('h2', null, 'Kohtaamiset hankkeittain'),
           infoTip('Kohtaamisten määrä hankkeittain valituilla rajauksilla.')),
@@ -1522,6 +1569,7 @@ function adminTabs(active) {
   const t = (href, text) => h('a', { href, class: active === href ? 'active' : null }, text);
   return h('div', null, h('h1', null, 'Hallinta'), h('nav', { class: 'tabs' },
     p.manageQuestions ? t('#/hallinta/kysymykset', 'Kysymykset') : null,
+    p.manageQuestions ? t('#/hallinta/kirjaustyypit', 'Kirjaustyypit') : null,
     p.manageQuestions ? t('#/hallinta/ohjauspalvelut', 'Ohjauspalvelut') : null,
     p.manageProjects ? t('#/hallinta/hankkeet', 'Hankkeet') : null,
     p.manageUsers ? t('#/hallinta/kayttajat', 'Käyttäjät') : null,
@@ -1708,7 +1756,7 @@ async function viewQuestions() {
 
   function openEditor(q, projectId) {
     const isNew = !q;
-    q = q || { label: '', help: '', type: 'choice', options: ['', ''], required: false, applies_to: 'kaikki', active: true, project_id: projectId, answer_count: 0 };
+    q = q || { label: '', help: '', type: 'choice', options: ['', ''], required: false, applies: null, show_if: null, active: true, project_id: projectId, answer_count: 0 };
     const proj = projects.find(p => p.id === q.project_id);
     const label = h('input', { type: 'text', id: 'q-label', value: q.label });
     const key = h('input', { type: 'text', id: 'q-key', value: q.key || '', disabled: !isNew });
@@ -1717,7 +1765,32 @@ async function viewQuestions() {
     label.addEventListener('input', () => { if (isNew && !keyTouched) key.value = ((proj ? proj.code.toLowerCase() + '_' : '') + slug(label.value)).slice(0, 40); });
     const help = h('textarea', { id: 'q-help', value: q.help || '' });
     const type = h('select', { id: 'q-type', disabled: !isNew && q.answer_count > 0 }, Object.entries(QTYPES).map(([k, v]) => h('option', { value: k, selected: k === q.type }, v)));
-    const applies = h('select', { id: 'q-applies' }, Object.entries(APPLIES).map(([k, v]) => h('option', { value: k, selected: k === q.applies_to }, v)));
+    // Näytetään: kaikissa tai valituissa kirjaustyypeissä
+    const typeChecks = recordTypes().map(t => ({ key: t.key, el: h('input', { type: 'checkbox', checked: !q.applies || q.applies.includes(t.key) }) }));
+    const appliesBox = h('div', { class: 'checks', role: 'group', 'aria-labelledby': 'l-applies' },
+      typeChecks.map(c => h('label', { class: 'opt' }, c.el, h('span', null, typeLabel(c.key), recordType(c.key).active ? '' : ' (ei käytössä)'))));
+    // Ehto: näytetään vain, jos toisen (valinta)kysymyksen vastaus tai toteuttajan rooli on jokin valituista
+    const condSources = [{ key: '_toteuttaja', label: 'Kohtaamisen toteuttajan rooli', options: state.me.recorderRoles },
+      ...questions.filter(x => ['choice', 'multichoice'].includes(x.type) && x.key !== q.key && (x.project_id == null || x.project_id === q.project_id))
+        .map(x => ({ key: x.key, label: x.label, options: x.options }))];
+    let cond = q.show_if ? { key: q.show_if.key, values: [...q.show_if.values] } : null;
+    const condBox = h('div');
+    const drawCond = () => {
+      const srcSel = h('select', { id: 'q-cond' }, h('option', { value: '' }, 'Aina (ei ehtoa)'),
+        condSources.map(c => h('option', { value: c.key, selected: cond && cond.key === c.key }, c.label)));
+      srcSel.addEventListener('change', () => { cond = srcSel.value ? { key: srcSel.value, values: [] } : null; drawCond(); });
+      const src = cond && condSources.find(c => c.key === cond.key);
+      condBox.replaceChildren(...[srcSel,
+        src ? h('div', { class: 'checks cond-values', role: 'group', 'aria-label': 'Ehdon arvot' }, (src.options || []).map(o => {
+          const el = h('input', { type: 'checkbox', checked: cond.values.includes(String(o)) });
+          el.addEventListener('change', () => { cond.values = el.checked ? [...cond.values, String(o)] : cond.values.filter(v => v !== String(o)); });
+          return h('label', { class: 'opt' }, el, h('span', null, String(o))); })) : null].filter(Boolean));
+    };
+    drawCond();
+    const minValue = h('input', { type: 'number', id: 'q-min', class: 'input-narrow', step: '1', value: q.min_value ?? 0 });
+    const minField = h('div', { class: 'field' }, h('label', { for: 'q-min' }, 'Pienin sallittu arvo'), minValue);
+    const syncMin = () => { minField.hidden = type.value !== 'number'; };
+    type.addEventListener('change', syncMin); syncMin();
     const required = h('input', { type: 'checkbox', checked: q.required });
     const suggest = h('input', { type: 'checkbox', checked: !!q.suggest });
     const suggestLabel = h('label', { class: 'switch' }, suggest, 'Täydennysehdotukset');
@@ -1749,9 +1822,11 @@ async function viewQuestions() {
       h('div', { class: 'row' },
         h('div', { class: 'field' }, h('label', { for: 'q-type' }, 'Tyyppi'), type,
           !isNew && q.answer_count ? h('p', { class: 'help small' }, 'Tyyppiä ei voi muuttaa, koska kysymykseen on vastattu.') : null),
-        h('div', { class: 'field' }, h('label', { for: 'q-applies' }, 'Näytetään'), applies),
         h('div', { class: 'field' }, h('label', { for: 'q-key' }, 'Pysyvä tunniste'), key, h('p', { class: 'help small' }, 'Raportoinnin sarakenimi. Ei muutu myöhemmin.'))),
-      optField,
+      h('div', { class: 'field' }, h('div', { class: 'label', id: 'l-applies' }, 'Näytetään kirjaustyypeissä'), appliesBox),
+      h('div', { class: 'field' }, h('label', { for: 'q-cond' }, 'Näytetään vain, jos'),
+        h('p', { class: 'help' }, 'Esim. jatkokysymys vain, kun edelliseen on vastattu ”Kyllä”, tai vain ammattilaisten kirjauksissa.'), condBox),
+      optField, minField,
       q.key !== 'sijainti' ? h('div', { class: 'field' }, h('label', { for: 'q-dmode' }, 'Digialustalla tapahtuneet kohtaamiset'),
         h('p', { class: 'help' }, 'Esim. kaupunkia ja kadunnimeä ei kysytä, kun kohtaamisen sijainniksi valitaan digialusta.'), dmode) : null,
       h('div', { class: 'actions field' }, h('label', { class: 'switch' }, required, 'Pakollinen'), suggestLabel,
@@ -1759,7 +1834,11 @@ async function viewQuestions() {
       msg,
       h('div', { class: 'actions' },
         h('button', { class: 'btn btn-primary', type: 'button', onclick: async () => {
-          const body = { key: key.value, project_id: q.project_id ?? null, label: label.value, help: help.value, type: type.value, applies_to: applies.value,
+          const chosen = typeChecks.filter(c => c.el.checked).map(c => c.key);
+          if (!chosen.length) { msg.textContent = 'Valitse vähintään yksi kirjaustyyppi.'; msg.hidden = false; return; }
+          if (cond && !cond.values.length) { msg.textContent = 'Valitse ehdolle vähintään yksi arvo tai ”Aina”.'; msg.hidden = false; return; }
+          const body = { key: key.value, project_id: q.project_id ?? null, label: label.value, help: help.value, type: type.value,
+            applies: chosen.length === typeChecks.length ? null : chosen, show_if: cond, min_value: type.value === 'number' ? Number(minValue.value || 0) : null,
             required: required.checked, active: active.checked, options: opts, suggest: type.value === 'text' && suggest.checked,
             digital_mode: q.key === 'sijainti' ? 'show' : dmode.value, digital_value: null };
           try {
@@ -1785,7 +1864,8 @@ async function viewQuestions() {
     h('div', { class: 'page-head' }, h('h2', null, title), h('button', { class: 'btn btn-secondary btn-sm', type: 'button', onclick: () => openEditor(null, pid) }, '+ Lisää kysymys')),
     list.length ? list.map((q, i) => h('div', { class: 'q-item' + (q.active ? '' : ' inactive') },
       h('div', { class: 'q-main' }, h('strong', null, q.label), q.required ? h('span', { class: 'req' }, ' *') : null,
-        h('div', { class: 'q-meta' }, h('span', { class: 'badge' }, QTYPES[q.type]), q.applies_to !== 'kaikki' ? h('span', { class: 'badge blue' }, APPLIES[q.applies_to]) : null,
+        h('div', { class: 'q-meta' }, h('span', { class: 'badge' }, QTYPES[q.type]), q.applies ? h('span', { class: 'badge blue' }, 'Vain: ' + q.applies.map(typeLabel).join(', ')) : null,
+          q.show_if ? h('span', { class: 'badge' }, 'Ehto: ' + (q.show_if.key === '_toteuttaja' ? 'toteuttajan rooli' : ((questions.find(x => x.key === q.show_if.key) || {}).label || q.show_if.key).slice(0, 40) + ' = ' + q.show_if.values.join(' / '))) : null,
           !q.active ? h('span', { class: 'badge grey' }, 'Ei käytössä') : null, h('span', { class: 'badge grey' }, `${fmtNum(q.answer_count)} vastausta`),
           q.digital_mode === 'hide' ? h('span', { class: 'badge' }, 'Piilotetaan digialustalla') : null,
           h('span', { class: 'small muted' }, q.key))),
@@ -1796,11 +1876,60 @@ async function viewQuestions() {
       : h('p', { class: 'muted small' }, 'Ei hankekohtaisia kysymyksiä.'));
 
   $app.replaceChildren(adminTabs('#/hallinta/kysymykset'),
-    h('div', { class: 'notice info' }, 'Lomakkeen kiinteät perustiedot (ajankohta, hanke, kirjaajan rooli, yksilö/ryhmä, kohtaamisten ja osallistujien määrä, asiakastunniste ja palveluohjaus) ovat aina mukana. Digipalvelun hankkeissa kysymys voidaan piilottaa tai täyttää automaattisesti (Hallinta → Hankkeet → Digipalvelu). ',
+    h('div', { class: 'notice info' }, 'Lomakkeen kiinteät perustiedot (ajankohta, hanke, toteuttaja, kirjaustyyppi, määrät ja asiakastunniste) ovat aina mukana. Kirjaustyyppejä hallitaan välilehdellä Kirjaustyypit. ',
       'Kysymyksiä ei poisteta, vaan ne otetaan pois käytöstä – näin aiempien vuosien raportointi säilyy ehjänä.'),
     editorBox,
     groupBlock('Yhteiset kysymykset', null, questions.filter(q => q.project_id == null)),
     ...projects.map(p => groupBlock(p.name + (p.active ? '' : ' (ei käytössä)'), p.id, questions.filter(q => q.project_id === p.id))));
+}
+
+// --- Kirjaustyypit ("Valitse, mitä raportoit")
+async function viewRecordTypes() {
+  $app.classList.add('container');
+  const { types, kinds } = await api('/record-types');
+  const editorBox = h('div');
+  function openEditor(t) {
+    const isNew = !t;
+    t = t || { label: '', description: '', kind: 'yksilo', count_label: '', active: true };
+    const label = h('input', { type: 'text', id: 't-label', value: t.label, maxlength: '60' });
+    const desc = h('input', { type: 'text', id: 't-desc', value: t.description || '', maxlength: '120' });
+    const kind = h('select', { id: 't-kind', disabled: !isNew }, Object.entries(kinds).map(([k, v]) => h('option', { value: k, selected: k === t.kind }, v)));
+    const countL = h('input', { type: 'text', id: 't-count', value: t.count_label || '', maxlength: '60', placeholder: 'esim. Tavoitettujen määrä' });
+    const countField = h('div', { class: 'field' }, h('label', { for: 't-count' }, 'Määräkentän otsikko'), countL);
+    const syncKind = () => { countField.hidden = kind.value === 'yksilo'; };
+    kind.addEventListener('change', syncKind); syncKind();
+    const active = h('input', { type: 'checkbox', checked: t.active });
+    const msg = h('div', { class: 'notice err', hidden: true });
+    editorBox.replaceChildren(h('div', { class: 'card editor' }, h('h2', null, isNew ? 'Uusi kirjaustyyppi' : 'Muokkaa kirjaustyyppiä'),
+      h('div', { class: 'row' },
+        h('div', { class: 'field' }, h('label', { for: 't-label' }, 'Nimi lomakkeella'), label),
+        h('div', { class: 'field' }, h('label', { for: 't-desc' }, 'Lyhyt kuvaus'), desc)),
+      h('div', { class: 'field' }, h('label', { for: 't-kind' }, 'Toimintatapa'),
+        h('p', { class: 'help' }, isNew ? 'Määrää lomakkeen määräkentät ja sen, miten kirjaus lasketaan tilastoissa. Ei voi muuttaa myöhemmin.' : 'Toimintatapaa ei voi muuttaa, koska se vaikuttaisi aiempien kirjausten tilastointiin.'), kind),
+      countField,
+      !isNew ? h('div', { class: 'field' }, h('label', { class: 'switch' }, active, 'Käytössä lomakkeella'),
+        h('p', { class: 'help' }, 'Käytöstä poistetun tyypin vanhat kirjaukset säilyvät raporteissa.')) : null,
+      msg, h('div', { class: 'actions' },
+        h('button', { class: 'btn btn-primary', type: 'button', onclick: async () => {
+          const body = { label: label.value, description: desc.value, kind: kind.value, count_label: countL.value, active: active.checked };
+          try {
+            if (isNew) await api('/record-types', { method: 'POST', body }); else await api('/record-types/' + t.key, { method: 'PUT', body });
+            state.form = null; await loadMe(); toast('Tallennettu.'); viewRecordTypes();
+          } catch (ex) { msg.textContent = ex.message; msg.hidden = false; }
+        } }, 'Tallenna'),
+        h('button', { class: 'btn btn-secondary', type: 'button', onclick: () => editorBox.replaceChildren() }, 'Peruuta'))));
+    label.focus();
+  }
+  $app.replaceChildren(adminTabs('#/hallinta/kirjaustyypit'),
+    h('div', { class: 'page-head' }, h('p', { class: 'muted' }, 'Kirjaustyypit näkyvät lomakkeella kohdassa ”Valitse, mitä raportoit”. Kysymyksen voi rajata koskemaan vain tiettyjä tyyppejä (Kysymykset-välilehti).'),
+      h('button', { class: 'btn btn-primary', type: 'button', onclick: () => openEditor(null) }, '+ Uusi kirjaustyyppi')),
+    editorBox,
+    h('div', { class: 'table-wrap' }, h('table', null,
+      h('thead', null, h('tr', null, h('th', null, 'Nimi'), h('th', null, 'Toimintatapa'), h('th', { class: 'num' }, 'Kirjauksia'), h('th', null, 'Tila'))),
+      h('tbody', null, types.map(t => h('tr', { class: 'clickable', tabindex: '0', onclick: () => openEditor(t), onkeydown: (e) => { if (e.key === 'Enter') openEditor(t); } },
+        h('td', null, h('strong', null, t.label), t.description ? h('span', { class: 'small muted block' }, t.description) : null),
+        h('td', { class: 'small' }, kinds[t.kind]), h('td', { class: 'num' }, fmtNum(t.encounter_rows)),
+        h('td', null, t.active ? h('span', { class: 'badge green' }, 'Käytössä') : h('span', { class: 'badge grey' }, 'Ei käytössä'))))))));
 }
 
 // --- Testidata
@@ -1875,7 +2004,7 @@ async function viewAudit() {
   const LABELS = { login: 'Kirjautuminen', login_failed: 'Epäonnistunut kirjautuminen', password_changed: 'Salasana vaihdettu', encounter_create: 'Kirjaus luotu',
     encounter_update: 'Kirjaus korjattu', encounter_delete: 'Kirjaus poistettu', export: 'Excel-vienti', user_create: 'Käyttäjä luotu', user_update: 'Käyttäjä muokattu',
     user_reset_password: 'Salasana nollattu', demo_create: 'Testidataa luotu', demo_delete: 'Testidata poistettu', project_create: 'Hanke luotu', project_update: 'Hanke muokattu', question_create: 'Kysymys luotu', question_update: 'Kysymys muokattu',
-    feature_enable: 'Toiminto otettu käyttöön', mfa_failed: 'Väärä tunnistautumiskoodi', mfa_enrolled: 'Todennussovellus otettu käyttöön', user_reset_mfa: 'Todennussovellus nollattu', feature_disable: 'Toiminto piilotettu' };
+    record_type_create: 'Kirjaustyyppi luotu', record_type_update: 'Kirjaustyyppi muokattu', feature_enable: 'Toiminto otettu käyttöön', mfa_failed: 'Väärä tunnistautumiskoodi', mfa_enrolled: 'Todennussovellus otettu käyttöön', user_reset_mfa: 'Todennussovellus nollattu', feature_disable: 'Toiminto piilotettu' };
   $app.replaceChildren(adminTabs('#/hallinta/loki'),
     h('p', { class: 'muted' }, '200 viimeisintä tapahtumaa.'),
     h('div', { class: 'table-wrap' }, h('table', null,

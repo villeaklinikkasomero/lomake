@@ -75,6 +75,22 @@ Kirjauslistassa ja kirjauksen tiedoissa ei näy nimimerkkejä: niitä ei tallenn
 
 Kohtaamisen sijainti valitaan jokaisessa kirjauksessa, koska myös digihankkeilla on livekohtaamisia ja päinvastoin. Kun sijainniksi valitaan **Digialustalla**, kaupunkia ja kadunnimeä ei kysytä eikä tallenneta. Asetuksen voi tehdä mille tahansa kysymykselle kohdassa Hallinta → Kysymykset → **Digialustalla tapahtuneet kohtaamiset**: *Näytetään aina* tai *Piilotetaan, kun sijainti on ”Digialustalla”*.
 
+## Kirjaustyypit (admin)
+
+Lomakkeen kohdan *Valitse, mitä raportoit* vaihtoehdot ovat ylläpidettäviä (Hallinta → Kirjaustyypit). Valmiina on kolme tyyppiä: *Yksi kohtaaminen*, *Ryhmä tai useita kohtaamisia* ja *Tavoittaminen* (koulutus, luento, webinaari tai muu yleisötilaisuus). Tyypille valitaan toimintatapa:
+
+| Toimintatapa | Lomakkeella | Tilastoissa |
+|---|---|---|
+| Yksi kohtaaminen | määrä 1, asiakastunniste | kohtaamiset |
+| Ryhmä | kohtaamisten ja osallistujien määrä | kohtaamiset |
+| Tavoittaminen | tavoitettujen määrä | **erikseen** (tavoitetut eivät ole kohtaamisia) |
+
+Tyyppejä ei poisteta vaan ne otetaan pois käytöstä, jolloin vanhat kirjaukset säilyvät. Toimintatapaa ei voi muuttaa jälkikäteen.
+
+**Kysymysten näkyvyys:** kysymys voidaan rajata koskemaan vain tiettyjä kirjaustyyppejä ja näyttää ehdollisesti. Ehto voi olla *toisen kysymyksen vastaus* (esim. Völjyn asumiskysymykset vain, kun asumiseen liittyvää tukea annettiin, tai Osiksen lisäkysymykset toimintamuodon mukaan) tai *kohtaamisen toteuttajan rooli* (esim. Päihdelinkin arviot vain ammattilaisten kirjauksissa). Piilotettua kysymystä ei vaadita eikä tallenneta. Lukukysymyksille voi asettaa pienimmän sallitun arvon.
+
+**Vuoden 2027 kysymykset** ovat määrittelytaulukon mukaiset: Tavoittamisen muoto, uusi yhteinen kysymys *Mitä myönteisiä seurauksia kohtaamisella arvioit olevan asiakkaalle?* ja hankekohtaiset kysymykset. Ak21:n aiempi toimintamuotokysymys on otettu pois käytöstä, mutta sen vastaukset säilyvät. Osikselle lisättiin kysymys *Mitä Osiksen toimintamuotoa kirjaus koskee?*, koska taulukon lisäkysymykset riippuvat toimintamuodosta.
+
 ## Kysymysten ylläpito (admin)
 
 Kysymyksiä voi lisätä, muokata, järjestää ja ottaa pois käytöstä. Kysymyksiä **ei poisteta**, ja jokaisella kysymyksellä on pysyvä tunniste (`key`). Näin aiempien vuosien raportointi säilyy, vaikka lomake muuttuisi. Kysymyksen tyyppiä ei voi muuttaa sen jälkeen, kun kysymykseen on vastattu. Tyypit ovat lyhyt teksti, pitkä teksti, luku, valinta (yksi tai useita), arvio 1–5 ja päivämäärä.

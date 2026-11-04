@@ -295,7 +295,7 @@ function pathStats({ from, to, projectIds, projectId }) {
   const W = encWhere.join(' AND ');
 
   const coverage = db.prepare(`SELECT COUNT(*) yksilo_rows, COUNT(e.client_id) with_client, COUNT(DISTINCT e.client_id) clients
-                               FROM encounters e WHERE ${W} AND e.encounter_type = 'yksilo'`).get(...p);
+                               FROM encounters e WHERE ${W} AND e.kind = 'yksilo'`).get(...p);
 
   // Asiakkaat, jotka kohdattiin rajauksella; heidän historiansa hankkeessa loppupäivään asti.
   // Asiakas kuuluu aina yhteen hankkeeseen, joten hankkeiden välisiä lukuja ei ole.

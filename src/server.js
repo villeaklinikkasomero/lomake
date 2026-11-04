@@ -8,7 +8,7 @@ const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 const bcrypt = require('bcryptjs');
 
-const { db, ensureAdmin, audit, RECORDER_ROLES, DIGITAL_LOCATION, FEATURES, featureEnabled, setFeature, features } = require('./db');
+const { db, ensureAdmin, audit, RECORDER_ROLES, RECORD_KINDS, DIGITAL_LOCATION, FEATURES, featureEnabled, setFeature, features } = require('./db');
 const { ROLES, PERMISSIONS, DEFAULT_RECORDER_ROLE_INDEX, can, scope, allowsEncounter } = require('./permissions');
 const { buildWorkbook } = require('./export');
 const demo = require('./demo');
@@ -114,12 +114,27 @@ function sensitiveHit(text) {
   return null;
 }
 
-function parseQ(q) { return { ...q, options: q.options ? JSON.parse(q.options) : null, required: !!q.required, active: !!q.active, free_text_warning: !!q.free_text_warning, suggest: !!q.suggest }; }
+function parseQ(q) {
+  return { ...q, options: q.options ? JSON.parse(q.options) : null, required: !!q.required, active: !!q.active, free_text_warning: !!q.free_text_warning,
+    suggest: !!q.suggest, applies: q.applies ? JSON.parse(q.applies) : null, show_if: q.show_if ? JSON.parse(q.show_if) : null };
+}
+
+// Kirjaustyypit (ylläpidettävät). kind määrää määräkentät ja tilastoinnin.
+const recordTypes = (all) => db.prepare(`SELECT * FROM record_types ${all ? '' : 'WHERE active = 1'} ORDER BY sort, label`).all();
+const recordType = (key) => db.prepare('SELECT * FROM record_types WHERE key = ?').get(String(key || ''));
 
 function activeQuestionsFor(projectId, type) {
   return db.prepare(`SELECT * FROM questions WHERE active = 1 AND (project_id IS NULL OR project_id = ?)
-                     AND applies_to IN ('kaikki', ?) ORDER BY project_id IS NOT NULL, sort, id`)
+                     AND (applies IS NULL OR EXISTS (SELECT 1 FROM json_each(questions.applies) WHERE value = ?))
+                     ORDER BY project_id IS NOT NULL, sort, id`)
     .all(projectId, type).map(parseQ);
+}
+// Ehdollinen kysymys: näytetään vain, jos toisen kysymyksen vastaus (tai toteuttajan rooli) on jokin arvoista
+function conditionMet(cond, given, recorderRole) {
+  if (!cond || !cond.key) return true;
+  const v = cond.key === '_toteuttaja' ? recorderRole : given[cond.key];
+  const vals = Array.isArray(v) ? v : v == null || v === '' ? [] : [String(v)];
+  return vals.some(x => (cond.values || []).includes(x));
 }
 
 // Validoi lomaketallennuksen. Palauttaa { data, answers } tai { error }.
@@ -134,20 +149,26 @@ function validateEncounter(body, user, projectIds, existing) {
   if (body.encounter_date > today()) return { error: 'Kohtaamisen ajankohta ei voi olla tulevaisuudessa.' };
   if (body.encounter_date < '2020-01-01') return { error: 'Tarkista kohtaamisen ajankohta.' };
 
-  const type = body.encounter_type;
-  if (!['yksilo', 'ryhma'].includes(type)) return { error: 'Valitse, mitä raportoit.' };
+  const type = String(body.encounter_type || '');
+  const rt = recordType(type);
+  // Käytöstä poistettu tyyppi kelpaa vain korjattaessa kirjausta, jolla tyyppi jo on
+  if (!rt || (!rt.active && !(existing && existing.encounter_type === type))) return { error: 'Valitse, mitä raportoit.' };
+  const kind = rt.kind;
 
   // Selväkielistä nimimerkkiä ei tallenneta: asiakastunniste käsitellään clients.js:ssä tiivisteenä.
   let encounterCount, personCount;
   const pseudonym = null;
-  if (type === 'yksilo') {
+  if (kind === 'yksilo') {
     encounterCount = 1; personCount = 1;
   } else {
+    const what = rt.count_label || (kind === 'tavoittaminen' ? 'Tavoitettujen määrä' : 'Kohtaamisten määrä');
     encounterCount = toInt(body.encounter_count);
-    personCount = toInt(body.person_count);
-    if (!Number.isInteger(encounterCount) || encounterCount < 1 || encounterCount > 9999) return { error: 'Kohtaamisten määrä on oltava 1–9999.' };
+    personCount = kind === 'ryhma' ? toInt(body.person_count) : null;
+    if (!Number.isInteger(encounterCount) || encounterCount < 1 || encounterCount > 9999) return { error: `${what} on oltava 1–9999.` };
     if (personCount !== null && (!Number.isInteger(personCount) || personCount < 1 || personCount > 9999)) return { error: 'Osallistujien määrä on oltava 1–9999 tai tyhjä.' };
   }
+  const performer = resolvePerformer(body.performer, user, projectId, existing);
+  if (performer.error) return performer;
 
   const answers = [];
   const given = body.answers && typeof body.answers === 'object' ? body.answers : {};
@@ -155,6 +176,7 @@ function validateEncounter(body, user, projectIds, existing) {
   const onDigital = String(given.sijainti || '').trim().toLowerCase() === DIGITAL_LOCATION.toLowerCase();
   for (const q of activeQuestionsFor(projectId, type)) {
     if (onDigital && q.digital_mode === 'hide') continue;
+    if (!conditionMet(q.show_if, given, performer.recorder_role)) continue;   // piilotettua ei kysytä eikä tallenneta
     let v = given[q.key];
     const empty = v == null || v === '' || (Array.isArray(v) && v.length === 0);
     if (empty) { if (q.required) return { error: `Vastaa kysymykseen: ${q.label}` }; continue; }
@@ -166,7 +188,11 @@ function validateEncounter(body, user, projectIds, existing) {
         if (hit) return { error: `Kenttä "${q.label}" näyttää sisältävän ${hit} näyttävää tietoa. Älä kirjaa asiakkaan tunnistetietoja.` };
         break;
       }
-      case 'number': { const n = Number(v); if (!Number.isFinite(n)) return { error: `Anna luku: ${q.label}` }; v = String(n); break; }
+      case 'number': {
+        const n = Number(v), min = q.min_value ?? 0;
+        if (!Number.isInteger(n) || n < min || n > 99999) return { error: `Anna kokonaisluku (vähintään ${min}): ${q.label}` };
+        v = String(n); break;
+      }
       case 'rating': { const n = Number(v); if (!q.options.map(Number).includes(n)) return { error: `Virheellinen arvio: ${q.label}` }; v = String(n); break; }
       case 'choice': if (!q.options.includes(v)) return { error: `Virheellinen valinta: ${q.label}` }; break;
       case 'multichoice': {
@@ -178,11 +204,8 @@ function validateEncounter(body, user, projectIds, existing) {
     answers.push({ question_id: q.id, value: v });
   }
 
-  const performer = resolvePerformer(body.performer, user, projectId, existing);
-  if (performer.error) return performer;
-
   return {
-    data: { project_id: projectId, encounter_date: body.encounter_date, encounter_type: type,
+    data: { project_id: projectId, encounter_date: body.encounter_date, encounter_type: type, kind,
             encounter_count: encounterCount, person_count: personCount, pseudonym, ...performer },
     answers,
   };
@@ -444,6 +467,7 @@ app.get('/api/me', requireAuth, (req, res) => {
     roleDescriptions: Object.fromEntries(Object.entries(ROLES).map(([k, v]) => [k, v.description])),
     today: today(),
     clientTracking: clients.ENABLED,
+    recordTypes: recordTypes(true).map(({ key, label, description, kind, count_label, active }) => ({ key, label, description, kind, count_label, active: !!active })),
   });
 });
 
@@ -466,7 +490,7 @@ app.get('/api/form', requireAuth, (req, res) => {
   const qs = db.prepare(`SELECT * FROM questions WHERE active = 1 AND (project_id IS NULL OR project_id IN (${req.projectIds.map(() => '?').join(',') || 'NULL'}))
                          ORDER BY project_id IS NOT NULL, sort, id`).all(...req.projectIds).map(parseQ);
   const services = db.prepare('SELECT id, name FROM referral_services WHERE active = 1 ORDER BY sort, name').all();
-  const members = Object.fromEntries(req.projectIds.map(pid => [pid, projectMembers(pid).filter(m => m.id !== req.user.id).map(({ id, name }) => ({ id, name }))]));
+  const members = Object.fromEntries(req.projectIds.map(pid => [pid, projectMembers(pid).filter(m => m.id !== req.user.id).map(({ id, name, role }) => ({ id, name, recorderRole: RECORDER_ROLES[DEFAULT_RECORDER_ROLE_INDEX[role]] }))]));
   res.json({ questions: qs, referralServices: featureEnabled('paths') ? services : [], clientTracking: clients.ENABLED, members, digitalLocation: DIGITAL_LOCATION });
 });
 
@@ -475,12 +499,12 @@ app.post('/api/encounters', requireAuth, requirePerm('record'), (req, res) => {
   if (v.error) return bad(res, v.error);
   // Palveluohjausten seuranta kuuluu Asiakaspolut-toimintoon: piilotettuna ohjauksia ei kirjata
   const body = featureEnabled('paths') ? req.body : { ...req.body, referrals: [], referral_updates: [] };
-  const cp = clients.prepareClientPart(body, v.data.encounter_type, sensitiveHit, v.data.project_id);
+  const cp = clients.prepareClientPart(body, v.data.kind, sensitiveHit, v.data.project_id);
   if (cp.error) return bad(res, cp.error);
   const id = crypto.randomUUID();
   db.transaction(() => {
-    db.prepare(`INSERT INTO encounters (id, project_id, encounter_date, encounter_type, encounter_count, person_count, pseudonym, recorder_role, created_by, performed_by, performer_type)
-                VALUES (@id, @project_id, @encounter_date, @encounter_type, @encounter_count, @person_count, @pseudonym, @recorder_role, @created_by, @performed_by, @performer_type)`)
+    db.prepare(`INSERT INTO encounters (id, project_id, encounter_date, encounter_type, kind, encounter_count, person_count, pseudonym, recorder_role, created_by, performed_by, performer_type)
+                VALUES (@id, @project_id, @encounter_date, @encounter_type, @kind, @encounter_count, @person_count, @pseudonym, @recorder_role, @created_by, @performed_by, @performer_type)`)
       .run({ id, ...v.data, created_by: req.user.id });
     const ins = db.prepare('INSERT INTO encounter_answers (encounter_id, question_id, value) VALUES (?, ?, ?)');
     for (const a of v.answers) ins.run(id, a.question_id, a.value);
@@ -498,13 +522,14 @@ app.get('/api/encounters', requireAuth, (req, res) => {
   if (isDate(req.query.from)) { where.push('e.encounter_date >= ?'); params.push(req.query.from); }
   if (isDate(req.query.to)) { where.push('e.encounter_date <= ?'); params.push(req.query.to); }
   if (req.query.project_id) { where.push('e.project_id = ?'); params.push(Number(req.query.project_id)); }
-  if (['yksilo', 'ryhma'].includes(req.query.type)) { where.push('e.encounter_type = ?'); params.push(req.query.type); }
+  if (req.query.type && recordType(req.query.type)) { where.push('e.encounter_type = ?'); params.push(String(req.query.type)); }
   if (req.query.created_by && scope(req.user, 'viewScope') !== 'own') { where.push('(e.created_by = ? OR e.performed_by = ?)'); params.push(Number(req.query.created_by), Number(req.query.created_by)); }
   const limit = Math.min(Number(req.query.limit) || 50, 200);
   const offset = Math.max(Number(req.query.offset) || 0, 0);
   const whereSql = where.join(' AND ');
-  const totals = db.prepare(`SELECT COUNT(*) rows, COALESCE(SUM(encounter_count),0) encounters FROM encounters e WHERE ${whereSql}`).get(...params);
-  const rows = db.prepare(`SELECT e.id, e.encounter_date, e.encounter_type, e.encounter_count, e.person_count, e.created_at, e.updated_at, e.is_test,
+  const totals = db.prepare(`SELECT COUNT(*) rows, COALESCE(SUM(CASE WHEN kind <> 'tavoittaminen' THEN encounter_count END),0) encounters,
+      COALESCE(SUM(CASE WHEN kind = 'tavoittaminen' THEN encounter_count END),0) reach FROM encounters e WHERE ${whereSql}`).get(...params);
+  const rows = db.prepare(`SELECT e.id, e.encounter_date, e.encounter_type, e.kind, e.encounter_count, e.person_count, e.created_at, e.updated_at, e.is_test,
                                   e.project_id, e.created_by, e.performed_by, e.performer_type, p.name project_name, u.name created_by_name, pu.name performed_by_name
                            FROM encounters e JOIN projects p ON p.id = e.project_id JOIN users u ON u.id = e.created_by LEFT JOIN users pu ON pu.id = e.performed_by
                            WHERE ${whereSql} ORDER BY e.encounter_date DESC, e.created_at DESC, e.rowid DESC LIMIT ? OFFSET ?`).all(...params, limit, offset);
@@ -512,7 +537,7 @@ app.get('/api/encounters', requireAuth, (req, res) => {
     r.canEdit = allowsEncounter(req.user, 'editScope', r, req.projectIds);
     r.canDelete = allowsEncounter(req.user, 'deleteScope', r, req.projectIds);
   }
-  res.json({ rows, total: totals.rows, totalEncounters: totals.encounters });
+  res.json({ rows, total: totals.rows, totalEncounters: totals.encounters, totalReach: totals.reach });
 });
 
 function loadEncounter(id) {
@@ -546,7 +571,7 @@ app.put('/api/encounters/:id', requireAuth, (req, res) => {
   const v = validateEncounter(req.body, req.user, req.projectIds, e);
   if (v.error) return bad(res, v.error);
   db.transaction(() => {
-    db.prepare(`UPDATE encounters SET project_id=@project_id, encounter_date=@encounter_date, encounter_type=@encounter_type,
+    db.prepare(`UPDATE encounters SET project_id=@project_id, encounter_date=@encounter_date, encounter_type=@encounter_type, kind=@kind,
                 encounter_count=@encounter_count, person_count=@person_count,
                 performed_by=@performed_by, performer_type=@performer_type, recorder_role=@recorder_role,
                 updated_by=@uid, updated_at=datetime('now') WHERE id=@id`).run({ ...v.data, uid: req.user.id, id: e.id });
@@ -597,10 +622,11 @@ app.get('/api/staff', requireAuth, (req, res) => {
   const f = staffFilters(req);
   const wr = ratingQ('tyontekijan_arvio'), cr = ratingQ('asiakkaan_arvio');
   const stats = db.prepare(`
-    SELECT e.performed_by user_id, COUNT(*) rows, SUM(e.encounter_count) encounters,
-           SUM(e.encounter_type = 'yksilo') yksilo_rows,
-           SUM(e.encounter_type = 'ryhma') ryhma_rows,
-           COALESCE(SUM(CASE WHEN e.encounter_type = 'ryhma' THEN e.encounter_count END), 0) ryhma_encounters,
+    SELECT e.performed_by user_id, COUNT(*) rows, COALESCE(SUM(CASE WHEN e.kind <> 'tavoittaminen' THEN e.encounter_count END), 0) encounters,
+           COALESCE(SUM(CASE WHEN e.kind = 'tavoittaminen' THEN e.encounter_count END), 0) reach,
+           SUM(e.kind = 'yksilo') yksilo_rows,
+           SUM(e.kind = 'ryhma') ryhma_rows,
+           COALESCE(SUM(CASE WHEN e.kind = 'ryhma' THEN e.encounter_count END), 0) ryhma_encounters,
            COUNT(DISTINCT e.encounter_date) active_days, MAX(e.encounter_date) last_date, MAX(e.created_at) last_saved,
            AVG(CAST(w.value AS REAL)) worker_rating, AVG(CAST(c.value AS REAL)) client_rating, COUNT(c.value) client_rating_n
     FROM encounters e
@@ -611,7 +637,7 @@ app.get('/api/staff', requireAuth, (req, res) => {
   const ids = new Set([...staffUserIds(req), ...byUser.keys()]);
   if (!ids.size) return res.json({ rows: [], totals: { rows: 0, encounters: 0 } });
   const users = db.prepare(`SELECT id, name, role, recorder_role, active, is_test FROM users WHERE id IN (${[...ids].map(() => '?').join(',')})`).all(...ids);
-  const rows = users.map(u => ({ ...u, rows: 0, encounters: 0, yksilo_rows: 0, ryhma_rows: 0, ryhma_encounters: 0, active_days: 0,
+  const rows = users.map(u => ({ ...u, rows: 0, encounters: 0, reach: 0, yksilo_rows: 0, ryhma_rows: 0, ryhma_encounters: 0, active_days: 0,
     last_date: null, last_saved: null, worker_rating: null, client_rating: null, client_rating_n: 0, ...(byUser.get(u.id) || {}) }))
     .sort((a, b) => b.encounters - a.encounters || a.name.localeCompare(b.name, 'fi'));
   const totals = rows.reduce((t, r) => ({ rows: t.rows + r.rows, encounters: t.encounters + r.encounters }), { rows: 0, encounters: 0 });
@@ -628,10 +654,11 @@ app.get('/api/staff/:id', requireAuth, (req, res) => {
   if (!visible) return bad(res, 'Työntekijää ei löydy.', 404);
   const where = `e.performed_by = ? AND ${f.sql}`; const params = [id, ...f.params];
   const wr = ratingQ('tyontekijan_arvio'), cr = ratingQ('asiakkaan_arvio');
-  const kpi = db.prepare(`SELECT COUNT(*) rows, COALESCE(SUM(e.encounter_count), 0) encounters,
-      COALESCE(SUM(e.encounter_type = 'yksilo'), 0) yksilo_rows, COALESCE(SUM(e.encounter_type = 'ryhma'), 0) ryhma_rows,
-      COALESCE(SUM(CASE WHEN e.encounter_type = 'ryhma' THEN e.encounter_count END), 0) ryhma_encounters,
-      COALESCE(SUM(CASE WHEN e.encounter_type = 'ryhma' THEN e.person_count END), 0) ryhma_persons,
+  const kpi = db.prepare(`SELECT COUNT(*) rows, COALESCE(SUM(CASE WHEN e.kind <> 'tavoittaminen' THEN e.encounter_count END), 0) encounters,
+      COALESCE(SUM(CASE WHEN e.kind = 'tavoittaminen' THEN e.encounter_count END), 0) reach,
+      COALESCE(SUM(e.kind = 'yksilo'), 0) yksilo_rows, COALESCE(SUM(e.kind = 'ryhma'), 0) ryhma_rows,
+      COALESCE(SUM(CASE WHEN e.kind = 'ryhma' THEN e.encounter_count END), 0) ryhma_encounters,
+      COALESCE(SUM(CASE WHEN e.kind = 'ryhma' THEN e.person_count END), 0) ryhma_persons,
       COUNT(DISTINCT e.encounter_date) active_days, MIN(e.encounter_date) first_date, MAX(e.encounter_date) last_date,
       COUNT(DISTINCT e.client_id) distinct_pseudonyms,
       AVG(CAST(w.value AS REAL)) worker_rating, AVG(CAST(c.value AS REAL)) client_rating, COUNT(c.value) client_rating_n,
@@ -640,15 +667,15 @@ app.get('/api/staff/:id', requireAuth, (req, res) => {
     LEFT JOIN encounter_answers w ON w.encounter_id = e.id AND w.question_id = ?
     LEFT JOIN encounter_answers c ON c.encounter_id = e.id AND c.question_id = ?
     WHERE ${where}`).get(wr, cr, ...params);
-  const monthly = db.prepare(`SELECT substr(e.encounter_date, 1, 7) month, COUNT(*) rows, SUM(e.encounter_count) encounters,
-      COALESCE(SUM(CASE WHEN e.encounter_type = 'yksilo' THEN e.encounter_count END), 0) yksilo,
-      COALESCE(SUM(CASE WHEN e.encounter_type = 'ryhma' THEN e.encounter_count END), 0) ryhma
+  const monthly = db.prepare(`SELECT substr(e.encounter_date, 1, 7) month, COUNT(*) rows, COALESCE(SUM(CASE WHEN e.kind <> 'tavoittaminen' THEN e.encounter_count END), 0) encounters,
+      COALESCE(SUM(CASE WHEN e.kind = 'yksilo' THEN e.encounter_count END), 0) yksilo,
+      COALESCE(SUM(CASE WHEN e.kind = 'ryhma' THEN e.encounter_count END), 0) ryhma
     FROM encounters e WHERE ${where} GROUP BY month ORDER BY month`).all(...params);
-  const byProject = db.prepare(`SELECT p.name, COUNT(*) rows, SUM(e.encounter_count) encounters
+  const byProject = db.prepare(`SELECT p.name, COUNT(*) rows, COALESCE(SUM(CASE WHEN e.kind <> 'tavoittaminen' THEN e.encounter_count END), 0) encounters
     FROM encounters e JOIN projects p ON p.id = e.project_id WHERE ${where} GROUP BY p.id ORDER BY encounters DESC`).all(...params);
   const workerRatings = db.prepare(`SELECT w.value rating, COUNT(*) n FROM encounters e JOIN encounter_answers w ON w.encounter_id = e.id AND w.question_id = ?
     WHERE ${where} GROUP BY w.value ORDER BY w.value`).all(wr, ...params);
-  const byLocation = db.prepare(`SELECT a.value name, COUNT(*) rows, SUM(e.encounter_count) encounters FROM encounters e
+  const byLocation = db.prepare(`SELECT a.value name, COUNT(*) rows, COALESCE(SUM(CASE WHEN e.kind <> 'tavoittaminen' THEN e.encounter_count END), 0) encounters FROM encounters e
     JOIN encounter_answers a ON a.encounter_id = e.id AND a.question_id = (SELECT id FROM questions WHERE key = 'sijainti')
     WHERE ${where} GROUP BY a.value ORDER BY encounters DESC`).all(...params);
   res.json({ user: { ...u, roleLabel: ROLES[u.role].label }, kpi, monthly, byProject, workerRatings, byLocation });
@@ -715,8 +742,9 @@ app.get('/api/dashboard', requireAuth, (req, res) => {
   const from = isDate(req.query.from) ? req.query.from : today().slice(0, 4) + '-01-01';
   const to = isDate(req.query.to) ? req.query.to : today();
   if (from > to) return bad(res, 'Tarkista aikaväli.');
-  const types = String(req.query.types || 'yksilo,ryhma').split(',').filter(t => ['yksilo', 'ryhma'].includes(t));
-  if (!types.length) return bad(res, 'Valitse vähintään yksi kohtaamisen tyyppi.');
+  const allTypes = recordTypes(true).map(t => t.key);
+  const types = req.query.types ? String(req.query.types).split(',').filter(t => allTypes.includes(t)) : allTypes;
+  if (!types.length) return bad(res, 'Valitse vähintään yksi kirjaustyyppi.');
   const role = RECORDER_ROLES.includes(req.query.role) ? req.query.role : null;
   res.json(dashboard({ from, to, projectIds, projectId, types, role,
     ika: req.query.ika ? String(req.query.ika) : null, sukupuoli: req.query.sukupuoli ? String(req.query.sukupuoli) : null,
@@ -911,7 +939,18 @@ const Q_TYPES = ['text', 'textarea', 'number', 'choice', 'multichoice', 'rating'
 function validateQuestion(b, isNew) {
   if (String(b.label || '').trim().length < 2) return 'Anna kysymyksen teksti.';
   if (!Q_TYPES.includes(b.type)) return 'Valitse kysymystyyppi.';
-  if (!['kaikki', 'yksilo', 'ryhma'].includes(b.applies_to)) return 'Valitse, mihin kirjauksiin kysymys liittyy.';
+  const keys = recordTypes(true).map(t => t.key);
+  if (b.applies != null && (!Array.isArray(b.applies) || !b.applies.length || !b.applies.every(k => keys.includes(k)))) return 'Valitse, mihin kirjauksiin kysymys liittyy.';
+  if (b.show_if != null) {
+    const c = b.show_if;
+    if (!c || typeof c.key !== 'string' || !Array.isArray(c.values) || !c.values.length) return 'Valitse ehdon kysymys ja vähintään yksi arvo.';
+    if (c.key !== '_toteuttaja') {
+      const src = db.prepare("SELECT * FROM questions WHERE key = ? AND type IN ('choice','multichoice')").get(c.key);
+      if (!src || c.key === b.key) return 'Ehdon kysymystä ei löydy.';
+      if (src.project_id != null && src.project_id !== (b.project_id == null ? null : Number(b.project_id))) return 'Ehdon kysymyksen on oltava yhteinen tai saman hankkeen kysymys.';
+    }
+  }
+  if (b.min_value != null && b.min_value !== '' && !Number.isInteger(Number(b.min_value))) return 'Pienin arvo on oltava kokonaisluku.';
   if (['choice', 'multichoice'].includes(b.type)) {
     if (!Array.isArray(b.options) || b.options.filter(o => String(o).trim()).length < 2) return 'Anna vähintään kaksi vastausvaihtoehtoa.';
   }
@@ -921,6 +960,13 @@ function validateQuestion(b, isNew) {
   return null;
 }
 const digitalCols = (b) => [b.digital_mode === 'hide' ? 'hide' : 'show', null];
+// Näkyvyys: applies (kirjaustyypit) ja show_if (ehto). Vanha applies_to-muoto käännetään (yhteensopivuus).
+function visibilityCols(b) {
+  let applies = b.applies;
+  if (applies === undefined && b.applies_to) applies = b.applies_to === 'kaikki' ? null : [b.applies_to];
+  const minv = b.type === 'number' && b.min_value != null && b.min_value !== '' ? Number(b.min_value) : null;
+  return [applies && applies.length ? JSON.stringify([...new Set(applies)]) : null, b.show_if ? JSON.stringify({ key: b.show_if.key, values: b.show_if.values.map(String) }) : null, minv];
+}
 function normalizeOptions(b) {
   if (['choice', 'multichoice'].includes(b.type)) return JSON.stringify([...new Set(b.options.map(o => String(o).trim()).filter(Boolean))]);
   if (b.type === 'rating') return JSON.stringify([1, 2, 3, 4, 5]);
@@ -938,10 +984,10 @@ app.post('/api/questions', requireAuth, requirePerm('manageQuestions'), (req, re
   if (db.prepare('SELECT 1 FROM questions WHERE key = ?').get(b.key)) return bad(res, 'Tunniste on jo käytössä.');
   const pid = b.project_id == null ? null : Number(b.project_id);
   const sort = (db.prepare('SELECT MAX(sort) m FROM questions WHERE project_id IS ?').get(pid).m || 0) + 10;
-  const id = db.prepare(`INSERT INTO questions (key, project_id, label, help, type, options, required, applies_to, free_text_warning, sort, digital_mode, digital_value, suggest)
-                         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`)
-    .run(b.key, pid, b.label.trim(), (b.help || '').trim() || null, b.type, normalizeOptions(b), b.required ? 1 : 0, b.applies_to,
-         ['text', 'textarea'].includes(b.type) ? 1 : 0, sort, ...digitalCols(b), b.type === 'text' && b.suggest ? 1 : 0).lastInsertRowid;
+  const id = db.prepare(`INSERT INTO questions (key, project_id, label, help, type, options, required, applies_to, free_text_warning, sort, digital_mode, digital_value, suggest, applies, show_if, min_value)
+                         VALUES (?,?,?,?,?,?,?,'kaikki',?,?,?,?,?,?,?,?)`)
+    .run(b.key, pid, b.label.trim(), (b.help || '').trim() || null, b.type, normalizeOptions(b), b.required ? 1 : 0,
+         ['text', 'textarea'].includes(b.type) ? 1 : 0, sort, ...digitalCols(b), b.type === 'text' && b.suggest ? 1 : 0, ...visibilityCols(b)).lastInsertRowid;
   audit(req.user.id, 'question_create', 'question', id, { key: b.key });
   res.status(201).json({ id });
 });
@@ -949,16 +995,51 @@ app.put('/api/questions/:id', requireAuth, requirePerm('manageQuestions'), (req,
   const id = Number(req.params.id);
   const q = db.prepare('SELECT * FROM questions WHERE id = ?').get(id);
   if (!q) return bad(res, 'Kysymystä ei löydy.', 404);
-  const b = { digital_mode: q.digital_mode, digital_value: q.digital_value, suggest: !!q.suggest, ...req.body, project_id: q.project_id };     // hanke ja tunniste ovat pysyviä
+  const pq = parseQ(q);
+  const b = { digital_mode: q.digital_mode, digital_value: q.digital_value, suggest: !!q.suggest, applies: pq.applies, show_if: pq.show_if, min_value: q.min_value,
+    ...req.body, project_id: q.project_id, key: q.key };     // hanke ja tunniste ovat pysyviä
+  if (req.body.applies === undefined && req.body.applies_to) b.applies = req.body.applies_to === 'kaikki' ? null : [req.body.applies_to];
   const err = validateQuestion(b, false); if (err) return bad(res, err);
   const answered = db.prepare('SELECT COUNT(*) n FROM encounter_answers WHERE question_id = ?').get(id).n;
   if (answered && b.type !== q.type) return bad(res, 'Kysymystyyppiä ei voi muuttaa, kun kysymykseen on jo vastattu. Lisää uusi kysymys ja poista vanha käytöstä.');
-  db.prepare(`UPDATE questions SET label=?, help=?, type=?, options=?, required=?, applies_to=?, active=?, digital_mode=?, digital_value=?, suggest=?, sort=COALESCE(?, sort), updated_at=datetime('now') WHERE id=?`)
-    .run(b.label.trim(), (b.help || '').trim() || null, b.type, normalizeOptions(b), b.required ? 1 : 0, b.applies_to,
-         b.active === false ? 0 : 1, ...digitalCols(b), b.type === 'text' && b.suggest ? 1 : 0, Number.isInteger(b.sort) ? b.sort : null, id);
+  db.prepare(`UPDATE questions SET label=?, help=?, type=?, options=?, required=?, active=?, digital_mode=?, digital_value=?, suggest=?, applies=?, show_if=?, min_value=?, sort=COALESCE(?, sort), updated_at=datetime('now') WHERE id=?`)
+    .run(b.label.trim(), (b.help || '').trim() || null, b.type, normalizeOptions(b), b.required ? 1 : 0,
+         b.active === false ? 0 : 1, ...digitalCols(b), b.type === 'text' && b.suggest ? 1 : 0, ...visibilityCols(b), Number.isInteger(b.sort) ? b.sort : null, id);
   audit(req.user.id, 'question_update', 'question', id, { label: b.label, active: b.active });
   res.json({ ok: true });
 });
+// Kirjaustyypit (Hallinta → Kirjaustyypit). Tyyppejä ei poisteta, ne otetaan pois käytöstä.
+app.get('/api/record-types', requireAuth, requirePerm('manageQuestions'), (req, res) => {
+  const counts = Object.fromEntries(db.prepare('SELECT encounter_type k, COUNT(*) n FROM encounters WHERE deleted_at IS NULL GROUP BY encounter_type').all().map(r => [r.k, r.n]));
+  res.json({ types: recordTypes(true).map(t => ({ ...t, active: !!t.active, encounter_rows: counts[t.key] || 0 })), kinds: RECORD_KINDS });
+});
+function validateType(b) {
+  if (String(b.label || '').trim().length < 2) return 'Anna tyypin nimi.';
+  if (!RECORD_KINDS[b.kind]) return 'Valitse toimintatapa.';
+  return null;
+}
+app.post('/api/record-types', requireAuth, requirePerm('manageQuestions'), (req, res) => {
+  const b = req.body; const err = validateType(b); if (err) return bad(res, err);
+  const base = String(b.label).toLowerCase().normalize('NFD').replace(/\p{M}+/gu, '').replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '').slice(0, 30) || 'tyyppi';
+  let key = base, i = 2; while (recordType(key)) key = `${base}_${i++}`;
+  const sort = (db.prepare('SELECT MAX(sort) m FROM record_types').get().m || 0) + 10;
+  db.prepare('INSERT INTO record_types (key, label, description, kind, count_label, sort) VALUES (?, ?, ?, ?, ?, ?)')
+    .run(key, String(b.label).trim(), String(b.description || '').trim() || null, b.kind, String(b.count_label || '').trim() || null, sort);
+  audit(req.user.id, 'record_type_create', 'record_type', key, { label: b.label, kind: b.kind });
+  res.status(201).json({ key });
+});
+app.put('/api/record-types/:key', requireAuth, requirePerm('manageQuestions'), (req, res) => {
+  const t = recordType(req.params.key); if (!t) return bad(res, 'Tyyppiä ei löydy.', 404);
+  const b = { ...req.body, kind: t.kind };   // toimintatapaa ei vaihdeta, koska se muuttaisi vanhojen kirjausten tilastointia
+  const err = validateType(b); if (err) return bad(res, err);
+  const active = b.active === false ? 0 : 1;
+  if (!active && db.prepare('SELECT COUNT(*) n FROM record_types WHERE active = 1 AND key <> ?').get(t.key).n === 0) return bad(res, 'Vähintään yhden tyypin on oltava käytössä.');
+  db.prepare('UPDATE record_types SET label = ?, description = ?, count_label = ?, active = ?, sort = COALESCE(?, sort) WHERE key = ?')
+    .run(String(b.label).trim(), String(b.description || '').trim() || null, String(b.count_label || '').trim() || null, active, Number.isInteger(b.sort) ? b.sort : null, t.key);
+  audit(req.user.id, 'record_type_update', 'record_type', t.key, { label: b.label, active });
+  res.json({ ok: true });
+});
+
 app.post('/api/questions/reorder', requireAuth, requirePerm('manageQuestions'), (req, res) => {
   const ids = Array.isArray(req.body.ids) ? req.body.ids.map(Number) : [];
   const upd = db.prepare('UPDATE questions SET sort = ? WHERE id = ?');

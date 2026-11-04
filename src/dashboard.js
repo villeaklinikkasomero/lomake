@@ -27,7 +27,10 @@ function buildWhere({ from, to, projectIds, projectId, types, role, ika, sukupuo
   if (from) { w.push('e.encounter_date >= ?'); p.push(from); }
   if (to) { w.push('e.encounter_date <= ?'); p.push(to); }
   if (projectId) { w.push('e.project_id = ?'); p.push(projectId); }
-  if (types && types.length && types.length < 2) { w.push('e.encounter_type = ?'); p.push(types[0]); }
+  if (types && types.length) {
+    const all = db.prepare('SELECT COUNT(*) n FROM record_types').get().n;
+    if (types.length < all) { w.push(`e.encounter_type IN (${types.map(() => '?').join(',')})`); p.push(...types); }
+  }
   if (role) { w.push('e.recorder_role = ?'); p.push(role); }
   for (const [key, val] of [['ika', ika], ['sukupuoli', sukupuoli]]) {
     if (!val) continue;
@@ -46,7 +49,7 @@ function buildWhere({ from, to, projectIds, projectId, types, role, ika, sukupuo
 function places(filters, W) {
   const cq = qid('kaupunki'), sq = qid('kadunnimi');
   const group = (where, params, qidv, extraJoin = '', extraSelect = '') => db.prepare(`SELECT lower(trim(a.value)) k, trim(a.value) v, ${extraSelect}
-      COUNT(*) rows, SUM(e.encounter_count) encounters FROM encounters e
+      COUNT(*) rows, SUM(CASE WHEN e.kind <> 'tavoittaminen' THEN e.encounter_count ELSE 0 END) encounters FROM encounters e
       JOIN encounter_answers a ON a.encounter_id = e.id AND a.question_id = ? ${extraJoin}
       WHERE ${where} AND trim(a.value) <> '' GROUP BY k, v ${extraSelect ? ', ck' : ''}`).all(qidv, ...params);
   const merge = (rows, keyOf) => {
@@ -62,7 +65,7 @@ function places(filters, W) {
   // Paikkakunnat ilman paikkakuntarajausta (rajaus valitsee yhden niistä)
   const WC = buildWhere({ ...filters, kaupunki: null });
   const cities = merge(group(WC.sql, WC.params, cq), r => r.k);
-  const totalEnc = db.prepare(`SELECT COALESCE(SUM(e.encounter_count), 0) n FROM encounters e WHERE ${WC.sql}`).get(...WC.params).n;
+  const totalEnc = db.prepare(`SELECT COALESCE(SUM(CASE WHEN e.kind <> 'tavoittaminen' THEN e.encounter_count END), 0) n FROM encounters e WHERE ${WC.sql}`).get(...WC.params).n;
   const withCity = cities.reduce((t, c) => t + c.encounters, 0);
   const streetRows = group(W.sql, W.params, sq,
     'LEFT JOIN encounter_answers c ON c.encounter_id = e.id AND c.question_id = ' + Number(cq), 'lower(trim(c.value)) ck, trim(c.value) cv,');
@@ -75,17 +78,20 @@ function places(filters, W) {
 }
 
 function totals(W) {
-  const t = db.prepare(`SELECT COUNT(*) rows, COALESCE(SUM(e.encounter_count), 0) encounters,
-      COALESCE(SUM(CASE WHEN e.encounter_type = 'yksilo' THEN e.encounter_count END), 0) yksilo,
-      COALESCE(SUM(CASE WHEN e.encounter_type = 'ryhma' THEN e.encounter_count END), 0) ryhma,
+  // Kohtaamiset = yksilö- ja ryhmätyyppiset kirjaukset; tavoittaminen tilastoidaan erikseen (reach)
+  const t = db.prepare(`SELECT COUNT(*) rows, COALESCE(SUM(CASE WHEN e.kind <> 'tavoittaminen' THEN e.encounter_count END), 0) encounters,
+      COALESCE(SUM(CASE WHEN e.kind = 'tavoittaminen' THEN e.encounter_count END), 0) reach,
+      COALESCE(SUM(e.kind = 'tavoittaminen'), 0) reach_rows,
+      COALESCE(SUM(CASE WHEN e.kind = 'yksilo' THEN e.encounter_count END), 0) yksilo,
+      COALESCE(SUM(CASE WHEN e.kind = 'ryhma' THEN e.encounter_count END), 0) ryhma,
       COUNT(DISTINCT e.client_id) identified,
-      COALESCE(SUM(CASE WHEN e.encounter_type = 'ryhma' THEN e.person_count END), 0) group_persons,
-      COALESCE(SUM(CASE WHEN e.encounter_type = 'yksilo' AND e.client_id IS NULL THEN 1 END), 0) unidentified,
-      COALESCE(SUM(CASE WHEN e.encounter_type = 'ryhma' AND e.person_count IS NULL THEN 1 END), 0) groups_without_count,
+      COALESCE(SUM(CASE WHEN e.kind = 'ryhma' THEN e.person_count END), 0) group_persons,
+      COALESCE(SUM(CASE WHEN e.kind = 'yksilo' AND e.client_id IS NULL THEN 1 END), 0) unidentified,
+      COALESCE(SUM(CASE WHEN e.kind = 'ryhma' AND e.person_count IS NULL THEN 1 END), 0) groups_without_count,
       -- Täysin anonyymit kohtaamiset: yksilö ilman nimimerkkiä + ryhmien kohtaamiset, joista osallistujamäärä puuttuu.
       -- Näistä ei voi päätellä eri henkilöiden määrää, joten ne jäävät arvion ulkopuolelle.
-      COALESCE(SUM(CASE WHEN e.encounter_type = 'yksilo' AND e.client_id IS NULL THEN e.encounter_count END), 0) anon_individual,
-      COALESCE(SUM(CASE WHEN e.encounter_type = 'ryhma' AND e.person_count IS NULL THEN e.encounter_count END), 0) anon_group
+      COALESCE(SUM(CASE WHEN e.kind = 'yksilo' AND e.client_id IS NULL THEN e.encounter_count END), 0) anon_individual,
+      COALESCE(SUM(CASE WHEN e.kind = 'ryhma' AND e.person_count IS NULL THEN e.encounter_count END), 0) anon_group
     FROM encounters e WHERE ${W.sql}`).get(...W.params);
   // Eri henkilöiden arvio = tunnistetut asiakkaat + ryhmien ilmoitetut osallistujat
   t.persons = t.identified + t.group_persons;
@@ -103,14 +109,17 @@ function dashboard(filters) {
   const PW = compare === 'none' ? null : buildWhere({ ...filters, from: pf, to: pt });
   const prev = PW ? totals(PW) : null;
 
-  const monthlyFor = (w) => db.prepare(`SELECT substr(e.encounter_date, 1, 7) month, COUNT(*) rows, SUM(e.encounter_count) encounters,
-      COALESCE(SUM(CASE WHEN e.encounter_type = 'yksilo' THEN e.encounter_count END), 0) yksilo,
-      COALESCE(SUM(CASE WHEN e.encounter_type = 'ryhma' THEN e.encounter_count END), 0) ryhma
+  const monthlyFor = (w) => db.prepare(`SELECT substr(e.encounter_date, 1, 7) month, COUNT(*) rows,
+      COALESCE(SUM(CASE WHEN e.kind <> 'tavoittaminen' THEN e.encounter_count END), 0) encounters,
+      COALESCE(SUM(CASE WHEN e.kind = 'tavoittaminen' THEN e.encounter_count END), 0) reach,
+      COALESCE(SUM(CASE WHEN e.kind = 'yksilo' THEN e.encounter_count END), 0) yksilo,
+      COALESCE(SUM(CASE WHEN e.kind = 'ryhma' THEN e.encounter_count END), 0) ryhma
     FROM encounters e WHERE ${w.sql} GROUP BY month ORDER BY month`).all(...w.params);
   const monthly = monthlyFor(W);
   const monthlyPrev = PW ? monthlyFor(PW) : null;
 
-  const byProject = db.prepare(`SELECT p.id, p.name, COUNT(*) rows, SUM(e.encounter_count) encounters
+  const byProject = db.prepare(`SELECT p.id, p.name, COUNT(*) rows, COALESCE(SUM(CASE WHEN e.kind <> 'tavoittaminen' THEN e.encounter_count END), 0) encounters,
+      COALESCE(SUM(CASE WHEN e.kind = 'tavoittaminen' THEN e.encounter_count END), 0) reach
     FROM encounters e JOIN projects p ON p.id = e.project_id WHERE ${W.sql} GROUP BY p.id ORDER BY encounters DESC`).all(...W.params);
 
   const ratingStats = (key) => {
@@ -151,6 +160,9 @@ function dashboard(filters) {
   return {
     period: { from: filters.from, to: filters.to, compare, prevFrom: PW ? pf : null, prevTo: PW ? pt : null },
     totals: cur, previous: prev, monthly, monthlyPrev, byProject,
+    // Kirjaustyypeittäin (kohtaamiset ja tavoitetut)
+    byType: db.prepare(`SELECT e.encounter_type key, rt.label, rt.kind, COUNT(*) rows, SUM(e.encounter_count) count FROM encounters e
+      LEFT JOIN record_types rt ON rt.key = e.encounter_type WHERE ${W.sql} GROUP BY e.encounter_type ORDER BY rt.sort`).all(...W.params),
     ratings: { worker: ratingStats('tyontekijan_arvio'), client: ratingStats('asiakkaan_arvio') },
     referrals: { ...ref, rate: ref.toteutui + ref.ei_toteutunut ? ref.toteutui / (ref.toteutui + ref.ei_toteutunut) : null },
     distributions, updated, places: places(filters, W),

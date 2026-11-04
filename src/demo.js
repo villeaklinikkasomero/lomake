@@ -53,6 +53,7 @@ function generateDemoPayloads(count, seed = Date.now()) {
   const int = (min, max) => min + Math.floor(r() * (max - min + 1));
 
   const projects = db.prepare('SELECT * FROM projects WHERE active = 1 ORDER BY sort').all();
+  const hasReach = !!db.prepare("SELECT 1 FROM record_types WHERE key = 'tavoittaminen' AND active = 1").get();
   const questions = db.prepare('SELECT * FROM questions WHERE active = 1').all()
     .map(q => ({ ...q, options: q.options ? JSON.parse(q.options) : null }));
 
@@ -74,13 +75,14 @@ function generateDemoPayloads(count, seed = Date.now()) {
   for (let i = 0; i < count; i++) {
     // Kierretään kaikki hankkeet läpi, jotta jokaisella on dataa
     const project = i < projects.length ? projects[i] : pick(projects);
-    const type = chance(0.68) ? 'yksilo' : 'ryhma';
+    const roll = r();
+    const type = roll < 0.62 ? 'yksilo' : roll < 0.92 || !hasReach ? 'ryhma' : 'tavoittaminen';
     const d = new Date(start.getTime() + int(0, span) * 86400000);
     const payload = {
       project_id: project.id,
       encounter_date: fmt(d > today ? today : d),
       encounter_type: type,
-      encounter_count: type === 'ryhma' ? int(3, 14) : 1,
+      encounter_count: type === 'ryhma' ? int(3, 14) : type === 'tavoittaminen' ? int(12, 90) : 1,
       person_count: null,
       answers: {},
       _recorder_role: RECORDER_ROLES[0],   // admin = säätiön työntekijä
@@ -98,7 +100,7 @@ function generateDemoPayloads(count, seed = Date.now()) {
     const digital = project.digital ? chance(0.85) : chance(0.25); // digihankkeillakin on livekohtaamisia
     for (const q of questions) {
       if (q.project_id != null && q.project_id !== project.id) continue;
-      if (q.applies_to !== 'kaikki' && q.applies_to !== type) continue;
+      if (q.applies && !JSON.parse(q.applies).includes(type)) continue;
       const k = q.key;
       let v;
       switch (k) {
@@ -167,9 +169,9 @@ function createDemoData({ count, userId, validate, user, projectIds }) {
   const clientIds = new Map();   // testiasiakkaan indeksi → clients.id
   const workers = ensureDemoWorkers();
   const pool = workers.flatMap(w => Array(w.weight).fill(w));
-  const insE = db.prepare(`INSERT INTO encounters (id, project_id, encounter_date, encounter_type, encounter_count, person_count,
+  const insE = db.prepare(`INSERT INTO encounters (id, project_id, encounter_date, encounter_type, kind, encounter_count, person_count,
                              recorder_role, created_by, performed_by, performer_type, created_at, is_test)
-                           VALUES (@id, @project_id, @encounter_date, @encounter_type, @encounter_count, @person_count,
+                           VALUES (@id, @project_id, @encounter_date, @encounter_type, @kind, @encounter_count, @person_count,
                              @recorder_role, @created_by, @performed_by, @performer_type, @created_at, 1)`);
   const insA = db.prepare('INSERT INTO encounter_answers (encounter_id, question_id, value) VALUES (?, ?, ?)');
   let created = 0;

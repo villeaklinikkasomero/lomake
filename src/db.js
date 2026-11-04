@@ -71,7 +71,7 @@ CREATE TABLE IF NOT EXISTS encounters (
   id              TEXT PRIMARY KEY,               -- UUID
   project_id      INTEGER NOT NULL REFERENCES projects(id),
   encounter_date  TEXT NOT NULL,                  -- YYYY-MM-DD
-  encounter_type  TEXT NOT NULL CHECK (encounter_type IN ('yksilo','ryhma')),
+  encounter_type  TEXT NOT NULL,                  -- kirjaustyypin avain (record_types)
   encounter_count INTEGER NOT NULL CHECK (encounter_count BETWEEN 1 AND 9999),
   person_count    INTEGER CHECK (person_count IS NULL OR person_count BETWEEN 1 AND 9999),
   pseudonym       TEXT,                           -- vain yksilökohtaamisissa, ei Excel-vientiin
@@ -274,6 +274,170 @@ if (!db.prepare("PRAGMA table_info(encounters)").all().some(c => c.name === 'per
 }
 db.exec('CREATE INDEX IF NOT EXISTS ix_enc_performed_by ON encounters(performed_by)');
 
+// ---------------------------------------------------------------------------
+// Kirjaustyypit ("Valitse, mitä raportoit") ovat ylläpidettäviä. Jokaisella tyypillä on
+// toimintatapa (kind), joka määrää lomakkeen määräkentät ja tilastoinnin:
+//   yksilo        = yksi kohtaaminen (määrä 1, asiakastunniste mahdollinen)
+//   ryhma         = ryhmä tai useita kohtaamisia (kohtaamisten ja osallistujien määrä)
+//   tavoittaminen = yleisötilaisuus tms. (tavoitettujen määrä, tilastoidaan erikseen kohtaamisista)
+// ---------------------------------------------------------------------------
+const RECORD_KINDS = {
+  yksilo: 'Yksi kohtaaminen (määrä 1, asiakastunniste)',
+  ryhma: 'Ryhmä tai useita kohtaamisia (kohtaamisten ja osallistujien määrä)',
+  tavoittaminen: 'Tavoittaminen (tavoitettujen määrä, tilastoidaan erikseen)',
+};
+db.exec(`CREATE TABLE IF NOT EXISTS record_types (
+  key         TEXT PRIMARY KEY,
+  label       TEXT NOT NULL,
+  description TEXT,
+  kind        TEXT NOT NULL CHECK (kind IN ('yksilo','ryhma','tavoittaminen')),
+  count_label TEXT,
+  active      INTEGER NOT NULL DEFAULT 1,
+  sort        INTEGER NOT NULL DEFAULT 0
+)`);
+once('kirjaustyypit', () => {
+  const ins = db.prepare('INSERT OR IGNORE INTO record_types (key, label, description, kind, count_label, sort) VALUES (?, ?, ?, ?, ?, ?)');
+  ins.run('yksilo', 'Yksi kohtaaminen', 'Yksi henkilö, yksi keskustelu', 'yksilo', null, 10);
+  ins.run('ryhma', 'Ryhmä tai useita kohtaamisia', 'Ryhmä tai useampi kohtaaminen kerralla', 'ryhma', 'Kohtaamisten määrä', 20);
+  ins.run('tavoittaminen', 'Tavoittaminen', 'Koulutus, luento, webinaari tai muu yleisötilaisuus', 'tavoittaminen', 'Tavoitettujen määrä', 30);
+});
+
+// Kirjauksen tyyppi ei enää rajoitu kiinteisiin arvoihin: poistetaan CHECK-ehto (taulun uudelleenrakennus)
+// ja lisätään kind-sarake (tyypin toimintatapa kirjaushetkellä), jota tilastot käyttävät.
+{
+  const t = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'encounters'").get();
+  if (/CHECK\s*\(encounter_type IN/.test(t.sql)) {
+    const newSql = t.sql.replace(/CREATE TABLE "?encounters"?/, 'CREATE TABLE encounters_new').replace(/\s*CHECK\s*\(encounter_type IN \([^)]*\)\)/, '');
+    const idx = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'index' AND tbl_name = 'encounters' AND sql IS NOT NULL").all().map(r => r.sql);
+    db.pragma('foreign_keys = OFF');
+    db.transaction(() => {
+      db.exec(newSql);
+      db.exec('INSERT INTO encounters_new SELECT * FROM encounters');
+      db.exec('DROP TABLE encounters');
+      db.exec('ALTER TABLE encounters_new RENAME TO encounters');
+      for (const sql of idx) db.exec(sql);
+      const bad = db.pragma('foreign_key_check');
+      if (bad.length) throw new Error('Viite-eheys rikkoutui kirjausten uudelleenrakennuksessa');
+    })();
+    db.pragma('foreign_keys = ON');
+  }
+  if (!db.prepare('PRAGMA table_info(encounters)').all().some(c => c.name === 'kind')) {
+    db.exec("ALTER TABLE encounters ADD COLUMN kind TEXT NOT NULL DEFAULT 'yksilo'");
+    db.exec("UPDATE encounters SET kind = encounter_type WHERE encounter_type IN ('yksilo','ryhma')");
+  }
+}
+
+// Kysymysten näkyvyys:
+//   applies   = JSON-taulukko kirjaustyyppien avaimista, joissa kysymys näytetään (NULL = kaikissa)
+//   show_if   = JSON { key, values[] }: näytetään vain, jos toisen kysymyksen vastaus on jokin arvoista.
+//               key '_toteuttaja' = kohtaamisen toteuttajan rooli (esim. vain ammattilaisten kirjauksissa)
+//   min_value = lukukysymyksen pienin sallittu arvo (oletus 0)
+{
+  const cols = db.prepare('PRAGMA table_info(questions)').all().map(c => c.name);
+  if (!cols.includes('applies')) {
+    db.exec('ALTER TABLE questions ADD COLUMN applies TEXT');
+    db.exec(`UPDATE questions SET applies = CASE applies_to WHEN 'yksilo' THEN '["yksilo"]' WHEN 'ryhma' THEN '["ryhma"]' ELSE NULL END`);
+  }
+  if (!cols.includes('show_if')) db.exec('ALTER TABLE questions ADD COLUMN show_if TEXT');
+  if (!cols.includes('min_value')) db.exec('ALTER TABLE questions ADD COLUMN min_value INTEGER');
+}
+
+// Kysymykset 2027 (määrittelytaulukko "Kohtaamisten raportointi 2027 kysymykset ja huomiot"):
+// tavoittamisen kysymys, uusi yhteinen kysymys ja hankekohtaiset kysymykset.
+once('kysymykset_2027', () => {
+  const pid = Object.fromEntries(db.prepare('SELECT code, id FROM projects').all().map(r => [r.code, r.id]));
+  const exists = db.prepare('SELECT 1 FROM questions WHERE key = ?');
+  const ins = db.prepare(`INSERT INTO questions (key, project_id, label, help, type, options, required, applies_to, applies, show_if, min_value, free_text_warning, sort)
+                          VALUES (@key, @project_id, @label, @help, @type, @options, @required, 'kaikki', @applies, @show_if, @min_value, @free_text_warning, @sort)`);
+  const Y = ['yksilo'], YR = ['yksilo', 'ryhma'], T = ['tavoittaminen'];
+  const PRO = { key: '_toteuttaja', values: [RECORDER_ROLES[0], RECORDER_ROLES[1]] };
+  const q = (o) => {
+    if (exists.get(o.key)) return;
+    if (o.project && !pid[o.project]) return;
+    ins.run({ project_id: o.project ? pid[o.project] : null, help: null, required: 0, show_if: null, min_value: null, sort: 100, ...o,
+      options: o.options ? JSON.stringify(o.options) : null, applies: o.applies ? JSON.stringify(o.applies) : null,
+      show_if: o.show_if ? JSON.stringify(o.show_if) : null, free_text_warning: o.type === 'text' || o.type === 'textarea' ? 1 : 0, required: o.required ? 1 : 0 });
+  };
+  // Yhteiset
+  q({ key: 'tavoittamisen_muoto', label: 'Tavoittamisen muoto', type: 'choice', options: ['Koulutus', 'Luento', 'Webinaari', 'Muu yleisötilaisuus'], required: 1, applies: T, sort: 5 });
+  q({ key: 'myonteiset_seuraukset', label: 'Mitä myönteisiä seurauksia kohtaamisella arvioit olevan asiakkaalle?', type: 'multichoice', applies: Y, sort: 25,
+    options: ['Asiakas sai tietoa tai ymmärrystä tilanteestaan', 'Asiakas koki tulleensa kuulluksi tai saaneensa tukea', 'Asiakkaan motivaatio tai valmius muutokseen vahvistui',
+      'Asiakas löysi keinoja tilanteensa käsittelyyn', 'Asiakkaan hakeutuminen palveluihin tai tuen piiriin edistyi',
+      'Asiakkaan elämäntilanteeseen liittyvä konkreettinen asia eteni tai ratkesi', 'Asiakkaan turvallisuus tai haittojen ehkäisy vahvistui'] });
+  // Päihdelinkki ja Nuortenlinkki (AK21) – korvaa aiemman toimintamuotokysymyksen
+  db.prepare("UPDATE questions SET active = 0 WHERE key = 'ak21_toimintamuoto'").run();
+  q({ key: 'ak21_palvelu', project: 'AK21', label: 'Mihin palveluun kohtaaminen liittyi?', type: 'choice', options: ['Päihdelinkki', 'Nuortenlinkki'], required: 1, applies: YR, sort: 10 });
+  q({ key: 'ak21_toimintamuoto_2027', project: 'AK21', label: 'Missä toimintamuodossa kohtaaminen toteutui?', type: 'choice', required: 1, applies: YR, sort: 20,
+    options: ['Päivystyschat', 'Ajanvarauschat', 'Neuvontapalvelu', 'Jodel AMA', 'Walk in -videochat', 'Selvä suunta -ryhmä', 'Henkilökohtainen vertaistuki (Toivo)', 'Muu kohtaaminen'] });
+  q({ key: 'ak21_kenen_tilanne', project: 'AK21', label: 'Kenen tilanteeseen yhteydenotto liittyi?', type: 'choice', options: ['Oma tilanne', 'Läheisen tilanne', 'Muu / ei tiedossa'], applies: Y, sort: 30 });
+  q({ key: 'ak21_tuen_tarve', project: 'AK21', label: 'Mihin tuen tarpeeseen tai huoleen kohtaaminen liittyi?', type: 'multichoice', applies: Y, sort: 40,
+    options: ['Alkoholi', 'Huumeet', 'Nikotiini', 'Rahapelaaminen', 'Muu riippuvuuskäyttäytyminen', 'Muu nuoren elämäntilanteeseen liittyvä huoli', 'Läheisen tilanne', 'Muu', 'Ei tiedossa'] });
+  q({ key: 'ak21_selkiytyminen', project: 'AK21', label: 'Selkiytyikö käyttäjän tilanne kohtaamisen aikana?', type: 'choice', options: ['Kyllä', 'Osittain', 'Ei'], required: 1, applies: Y, show_if: PRO, sort: 50 });
+  q({ key: 'ak21_seuraava_askel', project: 'AK21', label: 'Ilmaisiko käyttäjä aikomuksen ottaa seuraavan askeleen?', type: 'choice', options: ['Kyllä', 'Ehkä', 'Ei', 'Ei saatu tietoa'], applies: Y, show_if: PRO, sort: 60,
+    help: 'Kirjaa käyttäjän ilmaisema aikomus, ei omaa oletustasi.' });
+  // Dopinglinkki
+  q({ key: 'doping_kanava', project: 'DOPINGLINKKI', label: 'Missä kanavassa kohtaaminen toteutui?', type: 'choice', options: ['Verkkolomake', 'Viestisovellus', 'Live chat', 'Puhelin', 'Jodel AMA', 'Muu'], required: 1, applies: Y, sort: 10 });
+  q({ key: 'doping_tilanne', project: 'DOPINGLINKKI', label: 'Mikä on yhteydenottajan tilanne?', type: 'choice', applies: Y, sort: 20,
+    options: ['Käyttää aineita', 'Harkitsee käytön aloittamista', 'Harkitsee lopettamista', 'Lopettanut käytön', 'Läheinen', 'Muu', 'Ei tiedossa'] });
+  q({ key: 'doping_aiheet', project: 'DOPINGLINKKI', label: 'Mitä aiheita kohtaaminen käsitteli?', type: 'multichoice', applies: Y, sort: 30,
+    options: ['Aineiden vaikutukset ja riskit', 'Käytön aloittaminen', 'Käytön lopettaminen', 'Haittojen vähentäminen', 'Riippuvuus', 'Terveyshaitat', 'Läheisen tilanne', 'Hoitoon tai muuhun apuun hakeutuminen', 'Muu'] });
+  q({ key: 'doping_aineet', project: 'DOPINGLINKKI', label: 'Mitä aineita kohtaaminen käsitteli?', type: 'text', applies: Y, sort: 40 });
+  q({ key: 'doping_selkiytyminen', project: 'DOPINGLINKKI', label: 'Selkiytyikö kohdatun tilanne ja/tai löytyikö seuraava askel?', type: 'choice', options: ['Kyllä', 'Ei', 'Ei osaa arvioida'], required: 1, applies: Y, sort: 50 });
+  // Jalma
+  q({ key: 'jalma_tukimuodot', project: 'JALMA', label: 'Mitä tukimuotoja nuoren kohtaamisessa toteutui?', type: 'multichoice', required: 1, applies: YR, sort: 10,
+    options: ['Päihdeneuvonta', 'Mielenterveysneuvonta', 'Yksilöohjaus', 'Palveluohjaus', 'Psykososiaalinen tuki'] });
+  q({ key: 'jalma_ratkenneet', project: 'JALMA', label: 'Kuinka monta nuoren elämäntilanteen kannalta tärkeää asiaa ratkesi?', type: 'number', min_value: 0, required: 1, applies: YR, sort: 20 });
+  q({ key: 'jalma_etenemiset', project: 'JALMA', label: 'Minkälaisia konkreettisia etenemisiä tai ratkaisuja nuoren tilanteessa toteutui?', type: 'multichoice', required: 1, applies: YR, sort: 30,
+    options: ['Palveluun pääsy', 'Hakemuksen tekeminen', 'Asumistilanteen eteneminen', 'Opiskeluun liittyvän tilanteen eteneminen', 'Työllistymiseen liittyvän tilanteen eteneminen', 'Muu konkreettinen eteneminen', 'Ei etenemistä tai ratkaisua'] });
+  q({ key: 'jalma_laheiset', project: 'JALMA', label: 'Kuinka monta tilaisuuden osallistujista oli nuoren läheisiä tai muita monikielisen yhteisön jäseniä?', type: 'number', min_value: 0, required: 1, applies: T, sort: 40 });
+  q({ key: 'jalma_ammattilaiset', project: 'JALMA', label: 'Kuinka monta tilaisuuden osallistujista oli nuorten kanssa työskenteleviä ammattilaisia?', type: 'number', min_value: 0, required: 1, applies: T, sort: 50 });
+  // Katuklinikka
+  q({ key: 'katu_tukimuodot', project: 'KATUKLINIKKA', label: 'Mitä tukimuotoja kohtaamisessa toteutui?', type: 'multichoice', required: 1, applies: Y, sort: 10,
+    options: ['Palveluohjaus', 'Saatto, kuljetus tai tuettu asiointi', 'Tiivis yksilötyöskentely', 'Haittoja vähentävä terveysneuvonta', 'Sosiaalineuvonta', 'Muu tuki'] });
+  q({ key: 'katu_luottamus', project: 'KATUKLINIKKA', label: 'Syntyikö tai vahvistuiko kohtaamisessa asiakkaan ja Katuklinikan välinen luottamuksellinen kontakti?', type: 'rating', options: [1, 2, 3, 4, 5], required: 1, applies: Y, sort: 20 });
+  q({ key: 'katu_palveluprosessi', project: 'KATUKLINIKKA', label: 'Edistikö Katuklinikan tuki asiakkaan palveluprosessin etenemistä tai jatkuvuutta?', type: 'rating', options: [1, 2, 3, 4, 5], applies: Y, sort: 30,
+    help: 'Vastaa, jos kohtaaminen liittyi asiakkaan palveluprosessiin.' });
+  q({ key: 'katu_apu', project: 'KATUKLINIKKA', label: 'Saiko asiakas kohtaamisessa tarpeisiinsa vastaavaa apua tai tukea?', type: 'rating', options: [1, 2, 3, 4, 5], required: 1, applies: Y, sort: 40 });
+  q({ key: 'katu_haittojen_vahentaminen', project: 'KATUKLINIKKA', label: 'Saiko asiakas tietoa tai keinoja huumeiden käytöstä aiheutuvien haittojen vähentämiseen?', type: 'rating', options: [1, 2, 3, 4, 5], applies: Y, sort: 50,
+    help: 'Vastaa, jos kohtaaminen liittyi haittojen vähentämiseen.' });
+  // Lasinen lapsuus
+  q({ key: 'lasinen_toimintamuoto', project: 'LASINEN', label: 'Mihin Lasisen lapsuuden toimintamuotoon kirjaus liittyi?', type: 'choice', required: 1, sort: 10,
+    options: ['Yksilötapaaminen', 'Anonyymi neuvontapalvelu', 'Suljettu vertaistukiryhmä', 'Toimiva ry:n kanssa järjestetty vertaistukiryhmä', 'Luova vertaistukiryhmä', 'Avoin ryhmächat',
+      'Siruista sinuksi -keskusteluilta', 'Nuorten avoin vertaistapaaminen', 'Jatkoryhmä', 'AMA-tapahtuma', 'Hyvinvointituokio tai muu verkkotapahtuma', 'Kokemusasiantuntijoiden kehittämistyöpaja',
+      'Ammattilais- tai opiskelijatapahtuma', 'Muu'] });
+  // Osis: toimintamuoto ohjaa, mitkä lisäkysymykset näytetään
+  const OSIS_YT = { key: 'osis_toimintamuoto', values: ['Yksilötuki'] };
+  const OSIS_JV = { key: 'osis_toimintamuoto', values: ['Jalkautuva vapaaehtoistoiminta'] };
+  q({ key: 'osis_toimintamuoto', project: 'OSIS', label: 'Mitä Osiksen toimintamuotoa kirjaus koskee?', type: 'choice', required: 1, sort: 5,
+    options: ['Yksilötuki', 'Vertaisvuoro', 'Jalkautuva vapaaehtoistoiminta', 'Muu toiminta'] });
+  q({ key: 'osis_kasitellyt_asiat', project: 'OSIS', label: 'Mitä asioita yksilötuessa käsiteltiin?', type: 'multichoice', required: 1, applies: YR, show_if: OSIS_YT, sort: 10,
+    options: ['Palveluihin hakeutuminen tai palveluohjaus', 'Viranomaisasiointi', 'Asuminen tai asunnottomuus', 'Toimeentulo ja etuudet', 'Päihde- tai terveysasiat', 'Mielenterveys tai psykososiaalinen tuki', 'Muu arjen asia'] });
+  q({ key: 'osis_saatto', project: 'OSIS', label: 'Toteutuiko yksilötyössä saatto tai muu arjen asiointituki?', type: 'multichoice', required: 1, applies: YR, show_if: OSIS_YT, sort: 20,
+    options: ['Saatto palveluun tai viranomaisasiointiin', 'Muu rinnalla kulkeminen tai asiointiapu', 'Ei toteutunut'] });
+  q({ key: 'osis_eteneminen', project: 'OSIS', label: 'Etenikö tai ratkesiko asiakkaalle merkityksellinen asia?', type: 'choice', required: 1, applies: YR, show_if: OSIS_YT, sort: 30,
+    options: ['Eteni', 'Ratkesi', 'Ei edennyt tai ratkennut', 'Ei arvioitavissa'] });
+  q({ key: 'osis_vertaisvuorot', project: 'OSIS', label: 'Kuinka monta vertaisvuoroa kirjaukseen sisältyy?', type: 'number', min_value: 1, required: 1, show_if: { key: 'osis_toimintamuoto', values: ['Vertaisvuoro'] }, sort: 40 });
+  q({ key: 'osis_vapaaehtoiset', project: 'OSIS', label: 'Kuinka monta vapaaehtoista osallistui jalkautumiseen?', type: 'number', min_value: 0, required: 1, show_if: OSIS_JV, sort: 50 });
+  q({ key: 'osis_jalkautuminen_tuki', project: 'OSIS', label: 'Millaista tukea tai konkreettista apua jalkautumisessa annettiin?', type: 'multichoice', required: 1, show_if: OSIS_JV, sort: 60,
+    options: ['Keskustelu tai kuuntelu', 'Ruoka tai juoma', 'Muu konkreettinen apu', 'Palveluohjaus tai ammatillinen tuki', 'Ei apua annettu'] });
+  q({ key: 'osis_ohjaus', project: 'OSIS', label: 'Ohjattiinko jalkautumisessa joku ammatilliseen tai kiireelliseen apuun?', type: 'choice', required: 1, show_if: OSIS_JV, sort: 70,
+    options: ['Ammatilliseen apuun', 'Kiireelliseen apuun', 'Molempiin', 'Ei'] });
+  // Völjy
+  q({ key: 'voljy_toimintamuoto', project: 'VOLJY', label: 'Mitä Völjyn toimintamuotoa kirjaus koskee?', type: 'choice', required: 1, applies: YR, sort: 10,
+    options: ['Kohtaamispaikan toiminta', 'Kotiin vietävä tuki / kotikäynti', 'Yksilötyö tai palveluohjaus', 'Retki, ryhmä tai tapahtuma', 'Muu kohtaaminen'] });
+  q({ key: 'voljy_asumistuki', project: 'VOLJY', label: 'Annettiinko kohtaamisessa asumiseen liittyvää tukea?', type: 'choice', options: ['Kyllä', 'Ei'], required: 1, applies: YR, sort: 20 });
+  const VA = { key: 'voljy_asumistuki', values: ['Kyllä'] };
+  q({ key: 'voljy_asuminen_toimenpiteet', project: 'VOLJY', label: 'Kuinka monta asumista turvaavaa toimenpidettä ratkesi tämän kirjauksen yhteydessä?', type: 'number', min_value: 0, required: 1, applies: YR, show_if: VA, sort: 30 });
+  q({ key: 'voljy_asuminen_tulos', project: 'VOLJY', label: 'Mikä asumista koskeva tulos toteutui tai varmistui?', type: 'multichoice', required: 1, applies: YR, show_if: VA, sort: 40,
+    options: ['Häätö ehkäistiin', 'Vuokrasuhde säilyi / asuminen turvattiin', 'Uusi asumisratkaisu löytyi', 'Ei vielä varmistunutta tulosta'] });
+});
+
+// Yhteisten kysymysten näkyvyys määrittelytaulukon mukaan: tavoittamisessa ei kysytä kohtaamiskohtaisia tietoja
+once('yhteiset_2027_nakyvyys', () => {
+  db.prepare(`UPDATE questions SET applies = '["yksilo","ryhma"]' WHERE applies IS NULL AND project_id IS NULL
+              AND key IN ('tyontekijan_arvio', 'sijainti', 'kaupunki', 'kadunnimi', 'asiakkaan_palaute')`).run();
+});
+
 const DIGITAL_LOCATION = 'Digialustalla';
 
 function audit(userId, action, entity, entityId, details) {
@@ -296,4 +460,4 @@ function setFeature(key, on) {
 }
 const features = () => Object.fromEntries(Object.keys(FEATURES).map(k => [k, featureEnabled(k)]));
 
-module.exports = { db, ensureAdmin, audit, RECORDER_ROLES, DIGITAL_LOCATION, FEATURES, featureEnabled, setFeature, features };
+module.exports = { db, ensureAdmin, audit, RECORDER_ROLES, RECORD_KINDS, DIGITAL_LOCATION, FEATURES, featureEnabled, setFeature, features };
