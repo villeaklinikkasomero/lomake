@@ -872,7 +872,7 @@ async function viewList() {
   const me = state.me; const p = me.permissions;
   const PAGE = 50;
   let staffSelect = null;
-  if (p.staffScope !== 'none') {
+  if (p.staffScope === 'all' || p.staffScope === 'projects') {
     const { rows: staff } = await api('/staff');
     staffSelect = h('select', { id: 'l-user' }, h('option', { value: '' }, 'Kaikki kirjaajat'),
       staff.filter(s => s.rows > 0 || String(s.id) === listState.created_by).map(s => h('option', { value: s.id }, s.name)));
@@ -1024,7 +1024,7 @@ async function viewStaff() {
   ];
   async function load() {
     box.replaceChildren(h('div', { class: 'loading' }, 'Ladataan…'));
-    const { rows, totals } = await api('/staff?' + staffQuery());
+    const { rows, totals, others, ownOnly } = await api('/staff?' + staffQuery());
     rows.forEach(r => { r.per_day = r.active_days ? r.encounters / r.active_days : null; });
     const sorted = [...rows].sort((a, b) => {
       const k = staffState.sort; const va = a[k], vb = b[k];
@@ -1032,7 +1032,12 @@ async function viewStaff() {
       return (typeof va === 'string' ? va.localeCompare(vb, 'fi') : va - vb) * staffState.dir;
     });
     const noRecords = rows.filter(r => r.rows === 0).length;
+    const own = ownOnly ? (rows.find(r => r.id === state.me.user.id) || { encounters: 0, rows: 0 }) : null;
     box.replaceChildren(
+      ownOnly ? h('div', { class: 'stats' },
+        h('div', { class: 'stat' }, h('b', null, fmtNum(own.encounters)), h('span', null, 'omaa kohtaamista'), h('small', null, `${fmtNum(own.rows)} kirjausta`)),
+        h('div', { class: 'stat' }, h('b', null, fmtNum(others.encounters)), h('span', null, 'tuntityöntekijöiden kohtaamista'), h('small', null, `hankkeissasi · ${fmtNum(others.rows)} kirjausta · ${fmtNum(others.staff)} kirjaajaa`)),
+        h('div', { class: 'stat' }, h('b', null, fmtNum(totals.encounters)), h('span', null, 'kohtaamista yhteensä'), h('small', null, `${fmtNum(totals.rows)} kirjausta · ${fmtNum(totals.staff)} kirjaajaa`))) :
       h('div', { class: 'stats' },
         h('div', { class: 'stat' }, h('b', null, fmtNum(totals.encounters)), h('span', null, 'kohtaamista')),
         h('div', { class: 'stat' }, h('b', null, fmtNum(totals.rows)), h('span', null, 'kirjausta')),
@@ -1058,7 +1063,9 @@ async function viewStaff() {
   }
   $app.replaceChildren(
     h('div', { class: 'page-head' }, h('div', null, h('h1', null, 'Työntekijät'),
-      h('p', { class: 'muted' }, p.staffScope === 'all' ? 'Kirjaukset työntekijöittäin kaikista hankkeista.' : 'Kirjaukset työntekijöittäin hankkeistasi. Luvut sisältävät vain hankkeidesi kirjaukset.'))),
+      h('p', { class: 'muted' }, p.staffScope === 'all' ? 'Kirjaukset työntekijöittäin kaikista hankkeista.'
+        : p.staffScope === 'own' ? 'Säätiön työntekijöiden kirjaukset kaikista hankkeista. Tuntityöntekijöistä näytetään vain hankkeidesi yhteismäärät.'
+        : 'Säätiön työntekijöiden kirjaukset kaikista hankkeista sekä hankkeidesi tuntityöntekijät.'))),
     staffFilterBar(load), box);
   await load();
 }
@@ -1070,9 +1077,9 @@ async function viewStaffDetail(id) {
     box.replaceChildren(h('div', { class: 'loading' }, 'Ladataan…'));
     const d = await api(`/staff/${id}?` + staffQuery());
     const k = d.kpi;
-    head.replaceChildren(h('p', null, h('a', { href: '#/tyontekijat' }, '← Kaikki työntekijät')),
+    head.replaceChildren(h('p', null, h('a', { href: '#/tyontekijat' }, state.me.permissions.staffScope === 'own' ? '← Työntekijät' : '← Kaikki työntekijät')),
       h('div', { class: 'page-head' }, h('div', null, h('h1', null, d.user.name), h('p', { class: 'muted' }, roleBadge(d.user), ' ', d.user.recorder_role)),
-        state.me.permissions.viewScope !== 'none' ? h('button', { class: 'btn btn-secondary', type: 'button', onclick: () => {
+        (['all', 'projects'].includes(state.me.permissions.viewScope) || (state.me.permissions.viewScope === 'own' && Number(id) === state.me.user.id)) ? h('button', { class: 'btn btn-secondary', type: 'button', onclick: () => {
           Object.assign(listState, { from: staffState.from, to: staffState.to, project_id: staffState.project_id, type: '', created_by: String(id), offset: 0 });
           go('#/kirjaukset'); } }, 'Näytä kirjaukset') : null));
     if (!k.rows) { box.replaceChildren(h('div', { class: 'card empty' }, 'Ei kirjauksia valitulla aikavälillä.')); return; }

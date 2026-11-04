@@ -51,7 +51,7 @@ Kirjautumistapa valitaan käyttäjäkohtaisesti kohdassa Hallinta → Käyttäj�
 | Korjaa kirjauksia | kaikki | omat hankkeet | vain omat | – |
 | Poistaa kirjauksia | kaikki | omat hankkeet | – | – |
 | Excel-vienti | kaikki hankkeet | omat hankkeet | – | – |
-| Työntekijäseuranta | kaikki | omien hankkeiden kirjaukset | – | – |
+| Työntekijäseuranta | kaikki | säätiöläiset (kaikki hankkeet) + omien hankkeiden tuntityöntekijät | säätiöläiset (kaikki hankkeet); tuntityöntekijöistä vain yhteismäärät | – |
 | Tilastot (dashboard) | kaikki | omat hankkeet | omat hankkeet | – |
 | Asiakaspolut (koosteet, hankekohtaiset; oletuksena piilotettu) | kaikki | omien hankkeiden kirjaukset | – | – |
 | Asiakastunnisteen haku kirjatessa | ✓ | ✓ | ✓ | ✓ |
@@ -121,13 +121,18 @@ Määrittelydokumentin dashboard-mallin mukainen näkymä (valikossa **Tilastot*
 
 Vertailu näyttää muutosprosentin ja vertailujakson luvun kohtaamisten kokonaismäärässä ja eri henkilöiden arviossa. Kuukausikaaviossa vertailujakson kokonaismäärä näkyy harmaana katkoviivana, ja se on mukana myös taulukkonäkymässä.
 
-## Työntekijäseuranta (admin ja tiiminvetäjä)
+## Työntekijäseuranta (admin, tiiminvetäjä ja hanketyöntekijä)
 
 **Työntekijät**-sivulla näkyy jokaisen kirjaajan yhteenveto valitulta aikaväliltä ja hankkeesta: kohtaamiset, kirjaukset, yksilö- ja ryhmäkirjaukset, aktiivipäivät, kohtaamiset aktiivipäivää kohden sekä työntekijän ja asiakkaan arvioiden keskiarvot. Sarakkeen otsikkoa klikkaamalla taulukko järjestyy kyseisen sarakkeen mukaan. Listalla näkyvät myös työntekijät, jotka eivät ole vielä kirjanneet mitään.
 
 Työntekijän omalla sivulla ovat tunnusluvut (mm. eri nimimerkit ja keskimääräinen kirjausviive), kuukausikaavio sekä jakaumat hankkeittain, sijainneittain ja oman arvion mukaan. **Näytä kirjaukset** avaa kirjauslistan valmiiksi rajattuna tähän työntekijään. Kirjauslistalla voi myös itse rajata kirjaajan mukaan.
 
-Tiiminvetäjä näkee vain omien hankkeidensa kirjaukset, vaikka työntekijä kirjaisi myös muihin hankkeisiin.
+Näkyvyys roolin mukaan:
+
+- **Säätiön työntekijät** (tiiminvetäjät, hanketyöntekijät ja kirjauksia tehneet adminit) näkyvät kaikille seurannan käyttäjille nimeltä, ja heidän lukunsa lasketaan kaikista hankkeista.
+- **Tuntityöntekijät**: admin näkee kaikki, tiiminvetäjä omien hankkeidensa tuntityöntekijät eriteltyinä ja hanketyöntekijä omien hankkeidensa tuntityöntekijöistä vain yhteismäärät ilman nimiä.
+- Muille kuin adminille ei näytetä toisten sähköpostiosoitetta eikä viimeisintä kirjautumisaikaa.
+- **Näytä kirjaukset** noudattaa kirjausten selausoikeutta: tiiminvetäjä näkee listassa vain omien hankkeidensa kirjaukset ja hanketyöntekijä vain omansa, joten hanketyöntekijällä painike on vain omalla sivullaan.
 
 ## Asiakastunnisteet ja palveluohjaukset
 

@@ -228,22 +228,42 @@ test('työntekijäseuranta: admin kaikki, tiiminvetäjä vain omat hankkeet, muu
   const htRow = all.data.rows.find(r => r.id === htId);
   assert.ok(htRow && htRow.encounters >= 12 && htRow.worker_rating != null);
 
+  // Jalman tuntityöntekijä (ei tiiminvetäjän eikä hanketyöntekijän hanke)
+  const jt = await users.admin('POST', '/users', { name: 'Jalman avustaja', email: 'jt@t.fi', role: 'tuntityontekija', project_ids: [p.JALMA] });
+  const jtId = jt.data.id || db.prepare("SELECT id FROM users WHERE email='jt@t.fi'").get().id;
+  assert.equal((await users.admin('POST', '/encounters', basePayload(p.JALMA, { performer: String(jtId) }))).status, 201);
+  const tvId = db.prepare("SELECT id FROM users WHERE email='tv@t.fi'").get().id;
+
+  // Säätiöläiset näkyvät kaikille kaikkien hankkeiden luvuin; tuntityöntekijät oikeuksien mukaan
   const tv = await users.tiimivetaja('GET', '/staff');
   assert.equal(tv.status, 200);
-  assert.ok(!tv.data.rows.some(r => r.id === adminId), 'tiiminvetäjä ei näe toisen hankkeen kirjaajaa');
-  const jalmaRows = db.prepare('SELECT COUNT(*) n FROM encounters WHERE project_id = ? AND deleted_at IS NULL').get(p.JALMA).n;
-  assert.ok(jalmaRows > 0);
-  const tvTotal = tv.data.totals.rows;
-  const allowed = db.prepare(`SELECT COUNT(*) n FROM encounters WHERE deleted_at IS NULL AND project_id IN (?, ?)`).get(p.KATUKLINIKKA, p.AK21).n;
-  assert.equal(tvTotal, allowed);
+  const tvAdmin = tv.data.rows.find(r => r.id === adminId);
+  assert.ok(tvAdmin && tvAdmin.rows === all.data.rows.find(r => r.id === adminId).rows, 'säätiöläinen näkyy kaikkien hankkeiden luvuin');
+  assert.ok(!tv.data.rows.some(r => r.id === jtId), 'toisen hankkeen tuntityöntekijä ei näy');
+  assert.ok((await users.admin('GET', '/staff')).data.rows.some(r => r.id === jtId));
 
   const det = await users.tiimivetaja('GET', `/staff/${htId}`);
   assert.equal(det.status, 200);
   assert.ok(det.data.kpi.encounters >= 12 && det.data.monthly.length >= 1 && det.data.byProject.length >= 1);
-  assert.equal((await users.tiimivetaja('GET', `/staff/${adminId}`)).status, 404);
+  assert.equal(det.data.user.email, undefined);
+  assert.equal((await users.tiimivetaja('GET', `/staff/${adminId}`)).status, 200);
+  assert.equal((await users.tiimivetaja('GET', `/staff/${jtId}`)).status, 404);
 
-  assert.equal((await users.hanketyontekija('GET', '/staff')).status, 403);
-  assert.equal((await users.hanketyontekija('GET', `/staff/${htId}`)).status, 403);
+  // Hanketyöntekijä: kaikki säätiöläiset, tuntityöntekijöistä vain yhteismäärät
+  const ownStaff = await users.hanketyontekija('GET', '/staff');
+  assert.equal(ownStaff.status, 200);
+  assert.ok(ownStaff.data.ownOnly);
+  const shownRoles = new Set(ownStaff.data.rows.map(r => r.role));
+  assert.ok(!shownRoles.has('tuntityontekija'));
+  assert.ok([htId, tvId, adminId].every(id => ownStaff.data.rows.some(r => r.id === id)));
+  const hourlyRows = db.prepare(`SELECT COUNT(*) n FROM encounters e JOIN users u ON u.id = e.performed_by
+    WHERE e.deleted_at IS NULL AND u.role = 'tuntityontekija' AND e.project_id = ?`).get(p.KATUKLINIKKA).n;
+  assert.equal(ownStaff.data.others.rows, hourlyRows);
+  assert.ok(!JSON.stringify(ownStaff.data.others).includes('name'));
+  assert.equal((await users.hanketyontekija('GET', `/staff/${htId}`)).status, 200);
+  assert.equal((await users.hanketyontekija('GET', `/staff/${tvId}`)).status, 200);
+  const ttId = db.prepare("SELECT id FROM users WHERE email='tt@t.fi'").get().id;
+  assert.equal((await users.hanketyontekija('GET', `/staff/${ttId}`)).status, 404);
 
   // Kirjauslistan kirjaajasuodatin
   const list = await users.tiimivetaja('GET', `/encounters?created_by=${htId}`);

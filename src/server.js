@@ -593,15 +593,21 @@ app.delete('/api/encounters/:id', requireAuth, (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
-// Työntekijäkohtainen seuranta (admin: kaikki, tiiminvetäjä: omien hankkeiden kirjaukset)
+// Työntekijäkohtainen seuranta (admin: kaikki, tiiminvetäjä: omien hankkeiden kirjaukset,
+// hanketyöntekijä: omat tiedot + hankkeiden kokonaismäärät ilman muiden työntekijöiden erittelyä)
 // ---------------------------------------------------------------------------
 function staffScopeSql(req, alias = 'e') {
   const s = scope(req.user, 'staffScope');
   if (s === 'all') return { sql: '1=1', params: [] };
   return { sql: `${alias}.project_id IN (${req.projectIds.map(() => '?').join(',') || 'NULL'})`, params: [...req.projectIds] };
 }
-function staffFilters(req) {
-  const sc = staffScopeSql(req);
+// Säätiön työntekijät (admin, tiiminvetäjä, hanketyöntekijä) näkyvät kaikille seurannan käyttäjille
+// kaikkien hankkeiden luvuin. Tuntityöntekijät näkyvät oikeuksien mukaan (admin: kaikki,
+// tiiminvetäjä: omien hankkeiden, hanketyöntekijä: vain yhteismäärä omista hankkeista).
+const FOUNDATION_ROLES = ['admin', 'tiimivetaja', 'hanketyontekija'];
+const isFoundation = (role) => FOUNDATION_ROLES.includes(role);
+function staffFilters(req, { unscoped = false } = {}) {
+  const sc = unscoped ? { sql: '1=1', params: [] } : staffScopeSql(req);
   const where = ['e.deleted_at IS NULL', sc.sql]; const params = [...sc.params];
   if (isDate(req.query.from)) { where.push('e.encounter_date >= ?'); params.push(req.query.from); }
   if (isDate(req.query.to)) { where.push('e.encounter_date <= ?'); params.push(req.query.to); }
@@ -610,18 +616,15 @@ function staffFilters(req) {
 }
 const ratingQ = (key) => (db.prepare('SELECT id FROM questions WHERE key = ?').get(key) || {}).id || -1;
 
-// Käyttäjät, jotka kuuluvat tarkastelijan näkyvyyteen (myös ne, joilla ei ole kirjauksia)
-function staffUserIds(req) {
-  if (scope(req.user, 'staffScope') === 'all') return db.prepare("SELECT id FROM users WHERE role <> 'admin' AND (active = 1 OR is_test = 1)").all().map(r => r.id);
+// Tuntityöntekijät, jotka kuuluvat tarkastelijan näkyvyyteen (myös ne, joilla ei ole kirjauksia)
+function hourlyUserIds(req) {
+  if (scope(req.user, 'staffScope') === 'all') return db.prepare("SELECT id FROM users WHERE role = 'tuntityontekija' AND (active = 1 OR is_test = 1)").all().map(r => r.id);
   if (!req.projectIds.length) return [];
-  return db.prepare(`SELECT DISTINCT user_id id FROM user_projects WHERE project_id IN (${req.projectIds.map(() => '?').join(',')})`).all(...req.projectIds).map(r => r.id);
+  return db.prepare(`SELECT DISTINCT up.user_id id FROM user_projects up JOIN users u ON u.id = up.user_id
+    WHERE u.role = 'tuntityontekija' AND up.project_id IN (${req.projectIds.map(() => '?').join(',')})`).all(...req.projectIds).map(r => r.id);
 }
 
-app.get('/api/staff', requireAuth, (req, res) => {
-  if (scope(req.user, 'staffScope') === 'none') return bad(res, 'Ei oikeutta.', 403);
-  const f = staffFilters(req);
-  const wr = ratingQ('tyontekijan_arvio'), cr = ratingQ('asiakkaan_arvio');
-  const stats = db.prepare(`
+const STAFF_STATS_SQL = (where, roleCond) => `
     SELECT e.performed_by user_id, COUNT(*) rows, COALESCE(SUM(CASE WHEN e.kind <> 'tavoittaminen' THEN e.encounter_count END), 0) encounters,
            COALESCE(SUM(CASE WHEN e.kind = 'tavoittaminen' THEN e.encounter_count END), 0) reach,
            SUM(e.kind = 'yksilo') yksilo_rows,
@@ -630,28 +633,58 @@ app.get('/api/staff', requireAuth, (req, res) => {
            COUNT(DISTINCT e.encounter_date) active_days, MAX(e.encounter_date) last_date, MAX(e.created_at) last_saved,
            AVG(CAST(w.value AS REAL)) worker_rating, AVG(CAST(c.value AS REAL)) client_rating, COUNT(c.value) client_rating_n
     FROM encounters e
+    JOIN users pu ON pu.id = e.performed_by
     LEFT JOIN encounter_answers w ON w.encounter_id = e.id AND w.question_id = ?
     LEFT JOIN encounter_answers c ON c.encounter_id = e.id AND c.question_id = ?
-    WHERE ${f.sql} AND e.performed_by IS NOT NULL GROUP BY e.performed_by`).all(wr, cr, ...f.params);
-  const byUser = new Map(stats.map(s => [s.user_id, s]));
-  const ids = new Set([...staffUserIds(req), ...byUser.keys()]);
-  if (!ids.size) return res.json({ rows: [], totals: { rows: 0, encounters: 0 } });
-  const users = db.prepare(`SELECT id, name, role, recorder_role, active, is_test FROM users WHERE id IN (${[...ids].map(() => '?').join(',')})`).all(...ids);
-  const rows = users.map(u => ({ ...u, rows: 0, encounters: 0, reach: 0, yksilo_rows: 0, ryhma_rows: 0, ryhma_encounters: 0, active_days: 0,
-    last_date: null, last_saved: null, worker_rating: null, client_rating: null, client_rating_n: 0, ...(byUser.get(u.id) || {}) }))
-    .sort((a, b) => b.encounters - a.encounters || a.name.localeCompare(b.name, 'fi'));
-  const totals = rows.reduce((t, r) => ({ rows: t.rows + r.rows, encounters: t.encounters + r.encounters }), { rows: 0, encounters: 0 });
-  res.json({ rows, totals });
+    WHERE ${where} AND ${roleCond} GROUP BY e.performed_by`;
+const FOUNDATION_COND = `pu.role IN (${FOUNDATION_ROLES.map(r => `'${r}'`).join(',')})`;
+
+app.get('/api/staff', requireAuth, (req, res) => {
+  const sc = scope(req.user, 'staffScope');
+  if (sc === 'none') return bad(res, 'Ei oikeutta.', 403);
+  const wr = ratingQ('tyontekijan_arvio'), cr = ratingQ('asiakkaan_arvio');
+  const fAll = staffFilters(req, { unscoped: true }), fScoped = staffFilters(req);
+  const foundationStats = db.prepare(STAFF_STATS_SQL(fAll.sql, FOUNDATION_COND)).all(wr, cr, ...fAll.params);
+  const hourlyStats = db.prepare(STAFF_STATS_SQL(fScoped.sql, `NOT ${FOUNDATION_COND}`)).all(wr, cr, ...fScoped.params);
+  const blank = { rows: 0, encounters: 0, reach: 0, yksilo_rows: 0, ryhma_rows: 0, ryhma_encounters: 0, active_days: 0,
+    last_date: null, last_saved: null, worker_rating: null, client_rating: null, client_rating_n: 0 };
+  const load = (ids) => ids.length ? db.prepare(`SELECT id, name, role, recorder_role, active, is_test FROM users WHERE id IN (${ids.map(() => '?').join(',')})`).all(...ids) : [];
+  const build = (users, stats) => { const m = new Map(stats.map(x => [x.user_id, x])); return users.map(u => ({ ...u, ...blank, ...(m.get(u.id) || {}) })); };
+
+  // Säätiöläiset: aktiiviset tiiminvetäjät ja hanketyöntekijät sekä kaikki, joilla on kirjauksia (myös admin)
+  const fIds = new Set([...db.prepare("SELECT id FROM users WHERE role IN ('tiimivetaja','hanketyontekija') AND (active = 1 OR is_test = 1)").all().map(r => r.id),
+    ...foundationStats.map(x => x.user_id)]);
+  const foundation = build(load([...fIds]), foundationStats);
+  const hIds = new Set([...hourlyUserIds(req), ...hourlyStats.map(x => x.user_id)]);
+  const hourly = build(load([...hIds]), hourlyStats);
+
+  const sum = (list) => ({ rows: list.reduce((a, r) => a + r.rows, 0), encounters: list.reduce((a, r) => a + r.encounters, 0),
+    reach: list.reduce((a, r) => a + r.reach, 0), staff: list.filter(r => r.rows > 0).length });
+  const sort = (list) => list.sort((a, b) => b.encounters - a.encounters || a.name.localeCompare(b.name, 'fi'));
+  if (sc === 'own') {
+    // Tuntityöntekijöistä vain yhteismäärät
+    const others = sum(hourly); const shown = sum(foundation);
+    return res.json({ rows: sort(foundation), totals: { rows: shown.rows + others.rows, encounters: shown.encounters + others.encounters, staff: shown.staff + others.staff },
+      others, ownOnly: true });
+  }
+  const rows = sort([...foundation, ...hourly]);
+  const t = sum(rows);
+  res.json({ rows, totals: { rows: t.rows, encounters: t.encounters } });
 });
 
 app.get('/api/staff/:id', requireAuth, (req, res) => {
-  if (scope(req.user, 'staffScope') === 'none') return bad(res, 'Ei oikeutta.', 403);
+  const sc = scope(req.user, 'staffScope');
+  if (sc === 'none') return bad(res, 'Ei oikeutta.', 403);
   const id = Number(req.params.id);
   const u = db.prepare('SELECT id, name, email, role, recorder_role, active, is_test, last_login_at, created_at FROM users WHERE id = ?').get(id);
-  const f = staffFilters(req);
-  const visible = u && (scope(req.user, 'staffScope') === 'all' || staffUserIds(req).includes(id) ||
-    db.prepare(`SELECT 1 FROM encounters e WHERE e.performed_by = ? AND ${staffScopeSql(req).sql} LIMIT 1`).get(id, ...staffScopeSql(req).params));
+  if (!u) return bad(res, 'Työntekijää ei löydy.', 404);
+  const foundationUser = isFoundation(u.role);
+  const visible = foundationUser || sc === 'all' || (sc === 'projects' && (hourlyUserIds(req).includes(id) ||
+    db.prepare(`SELECT 1 FROM encounters e WHERE e.performed_by = ? AND ${staffScopeSql(req).sql} LIMIT 1`).get(id, ...staffScopeSql(req).params)));
   if (!visible) return bad(res, 'Työntekijää ei löydy.', 404);
+  // Säätiöläisen luvut kaikista hankkeista, tuntityöntekijän oikeuksien mukaan
+  const f = staffFilters(req, { unscoped: foundationUser });
+  if (sc !== 'all') { delete u.email; delete u.last_login_at; }
   const where = `e.performed_by = ? AND ${f.sql}`; const params = [id, ...f.params];
   const wr = ratingQ('tyontekijan_arvio'), cr = ratingQ('asiakkaan_arvio');
   const kpi = db.prepare(`SELECT COUNT(*) rows, COALESCE(SUM(CASE WHEN e.kind <> 'tavoittaminen' THEN e.encounter_count END), 0) encounters,

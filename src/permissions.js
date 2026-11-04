@@ -15,7 +15,7 @@ const ROLES = {
 //  editScope     – mitä kirjauksia voi korjata: 'all' | 'projects' | 'own' | 'none'
 //  deleteScope   – mitä kirjauksia voi poistaa: 'all' | 'projects' | 'none'
 //  exportScope   – Excel-vienti: 'all' | 'projects' | 'none'
-//  staffScope    – työntekijäkohtainen seuranta: 'all' | 'projects' | 'none'
+//  staffScope    – työntekijäkohtainen seuranta: 'all' | 'projects' | 'own' (omat tiedot + hankkeiden kokonaismäärät) | 'none'
 //  pathScope     – asiakaspolut ja palveluohjaukset (koosteet): 'all' | 'projects' | 'none'
 //  dashScope     – Tilastot-näkymä (koosteet): 'all' | 'projects' | 'none'
 //  manageUsers / manageProjects / manageQuestions – ylläpito
@@ -29,7 +29,7 @@ const PERMISSIONS = {
     manageUsers: false, manageProjects: false, manageQuestions: false,
   },
   hanketyontekija: {
-    record: true, viewScope: 'own', editScope: 'own', deleteScope: 'none', exportScope: 'none', staffScope: 'none', pathScope: 'none', dashScope: 'projects',
+    record: true, viewScope: 'own', editScope: 'own', deleteScope: 'none', exportScope: 'none', staffScope: 'own', pathScope: 'none', dashScope: 'projects',
     manageUsers: false, manageProjects: false, manageQuestions: false,
   },
   tuntityontekija: {
