@@ -155,3 +155,29 @@ test('Entra ID: rooli sovellusroolista, käyttäjä luodaan; ilman roolia ei pä
   ({ r } = await entraLogin({ oid: 'oid-ext', email: 'x@muu.fi', roles: ['admin'], tid: 'toinen' }));
   assert.match(decodeURIComponent(r.location), /organisaatioon/);
 });
+
+test('muista tämä laite: koodia ei kysytä uudelleen, mitätöityy salasanan vaihtuessa', async () => {
+  const { db } = require('../src/db'); const auth = require('../src/auth'); const bcrypt = require('bcryptjs');
+  const secret = auth.newSecret();
+  const id = db.prepare(`INSERT INTO users (email, name, password_hash, role, must_change_password, recorder_role, mfa_secret, mfa_enabled)
+    VALUES ('muista@t.fi', 'Muista', ?, 'tuntityontekija', 0, 'x', ?, 1)`).run(bcrypt.hashSync('Muista-salasana-1', 4), auth.encrypt(secret)).lastInsertRowid;
+  const c = client();
+  let r = await c('POST', '/api/login', { email: 'muista@t.fi', password: 'Muista-salasana-1' });
+  assert.equal(r.data.mfa, 'verify'); assert.equal(r.data.trustedDays, 30);
+  r = await c('POST', '/api/login/mfa', { code: auth.totp(secret), remember: true });
+  assert.equal(r.status, 200);
+  await c('POST', '/api/logout');
+  r = await c('POST', '/api/login', { email: 'muista@t.fi', password: 'Muista-salasana-1' });
+  assert.equal(r.status, 200); assert.equal(r.data.mfa, undefined, 'muistettu laite');
+  assert.equal((await c('GET', '/api/me')).status, 200);
+  // Väärä salasana ei kelpaa muistetullakaan laitteella
+  await c('POST', '/api/logout');
+  assert.equal((await c('POST', '/api/login', { email: 'muista@t.fi', password: 'vaara' })).status, 401);
+  // Toinen laite: koodi kysytään
+  const other = client();
+  assert.equal((await other('POST', '/api/login', { email: 'muista@t.fi', password: 'Muista-salasana-1' })).data.mfa, 'verify');
+  // Salasanan vaihto mitätöi muistetun laitteen
+  db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(bcrypt.hashSync('Uusi-salasana-22', 4), id);
+  r = await c('POST', '/api/login', { email: 'muista@t.fi', password: 'Uusi-salasana-22' });
+  assert.equal(r.data.mfa, 'verify');
+});

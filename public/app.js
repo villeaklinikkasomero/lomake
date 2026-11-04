@@ -242,40 +242,77 @@ async function viewLogin() {
   function drawMfa(r, account) {
     const err = h('div', { class: 'notice err', hidden: true, role: 'alert' });
     const code = h('input', { type: 'text', id: 'mfa-code', inputmode: 'numeric', autocomplete: 'one-time-code', pattern: '[0-9 ]*', maxlength: '7',
-      class: 'input-narrow mono code-input', required: true, 'aria-describedby': 'mfa-help' });
+      class: 'input-narrow mono code-input', required: true, 'aria-describedby': 'mfa-help', enterkeyhint: 'done' });
     const btn = h('button', { class: 'btn btn-primary btn-lg', type: 'submit' }, r.mfa === 'setup' ? 'Ota käyttöön ja kirjaudu' : 'Kirjaudu');
-    const form = h('form', { onsubmit: async (e) => {
-      e.preventDefault(); err.hidden = true; btn.disabled = true;
-      try { await api('/login/mfa', { method: 'POST', body: { code: code.value } }); await done(); }
+    const mobile = window.matchMedia('(pointer: coarse)').matches || window.matchMedia('(max-width: 640px)').matches;
+    // Oletuksena päällä puhelimella (henkilökohtainen laite), tietokoneella pois
+    const remember = r.trustedDays ? h('input', { type: 'checkbox', id: 'mfa-remember', checked: mobile }) : null;
+    let busy = false;
+    const submit = async () => {
+      if (busy) return; busy = true; err.hidden = true; btn.disabled = true;
+      try { await api('/login/mfa', { method: 'POST', body: { code: code.value, remember: !!(remember && remember.checked) } }); await done(); }
       catch (ex) {
         err.textContent = ex.message; err.hidden = false; code.value = ''; code.focus();
         if (/alusta|vanheni/.test(ex.message)) setTimeout(() => drawStart(ex.message), 1500);
-      } finally { btn.disabled = false; }
-    } },
-      h('div', { class: 'field' }, h('label', { for: 'mfa-code' }, '6-numeroinen koodi'), code,
-        h('p', { class: 'help help-below', id: 'mfa-help' }, 'Koodi vaihtuu 30 sekunnin välein.')),
+      } finally { btn.disabled = false; busy = false; }
+    };
+    // Kuusi numeroa (kirjoitettu tai liitetty) lähettää koodin heti
+    code.addEventListener('input', () => {
+      const digits = code.value.replace(/\D/g, '').slice(0, 6);
+      if (code.value !== digits) code.value = digits;
+      if (digits.length === 6) submit();
+    });
+    const canPaste = !!(navigator.clipboard && navigator.clipboard.readText);
+    const pasteBtn = canPaste ? h('button', { class: 'btn btn-secondary', type: 'button', onclick: async () => {
+      try { const t = (await navigator.clipboard.readText()).replace(/\D/g, ''); if (t.length >= 6) { code.value = t.slice(0, 6); submit(); } else { err.textContent = 'Leikepöydällä ei ole 6-numeroista koodia.'; err.hidden = false; } }
+      catch { code.focus(); }
+    } }, 'Liitä koodi') : null;
+    const form = h('form', { onsubmit: (e) => { e.preventDefault(); submit(); } },
+      h('div', { class: 'field' }, h('label', { for: 'mfa-code' }, '6-numeroinen koodi'),
+        h('div', { class: 'code-row' }, code, pasteBtn),
+        h('p', { class: 'help help-below', id: 'mfa-help' }, 'Koodi vaihtuu 30 sekunnin välein. Microsoft Authenticatorissa koodin saa kopioitua napauttamalla sitä.')),
+      remember ? h('div', { class: 'field' }, h('label', { class: 'switch' }, remember, `Muista tämä laite ${r.trustedDays} päivää`),
+        h('p', { class: 'help help-below' }, 'Koodia ei kysytä tällä laitteella uudelleen. Älä valitse yhteiskäyttöisellä laitteella.')) : null,
       err, btn,
       h('button', { class: 'btn btn-secondary', type: 'button', onclick: () => drawStart() }, 'Peruuta'));
+
+    // Puhelimella QR-koodia ei voi lukea samalla laitteella: ensisijaisesti suora linkki sovellukseen ja avaimen kopiointi
+    const rawSecret = String(r.secret || '').replace(/\s+/g, '');
+    const copyBtn = h('button', { class: 'btn btn-secondary', type: 'button', onclick: async (ev) => {
+      try { await navigator.clipboard.writeText(rawSecret); ev.currentTarget.textContent = 'Avain kopioitu ✓'; }
+      catch { toast('Kopiointi ei onnistunut. Kirjoita avain käsin.', true); }
+    } }, 'Kopioi avain');
+    const keyBox = h('div', { class: 'mfa-key' }, h('code', { class: 'mfa-secret' }, r.secret), copyBtn,
+      h('p', { class: 'small muted' }, `Tili: ${account} · tyyppi: aikaperusteinen (TOTP)`));
+    const qrBox = h('div', { class: 'mfa-qr' }, h('img', { src: r.qr, alt: 'QR-koodi todennussovellukseen', width: '220', height: '220' }));
+    const setupSteps = mobile ? [
+      h('li', null, 'Asenna puhelimeen todennussovellus, esim. ', h('strong', null, 'Microsoft Authenticator'), ' tai Google Authenticator.'),
+      h('li', null, 'Lisää tili sovellukseen:',
+        h('p', null, h('a', { class: 'btn btn-primary', href: r.otpauth }, 'Lisää todennussovellukseen')),
+        h('p', { class: 'small muted' }, 'Jos painike ei avaa sovellusta, kopioi avain ja valitse sovelluksessa ”Lisää tili” → ”Muu tili” → ”Syötä koodi manuaalisesti”.'),
+        keyBox,
+        h('details', { class: 'define' }, h('summary', null, 'Lisäätkö tilin toiselle laitteelle?'), h('p', null, 'Lue QR-koodi toisen laitteen todennussovelluksella.'), qrBox)),
+      h('li', null, 'Palaa tähän ikkunaan ja kirjoita tai liitä sovelluksen näyttämä koodi.'),
+    ] : [
+      h('li', null, 'Asenna puhelimeen todennussovellus, esim. ', h('strong', null, 'Microsoft Authenticator'), ' tai Google Authenticator.'),
+      h('li', null, 'Lisää sovellukseen uusi tili ja lue alla oleva QR-koodi.', qrBox,
+        h('details', { class: 'define' }, h('summary', null, 'Et voi lukea koodia?'),
+          h('p', null, 'Jos käytät tätä samalla puhelimella, ', h('a', { href: r.otpauth }, 'avaa todennussovelluksessa'), '. Voit myös syöttää avaimen käsin:'),
+          keyBox)),
+      h('li', null, 'Kirjoita sovelluksen näyttämä koodi alle.'),
+    ];
     panel.replaceChildren(...(r.mfa === 'setup' ? [
       h('h1', null, 'Ota kaksivaiheinen tunnistautuminen käyttöön'),
       h('p', { class: 'muted' }, 'Tunnuksesi suojataan salasanan lisäksi puhelimen todennussovelluksella. Tämä tehdään vain kerran.'),
-      h('ol', { class: 'mfa-steps' },
-        h('li', null, 'Asenna puhelimeen todennussovellus, esim. ', h('strong', null, 'Microsoft Authenticator'), ' tai Google Authenticator.'),
-        h('li', null, 'Lisää sovellukseen uusi tili ja lue alla oleva QR-koodi.',
-          h('div', { class: 'mfa-qr' }, h('img', { src: r.qr, alt: 'QR-koodi todennussovellukseen', width: '220', height: '220' })),
-          h('details', { class: 'define' }, h('summary', null, 'Et voi lukea koodia?'),
-            h('p', null, 'Jos käytät tätä samalla puhelimella, ', h('a', { href: r.otpauth }, 'avaa todennussovelluksessa'), '. Voit myös syöttää avaimen käsin:'),
-            h('p', null, h('code', { class: 'mfa-secret' }, r.secret)),
-            h('p', { class: 'small muted' }, `Tili: ${account} · tyyppi: aikaperusteinen (TOTP)`))),
-        h('li', null, 'Kirjoita sovelluksen näyttämä koodi alle.')),
+      h('ol', { class: 'mfa-steps' }, setupSteps),
       form,
     ] : [
       h('h1', null, 'Vahvista kirjautuminen'),
-      h('p', { class: 'muted' }, 'Avaa puhelimen todennussovellus ja kirjoita sen näyttämä koodi.'),
+      h('p', { class: 'muted' }, 'Avaa puhelimen todennussovellus ja kirjoita tai liitä sen näyttämä koodi.'),
       form,
       h('p', { class: 'small muted login-help' }, 'Puhelin kadonnut tai vaihtunut? Pyydä pääkäyttäjää nollaamaan kaksivaiheinen tunnistautuminen.'),
     ]));
-    code.focus();
+    if (!(mobile && r.mfa === 'setup')) code.focus();
   }
 
   const msg = state.loginError; state.loginError = null;
@@ -2138,7 +2175,7 @@ async function viewAudit() {
   const LABELS = { login: 'Kirjautuminen', login_failed: 'Epäonnistunut kirjautuminen', password_changed: 'Salasana vaihdettu', encounter_create: 'Kirjaus luotu',
     encounter_update: 'Kirjaus korjattu', encounter_delete: 'Kirjaus poistettu', export: 'Excel-vienti', user_create: 'Käyttäjä luotu', role_create: 'Rooli luotu', role_update: 'Rooli muokattu', role_delete: 'Rooli poistettu', user_update: 'Käyttäjä muokattu',
     user_reset_password: 'Salasana nollattu', demo_create: 'Testidataa luotu', demo_delete: 'Testidata poistettu', project_create: 'Hanke luotu', project_update: 'Hanke muokattu', question_create: 'Kysymys luotu', question_update: 'Kysymys muokattu',
-    record_type_create: 'Kirjaustyyppi luotu', record_type_update: 'Kirjaustyyppi muokattu', feature_enable: 'Toiminto otettu käyttöön', mfa_failed: 'Väärä tunnistautumiskoodi', mfa_enrolled: 'Todennussovellus otettu käyttöön', user_reset_mfa: 'Todennussovellus nollattu', feature_disable: 'Toiminto piilotettu' };
+    record_type_create: 'Kirjaustyyppi luotu', record_type_update: 'Kirjaustyyppi muokattu', feature_enable: 'Toiminto otettu käyttöön', mfa_failed: 'Väärä tunnistautumiskoodi', mfa_enrolled: 'Todennussovellus otettu käyttöön', mfa_remember_device: 'Laite muistetaan (MFA)', user_reset_mfa: 'Todennussovellus nollattu', feature_disable: 'Toiminto piilotettu' };
   $app.replaceChildren(adminTabs('#/hallinta/loki'),
     h('p', { class: 'muted' }, '200 viimeisintä tapahtumaa.'),
     h('div', { class: 'table-wrap' }, h('table', null,

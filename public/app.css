@@ -744,3 +744,11 @@ svg .series.cmp { stroke: #8a8f96; stroke-width: 2; stroke-dasharray: 5 4; }
 .perm-group legend { font-weight: 700; padding: 0 .35rem; }
 .perm-row { margin: .5rem 0 0; }
 .perm-row select { width: 100%; }
+
+/* MFA puhelimella */
+.code-row { display: flex; gap: .5rem; align-items: stretch; flex-wrap: wrap; }
+.code-row .code-input { flex: 0 1 12rem; }
+.mfa-key { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; margin: .5rem 0; }
+.mfa-key p { flex-basis: 100%; margin: 0; }
+.mfa-key .mfa-secret { word-break: normal; overflow-wrap: normal; white-space: normal; letter-spacing: .04em; }
+.mfa-key .mfa-secret { word-spacing: .2em; }

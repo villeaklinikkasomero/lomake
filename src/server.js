@@ -254,7 +254,25 @@ const loginLimiter = rateLimit({ windowMs: 15 * 60 * 1000, limit: Number(process
 const DUMMY_HASH = bcrypt.hashSync('dummy-password', 12);
 const mfaLimiter = rateLimit({ windowMs: 15 * 60 * 1000, limit: Number(process.env.LOGIN_RATE_LIMIT || 10) * 2, standardHeaders: true, legacyHeaders: false,
   message: { error: 'Liian monta yritystä. Yritä uudelleen 15 minuutin kuluttua.' } });
-const PENDING_MS = 5 * 60 * 1000;
+const PENDING_MS = 10 * 60 * 1000;   // aikaa siirtyä todennussovellukseen ja takaisin
+
+// "Muista tämä laite": allekirjoitettu eväste, jolla toisen vaiheen koodia ei kysytä uudelleen
+// TRUSTED_DEVICE_DAYS päivään (0 = pois käytöstä). Mitätöityy, kun salasana tai todennussovellus
+// vaihdetaan tai nollataan (sormenjälki) tai SESSION_SECRET vaihdetaan.
+const TRUSTED_COOKIE = 'kr.td';
+const TRUSTED_DAYS = Math.max(0, Number(process.env.TRUSTED_DEVICE_DAYS ?? 30));
+const trustFingerprint = (u) => crypto.createHash('sha256').update(`${u.id}:${u.mfa_secret}:${u.password_hash}`).digest('base64url').slice(0, 22);
+function trustedDevice(req, u) {
+  if (!TRUSTED_DAYS || !u.mfa_enabled || !u.mfa_secret) return false;
+  let st = null;
+  try { st = auth.readState(auth.readCookie(req, TRUSTED_COOKIE), SESSION_SECRET); } catch { st = null; }
+  return !!(st && st.t === 'td' && st.u === u.id && st.f === trustFingerprint(u));
+}
+function rememberDevice(res, u) {
+  const maxAge = TRUSTED_DAYS * 86400e3;
+  res.cookie(TRUSTED_COOKIE, auth.signState({ t: 'td', u: u.id, f: trustFingerprint(u), exp: Date.now() + maxAge }, SESSION_SECRET),
+    { httpOnly: true, sameSite: 'strict', secure: IS_PROD, maxAge, path: '/api/login' });
+}
 
 // Kirjautuminen valmis: uusi istunto ja käyttäjä siihen
 function completeLogin(req, res, u, method, done) {
@@ -325,7 +343,7 @@ app.get('/api/suggest', requireAuth, requirePerm('record'), suggestLimiter, (req
 });
 
 // Kirjautumistavat kirjautumissivulle (ei vaadi kirjautumista)
-app.get('/api/auth/config', (req, res) => res.json({ entra: auth.entraEnabled(), mfaRequired: auth.mfaRequired() }));
+app.get('/api/auth/config', (req, res) => res.json({ entra: auth.entraEnabled(), mfaRequired: auth.mfaRequired(), trustedDays: TRUSTED_DAYS }));
 
 // 1. vaihe: sähköposti ja salasana (paikalliset tunnukset, esim. tuntityöntekijät)
 app.post('/api/login', loginLimiter, (req, res) => {
@@ -338,16 +356,18 @@ app.post('/api/login', loginLimiter, (req, res) => {
   const ok = bcrypt.compareSync(password, u ? u.password_hash : DUMMY_HASH);
   if (!u || !ok || !u.active) { audit(u && u.id, 'login_failed', 'user', u && u.id, { email }); return bad(res, 'Virheellinen sähköposti tai salasana.', 401); }
   if (!(auth.mfaRequired() || u.mfa_enabled)) return completeLogin(req, res, u, 'password', () => res.json({ ok: true }));
+  // Muistettu laite: koodia ei kysytä
+  if (trustedDevice(req, u)) return completeLogin(req, res, u, 'password+trusted-device', () => res.json({ ok: true }));
   // 2. vaihe: todennussovelluksen koodi (tai sen käyttöönotto ensimmäisellä kerralla)
   req.session.regenerate(async (err) => {
     if (err) return bad(res, 'Kirjautuminen epäonnistui.', 500);
     req.session.pending = { userId: u.id, exp: Date.now() + PENDING_MS, fails: 0 };
-    if (u.mfa_enabled) return res.json({ mfa: 'verify' });
+    if (u.mfa_enabled) return res.json({ mfa: 'verify', trustedDays: TRUSTED_DAYS });
     const secret = auth.newSecret();
     req.session.pending.secret = auth.encrypt(secret);
     const uri = auth.otpauthUri(secret, u.email);
     const qr = await QRCode.toDataURL(uri, { margin: 1, width: 220, errorCorrectionLevel: 'M' });
-    res.json({ mfa: 'setup', secret: secret.replace(/(.{4})/g, '$1 ').trim(), otpauth: uri, qr });
+    res.json({ mfa: 'setup', secret: secret.replace(/(.{4})/g, '$1 ').trim(), otpauth: uri, qr, trustedDays: TRUSTED_DAYS });
   });
 });
 
@@ -371,6 +391,10 @@ app.post('/api/login/mfa', mfaLimiter, (req, res) => {
     audit(u.id, 'mfa_enrolled', 'user', u.id);
   } else {
     db.prepare('UPDATE users SET mfa_last_step = ? WHERE id = ?').run(step, u.id);
+  }
+  if (TRUSTED_DAYS && (req.body.remember === true || req.body.remember === 'true')) {
+    rememberDevice(res, db.prepare('SELECT * FROM users WHERE id = ?').get(u.id));
+    audit(u.id, 'mfa_remember_device', 'user', u.id, { days: TRUSTED_DAYS });
   }
   completeLogin(req, res, u, 'password+mfa', () => res.json({ ok: true }));
 });
