@@ -22,7 +22,7 @@ CREATE TABLE IF NOT EXISTS users (
   email         TEXT NOT NULL UNIQUE COLLATE NOCASE,
   name          TEXT NOT NULL,
   password_hash TEXT NOT NULL,
-  role          TEXT NOT NULL CHECK (role IN ('admin','tiimivetaja','hanketyontekija','tuntityontekija')),
+  role          TEXT NOT NULL,     -- roles.key
   active        INTEGER NOT NULL DEFAULT 1,
   must_change_password INTEGER NOT NULL DEFAULT 1,
   recorder_role TEXT,               -- kirjaajan rooli raportoinnissa (Olen-tieto)
@@ -186,13 +186,73 @@ function ensureAdmin() {
 
 seed();
 
+// ---------------------------------------------------------------------------
+// Roolit ja niiden oikeudet ovat ylläpidettäviä (Hallinta → Roolit).
+//   permissions      = JSON (ks. permissions.js: PERMISSION_FIELDS)
+//   recorder_index   = mikä kirjaajan rooli kirjauksiin tallentuu (RECORDER_ROLES-indeksi)
+//   foundation       = 1: A-klinikkasäätiön työntekijä (näkyy työntekijäseurannassa kaikille)
+//   builtin          = 1: valmis rooli, jota ei voi poistaa (admin-roolin oikeuksia ei voi muuttaa)
+// ---------------------------------------------------------------------------
+db.exec(`CREATE TABLE IF NOT EXISTS roles (
+  key            TEXT PRIMARY KEY,
+  label          TEXT NOT NULL,
+  description    TEXT,
+  permissions    TEXT NOT NULL,
+  recorder_index INTEGER NOT NULL DEFAULT 0,
+  foundation     INTEGER NOT NULL DEFAULT 1,
+  builtin        INTEGER NOT NULL DEFAULT 0,
+  active         INTEGER NOT NULL DEFAULT 1,
+  sort           INTEGER NOT NULL DEFAULT 0
+)`);
+const BUILTIN_ROLES = [
+  { key: 'admin', label: 'Admin', description: 'A-klinikkasäätiön työntekijä, pääkäyttäjä', recorder_index: 0, foundation: 1, sort: 10, permissions: {
+    record: true, viewScope: 'all', editScope: 'all', deleteScope: 'all', exportScope: 'all', staffScope: 'all', pathScope: 'all', dashScope: 'all',
+    manageUsers: true, manageProjects: true, manageQuestions: true } },
+  { key: 'tiimivetaja', label: 'Tiiminvetäjä', description: 'A-klinikkasäätiön työntekijä', recorder_index: 0, foundation: 1, sort: 20, permissions: {
+    record: true, viewScope: 'projects', editScope: 'projects', deleteScope: 'projects', exportScope: 'projects', staffScope: 'projects', pathScope: 'projects', dashScope: 'all',
+    manageUsers: false, manageProjects: false, manageQuestions: false } },
+  { key: 'hanketyontekija', label: 'Hanketyöntekijä', description: 'A-klinikkasäätiön työntekijä', recorder_index: 0, foundation: 1, sort: 30, permissions: {
+    record: true, viewScope: 'own', editScope: 'own', deleteScope: 'none', exportScope: 'none', staffScope: 'own', pathScope: 'none', dashScope: 'all',
+    manageUsers: false, manageProjects: false, manageQuestions: false } },
+  { key: 'tuntityontekija', label: 'Tuntityöntekijä (avustaja)', description: 'Tuntityöntekijä tai avustaja', recorder_index: 1, foundation: 0, sort: 40, permissions: {
+    record: true, viewScope: 'none', editScope: 'none', deleteScope: 'none', exportScope: 'none', staffScope: 'none', pathScope: 'none', dashScope: 'none',
+    manageUsers: false, manageProjects: false, manageQuestions: false } },
+];
+{
+  const ins = db.prepare(`INSERT OR IGNORE INTO roles (key, label, description, permissions, recorder_index, foundation, builtin, sort)
+                          VALUES (@key, @label, @description, @permissions, @recorder_index, @foundation, 1, @sort)`);
+  for (const r of BUILTIN_ROLES) ins.run({ ...r, permissions: JSON.stringify(r.permissions) });
+  // Admin-roolin oikeudet pidetään aina täysinä
+  db.prepare("UPDATE roles SET permissions = ?, active = 1 WHERE key = 'admin'").run(JSON.stringify(BUILTIN_ROLES[0].permissions));
+}
+// Käyttäjän rooli ei enää rajoitu kiinteisiin arvoihin: poistetaan CHECK-ehto (taulun uudelleenrakennus)
+{
+  const t = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'users'").get();
+  if (/CHECK\s*\(role IN/.test(t.sql)) {
+    const newSql = t.sql.replace(/CREATE TABLE "?users"?/, 'CREATE TABLE users_new').replace(/\s*CHECK\s*\(role IN \([^)]*\)\)/, '');
+    const idx = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'index' AND tbl_name = 'users' AND sql IS NOT NULL").all().map(r => r.sql);
+    db.pragma('foreign_keys = OFF');
+    db.transaction(() => {
+      db.exec(newSql);
+      db.exec('INSERT INTO users_new SELECT * FROM users');
+      db.exec('DROP TABLE users');
+      db.exec('ALTER TABLE users_new RENAME TO users');
+      for (const sql of idx) db.exec(sql);
+      const bad = db.pragma('foreign_key_check');
+      if (bad.length) throw new Error('Viite-eheys rikkoutui käyttäjätaulun uudelleenrakennuksessa');
+    })();
+    db.pragma('foreign_keys = ON');
+  }
+}
+
 // Migraatio: kirjaajan rooli käyttäjäprofiiliin (aiemmat tietokannat)
 if (!db.prepare("PRAGMA table_info(users)").all().some(c => c.name === 'recorder_role')) {
   db.exec('ALTER TABLE users ADD COLUMN recorder_role TEXT');
 }
-// Kirjaajan rooli seuraa aina käyttöoikeusroolia (tuntityöntekijä = avustaja, muut = säätiön työntekijä)
-db.prepare(`UPDATE users SET recorder_role = CASE role WHEN 'tuntityontekija' THEN ? ELSE ? END`)
-  .run(RECORDER_ROLES[1], RECORDER_ROLES[0]);
+// Kirjaajan rooli seuraa aina käyttöoikeusroolia (roles.recorder_index)
+for (const r of db.prepare('SELECT key, recorder_index FROM roles').all()) {
+  db.prepare('UPDATE users SET recorder_role = ? WHERE role = ?').run(RECORDER_ROLES[r.recorder_index] || RECORDER_ROLES[0], r.key);
+}
 
 // Migraatio: testidatan merkintä
 if (!db.prepare("PRAGMA table_info(encounters)").all().some(c => c.name === 'is_test')) {

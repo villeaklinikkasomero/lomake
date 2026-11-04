@@ -1,50 +1,74 @@
 'use strict';
-// Roolien oikeudet yhdessä paikassa. Muuta tätä taulukkoa, jos oikeuksia
-// halutaan säätää (esim. sallia hanketyöntekijälle omien kirjausten korjaus).
-
-const ROLES = {
-  admin:           { label: 'Admin',                      description: 'A-klinikkasäätiön työntekijä, pääkäyttäjä' },
-  tiimivetaja:     { label: 'Tiiminvetäjä',                description: 'A-klinikkasäätiön työntekijä' },
-  hanketyontekija: { label: 'Hanketyöntekijä',            description: 'A-klinikkasäätiön työntekijä' },
-  tuntityontekija: { label: 'Tuntityöntekijä (avustaja)', description: 'Tuntityöntekijä tai avustaja' },
-};
-
+// Roolien oikeudet. Roolit ja niiden oikeudet ovat tietokannassa (roles-taulu) ja
+// ylläpidettävissä kohdassa Hallinta → Roolit. Valmiit roolit luodaan db.js:ssä.
+//
 // Oikeudet:
 //  record        – voi kirjata kohtaamisia (omiin hankkeisiin, admin kaikkiin)
 //  viewScope     – mitä kirjauksia voi selata: 'all' | 'projects' | 'own' | 'none'
 //  editScope     – mitä kirjauksia voi korjata: 'all' | 'projects' | 'own' | 'none'
 //  deleteScope   – mitä kirjauksia voi poistaa: 'all' | 'projects' | 'none'
 //  exportScope   – Excel-vienti: 'all' | 'projects' | 'none'
-//  staffScope    – työntekijäkohtainen seuranta: 'all' | 'projects' | 'own' (omat tiedot + hankkeiden kokonaismäärät) | 'none'
+//  staffScope    – työntekijäseuranta: 'all' | 'projects' | 'own' | 'none'
+//                  (säätiön työntekijät näkyvät aina kaikkien hankkeiden luvuin; tuntityöntekijät
+//                   all = kaikki, projects = omien hankkeiden, own = vain yhteismäärät)
 //  pathScope     – asiakaspolut ja palveluohjaukset (koosteet): 'all' | 'projects' | 'none'
 //  dashScope     – Tilastot-näkymä (koosteet): 'all' | 'projects' | 'none'
 //  manageUsers / manageProjects / manageQuestions – ylläpito
-const PERMISSIONS = {
-  admin: {
-    record: true, viewScope: 'all', editScope: 'all', deleteScope: 'all', exportScope: 'all', staffScope: 'all', pathScope: 'all', dashScope: 'all',
-    manageUsers: true, manageProjects: true, manageQuestions: true,
-  },
-  tiimivetaja: {
-    record: true, viewScope: 'projects', editScope: 'projects', deleteScope: 'projects', exportScope: 'projects', staffScope: 'projects', pathScope: 'projects', dashScope: 'projects',
-    manageUsers: false, manageProjects: false, manageQuestions: false,
-  },
-  hanketyontekija: {
-    record: true, viewScope: 'own', editScope: 'own', deleteScope: 'none', exportScope: 'none', staffScope: 'own', pathScope: 'none', dashScope: 'projects',
-    manageUsers: false, manageProjects: false, manageQuestions: false,
-  },
-  tuntityontekija: {
-    record: true, viewScope: 'none', editScope: 'none', deleteScope: 'none', exportScope: 'none', staffScope: 'none', pathScope: 'none', dashScope: 'none',
-    manageUsers: false, manageProjects: false, manageQuestions: false,
-  },
-};
 
-// Kirjaajan rooli (lomakkeen "Olen"-tieto) määräytyy käyttöoikeusroolista:
-// admin, tiiminvetäjä ja hanketyöntekijä ovat A-klinikkasäätiön työntekijöitä,
-// tuntityöntekijä on avustaja. Indeksi viittaa db.js:n RECORDER_ROLES-listaan.
-const DEFAULT_RECORDER_ROLE_INDEX = { admin: 0, tiimivetaja: 0, hanketyontekija: 0, tuntityontekija: 1 };
+const PERMISSION_FIELDS = [
+  { key: 'record', type: 'bool', label: 'Kirjaa kohtaamisia', group: 'Kirjaukset' },
+  { key: 'viewScope', type: 'scope', values: ['none', 'own', 'projects', 'all'], label: 'Selaa kirjauksia', group: 'Kirjaukset' },
+  { key: 'editScope', type: 'scope', values: ['none', 'own', 'projects', 'all'], label: 'Korjaa kirjauksia', group: 'Kirjaukset' },
+  { key: 'deleteScope', type: 'scope', values: ['none', 'projects', 'all'], label: 'Poistaa kirjauksia', group: 'Kirjaukset' },
+  { key: 'dashScope', type: 'scope', values: ['none', 'projects', 'all'], label: 'Tilastot', group: 'Seuranta' },
+  { key: 'staffScope', type: 'scope', values: ['none', 'own', 'projects', 'all'], label: 'Työntekijäseuranta', group: 'Seuranta' },
+  { key: 'exportScope', type: 'scope', values: ['none', 'projects', 'all'], label: 'Excel-vienti (raakadata)', group: 'Seuranta' },
+  { key: 'pathScope', type: 'scope', values: ['none', 'projects', 'all'], label: 'Asiakaspolut', group: 'Seuranta' },
+  { key: 'manageQuestions', type: 'bool', label: 'Kysymykset, kirjaustyypit ja ohjauspalvelut', group: 'Ylläpito' },
+  { key: 'manageProjects', type: 'bool', label: 'Hankkeet', group: 'Ylläpito' },
+  { key: 'manageUsers', type: 'bool', label: 'Käyttäjät, roolit, toiminnot, testidata ja loki', group: 'Ylläpito' },
+];
+const NONE = Object.fromEntries(PERMISSION_FIELDS.map(f => [f.key, f.type === 'bool' ? false : 'none']));
 
-function can(user, perm) { return !!(user && PERMISSIONS[user.role] && PERMISSIONS[user.role][perm]); }
-function scope(user, perm) { return (user && PERMISSIONS[user.role] && PERMISSIONS[user.role][perm]) || 'none'; }
+// Normalisoi tallennettavat oikeudet (tuntemattomat avaimet ja arvot pois)
+function normalizePermissions(input) {
+  const out = { ...NONE };
+  for (const f of PERMISSION_FIELDS) {
+    const v = input && input[f.key];
+    if (f.type === 'bool') out[f.key] = v === true || v === 'true' || v === 1;
+    else if (f.values.includes(v)) out[f.key] = v;
+  }
+  // Korjaus- ja poisto-oikeus edellyttävät, että kirjaukset näkyvät
+  const rank = { none: 0, own: 1, projects: 2, all: 3 };
+  if (rank[out.editScope] > rank[out.viewScope]) out.editScope = out.viewScope === 'none' ? 'none' : out.viewScope;
+  if (rank[out.deleteScope] > rank[out.viewScope]) out.deleteScope = out.viewScope === 'all' || out.viewScope === 'projects' ? out.viewScope : 'none';
+  return out;
+}
+
+// Roolit luetaan tietokannasta; välimuisti tyhjennetään, kun rooleja muutetaan
+let cache = null;
+function load() {
+  if (!cache) {
+    const { db } = require('./db');
+    const rows = db.prepare('SELECT * FROM roles ORDER BY sort, label').all();
+    cache = Object.fromEntries(rows.map(r => [r.key, {
+      key: r.key, label: r.label, description: r.description || '', recorderIndex: r.recorder_index, foundation: !!r.foundation,
+      builtin: !!r.builtin, active: !!r.active, sort: r.sort, permissions: { ...NONE, ...JSON.parse(r.permissions || '{}') },
+    }]));
+  }
+  return cache;
+}
+const invalidate = () => { cache = null; };
+const roles = () => load();
+const role = (key) => load()[key] || null;
+const permissionsOf = (key) => (role(key) ? { ...role(key).permissions } : { ...NONE });
+const recorderIndex = (key) => (role(key) ? role(key).recorderIndex : 0);
+const isFoundation = (key) => !!(role(key) && role(key).foundation);
+const foundationKeys = () => Object.values(load()).filter(r => r.foundation).map(r => r.key);
+const roleLabel = (key) => (role(key) ? role(key).label : key);
+
+function can(user, perm) { return !!(user && permissionsOf(user.role)[perm]); }
+function scope(user, perm) { return (user && permissionsOf(user.role)[perm]) || 'none'; }
 
 // Tarkistaa, kohdistuuko scope-tyyppinen oikeus tiettyyn kirjaukseen.
 function allowsEncounter(user, perm, encounter, userProjectIds) {
@@ -55,4 +79,7 @@ function allowsEncounter(user, perm, encounter, userProjectIds) {
   return false;
 }
 
-module.exports = { ROLES, PERMISSIONS, DEFAULT_RECORDER_ROLE_INDEX, can, scope, allowsEncounter };
+module.exports = {
+  PERMISSION_FIELDS, normalizePermissions, invalidate, roles, role, permissionsOf, recorderIndex, isFoundation, foundationKeys, roleLabel,
+  can, scope, allowsEncounter,
+};

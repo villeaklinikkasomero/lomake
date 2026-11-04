@@ -75,7 +75,7 @@ async function loadMe() {
 const ROUTES = [
   { re: /^#\/kirjaudu$/, view: viewLogin, public: true },
   { re: /^#\/salasana$/, view: viewPassword },
-  { re: /^#\/kirjaa$/, view: viewRecord },
+  { re: /^#\/kirjaa$/, view: viewRecord, perm: (p) => p.record },
   { re: /^#\/kirjaukset$/, view: viewList, perm: (p) => p.viewScope !== 'none' },
   { re: /^#\/kirjaukset\/([\w-]+)$/, view: viewDetail, perm: (p) => p.viewScope !== 'none' },
   { re: /^#\/kirjaukset\/([\w-]+)\/muokkaa$/, view: viewEdit, perm: (p) => p.editScope !== 'none' },
@@ -86,6 +86,7 @@ const ROUTES = [
   { re: /^#\/hallinta\/ohjauspalvelut$/, view: viewServices, perm: (p) => p.manageQuestions },
   { re: /^#\/tyontekijat\/(\d+)$/, view: viewStaffDetail, perm: (p) => p.staffScope !== 'none' },
   { re: /^#\/hallinta\/kayttajat$/, view: viewUsers, perm: (p) => p.manageUsers },
+  { re: /^#\/hallinta\/roolit$/, view: viewRoles, perm: (p) => p.manageUsers },
   { re: /^#\/hallinta\/hankkeet$/, view: viewProjects, perm: (p) => p.manageProjects },
   { re: /^#\/hallinta\/kysymykset$/, view: viewQuestions, perm: (p) => p.manageQuestions },
   { re: /^#\/hallinta\/kirjaustyypit$/, view: viewRecordTypes, perm: (p) => p.manageQuestions },
@@ -100,13 +101,17 @@ async function route() {
     state.loginError = new URLSearchParams(location.hash.split('?')[1]).get('virhe');
     history.replaceState(null, '', '#/kirjaudu');
   }
-  const hash = location.hash || '#/kirjaa';
+  const hash = location.hash || (state.me ? homeHash(state.me.permissions) : '#/kirjaa');
   if (!state.me && hash !== '#/kirjaudu') await loadMe();
   if (!state.me && hash !== '#/kirjaudu') return go('#/kirjaudu');
   if (state.me && state.me.user.mustChangePassword && hash !== '#/salasana') return go('#/salasana');
   const r = ROUTES.find(x => x.re.test(hash));
-  if (!r) return go('#/kirjaa');
-  if (r.perm && !r.perm(state.me.permissions)) return go('#/kirjaa');
+  const home = state.me ? homeHash(state.me.permissions) : '#/kirjaudu';
+  if (!r) return go(home);
+  if (r.perm && state.me && !r.perm(state.me.permissions)) {
+    if (hash !== home) return go(home);
+    renderNav(hash); return $app.replaceChildren(h('div', { class: 'card empty' }, 'Roolillasi ei ole vielä oikeuksia mihinkään näkymään. Ota yhteyttä pääkäyttäjään.'));
+  }
   renderNav(hash);
   $app.classList.toggle('container', hash !== '#/kirjaudu');
   $app.replaceChildren(h('div', { class: 'loading' }, 'Ladataan…'));
@@ -151,7 +156,7 @@ function renderNav(hash) {
   const u = state.me.user;
   const initials = u.name.split(/\s+/).map(x => x[0]).slice(0, 2).join('').toUpperCase();
   nav.replaceChildren(...[
-    h('a', { href: '#/kirjaa', class: 'nav-cta' + (hash === '#/kirjaa' ? ' active' : '') }, icon('plus'), h('span', null, 'Uusi kirjaus')),
+    p.record ? h('a', { href: '#/kirjaa', class: 'nav-cta' + (hash === '#/kirjaa' ? ' active' : '') }, icon('plus'), h('span', null, 'Uusi kirjaus')) : null,
     group('Kirjaukset', [
       p.viewScope !== 'none' ? link('#/kirjaukset', p.viewScope === 'own' ? 'Omat kirjaukset' : 'Kirjaukset', 'list', '#/kirjaukset') : null,
     ]),
@@ -161,7 +166,7 @@ function renderNav(hash) {
       p.pathScope !== 'none' ? link('#/asiakaspolut', 'Asiakaspolut', 'route') : null,
       p.exportScope !== 'none' ? link('#/vienti', 'Excel-vienti', 'download') : null,
     ]),
-    group('Ylläpito', [p.manageQuestions ? link('#/hallinta/kysymykset', 'Hallinta', 'settings', '#/hallinta') : null]),
+    group('Ylläpito', [adminHome(p) ? link(adminHome(p), 'Hallinta', 'settings', '#/hallinta') : null]),
     h('div', { class: 'nav-user' },
       h(u.authMethod === 'entra' ? 'div' : 'a', u.authMethod === 'entra' ? { class: 'who', title: 'Kirjautunut Microsoft-tunnuksella' } : { href: '#/salasana', class: 'who' + (hash === '#/salasana' ? ' active' : ''), title: 'Vaihda salasana' },
         h('span', { class: 'avatar', 'aria-hidden': 'true' }, initials), h('span', { class: 'who-text' }, h('strong', null, u.name), h('small', null, u.roleLabel))),
@@ -1241,7 +1246,7 @@ async function viewDashboard() {
     det.append(
       h('div', { class: 'filters dash-filter-grid' },
         date('from', 'd-from', 'Alkaen'), date('to', 'd-to', 'Päättyen'),
-        me.projects.length > 1 ? sel('project_id', 'd-proj', 'Hanke', me.projects.map(x => [x.id, x.name]), 'Kaikki hankkeet') : null,
+        (me.dashProjects || me.projects).length > 1 ? sel('project_id', 'd-proj', 'Hanke', (me.dashProjects || me.projects).map(x => [x.id, x.name]), 'Kaikki hankkeet') : null,
         sel('role', 'd-role', 'Kirjaajan rooli', opts.roles.map(r => [r, r]), 'Kaikki'),
         sel('ika', 'd-ika', 'Ikä (arvio)', opts.ika.map(r => [r, r]), 'Kaikki'),
         sel('sukupuoli', 'd-sp', 'Sukupuoli', opts.sukupuoli.map(r => [r, r]), 'Kaikki'),
@@ -1258,8 +1263,11 @@ async function viewDashboard() {
         h('div', { class: 'field cmp-field' }, h('label', { for: 'd-cmp' }, 'Vertailu'),
           (() => { const el = h('select', { id: 'd-cmp' }, Object.entries(COMPARE).map(([v, t]) => h('option', { value: v, selected: dashState.compare === v }, t)));
             el.addEventListener('change', () => { dashState.compare = el.value; load(); }); return el; })()),
-        p.exportScope !== 'none' ? h('a', { class: 'btn btn-secondary', href: '/api/export?' + new URLSearchParams({ from: dashState.from, to: dashState.to, projects: dashState.project_id || '' }),
-          title: 'Raakadata valitulta aikaväliltä ja hankkeelta (muut rajaukset eivät koske vientiä)' }, '⤓ Lataa raakadata (Excel)') : null));
+        // Vientioikeus voi olla suppeampi kuin tilastojen (tiiminvetäjä: omat hankkeet)
+        p.exportScope !== 'none' && (p.exportScope === 'all' || !dashState.project_id || me.projects.some(x => String(x.id) === String(dashState.project_id)))
+          ? h('a', { class: 'btn btn-secondary', href: '/api/export?' + new URLSearchParams({ from: dashState.from, to: dashState.to, projects: dashState.project_id || '' }),
+          title: p.exportScope === 'all' ? 'Raakadata valitulta aikaväliltä ja hankkeelta (muut rajaukset eivät koske vientiä)'
+            : 'Raakadata valitulta aikaväliltä omista hankkeistasi (muut rajaukset eivät koske vientiä)' }, '⤓ Lataa raakadata (Excel)') : null));
   }
 
   async function load() {
@@ -1575,6 +1583,122 @@ async function viewExport() {
 // ---------------------------------------------------------------------------
 // Hallinta
 // ---------------------------------------------------------------------------
+// Ensimmäinen näkymä, johon roolilla on oikeus
+function homeHash(p) {
+  if (p.record) return '#/kirjaa';
+  if (p.dashScope !== 'none') return '#/tilastot';
+  if (p.staffScope !== 'none') return '#/tyontekijat';
+  if (p.viewScope !== 'none') return '#/kirjaukset';
+  if (p.exportScope !== 'none') return '#/vienti';
+  return adminHome(p) || '#/kirjaa';
+}
+function adminHome(p) {
+  if (p.manageQuestions) return '#/hallinta/kysymykset';
+  if (p.manageProjects) return '#/hallinta/hankkeet';
+  if (p.manageUsers) return '#/hallinta/kayttajat';
+  return null;
+}
+
+// Oikeuksien tiivistelmä selkokielellä (käyttäjä- ja roolieditori)
+const SCOPE_TEXT = { all: 'kaikki', projects: 'omat hankkeet', own: 'omat', none: null };
+function permissionSummary(p, isAdmin) {
+  if (isAdmin) return 'Kaikki oikeudet. Hankevalinnat eivät rajoita adminia.';
+  const parts = [];
+  if (p.record) parts.push('kirjaa omiin hankkeisiin');
+  const sc = (k, label) => { if (p[k] && p[k] !== 'none') parts.push(`${label}: ${SCOPE_TEXT[p[k]]}`); };
+  sc('viewScope', 'selaa kirjauksia'); sc('editScope', 'korjaa'); sc('deleteScope', 'poistaa');
+  sc('dashScope', 'tilastot');
+  if (p.staffScope && p.staffScope !== 'none') parts.push('työntekijäseuranta' + (p.staffScope === 'own' ? ' (muista kuin säätiöläisistä vain yhteismäärät)' : p.staffScope === 'projects' ? ' (omien hankkeiden tuntityöntekijät)' : ''));
+  sc('exportScope', 'Excel-vienti'); sc('pathScope', 'asiakaspolut');
+  const adm = [p.manageQuestions && 'kysymykset', p.manageProjects && 'hankkeet', p.manageUsers && 'käyttäjät ja roolit'].filter(Boolean);
+  if (adm.length) parts.push('ylläpito: ' + adm.join(', '));
+  if (!parts.length) return 'Ei oikeuksia.';
+  const t = parts.join('; ');
+  return t[0].toUpperCase() + t.slice(1) + '.';
+}
+
+// --- Roolit ja oikeudet
+async function viewRoles() {
+  $app.classList.add('container');
+  const { roles, fields, recorderRoles } = await api('/roles');
+  const editorBox = h('div');
+  const SCOPE_LABELS = { none: 'Ei', own: 'Omat', projects: 'Omat hankkeet', all: 'Kaikki' };
+  const STAFF_LABELS = { none: 'Ei', own: 'Säätiöläiset + muista yhteismäärät', projects: 'Säätiöläiset + omien hankkeiden muut', all: 'Kaikki' };
+
+  function openEditor(r) {
+    const isNew = !r;
+    r = r || { label: '', description: '', recorder_index: 0, foundation: true, active: true, permissions: {}, builtin: false, users: 0 };
+    const locked = !!r.locked;
+    const label = h('input', { type: 'text', id: 'r-label', value: r.label, maxlength: 60, disabled: locked });
+    const desc = h('input', { type: 'text', id: 'r-desc', value: r.description || '', maxlength: 200, disabled: locked });
+    const recorder = h('select', { id: 'r-rec', disabled: locked }, recorderRoles.map((t, i) => h('option', { value: i, selected: i === r.recorder_index }, t)));
+    const foundation = h('input', { type: 'checkbox', checked: !!r.foundation, disabled: locked });
+    const active = h('input', { type: 'checkbox', checked: !!r.active, disabled: locked });
+    const inputs = {};
+    const summary = h('p', { class: 'help' });
+    const read = () => Object.fromEntries(fields.map(f => [f.key, f.type === 'bool' ? inputs[f.key].checked : inputs[f.key].value]));
+    const sync = () => summary.replaceChildren(permissionSummary(read(), locked));
+    const groups = [...new Set(fields.map(f => f.group))];
+    const permBox = h('div', { class: 'perm-grid' }, groups.map(g => h('fieldset', { class: 'perm-group' }, h('legend', null, g),
+      fields.filter(f => f.group === g).map(f => {
+        const id = 'r-' + f.key;
+        if (f.type === 'bool') {
+          inputs[f.key] = h('input', { type: 'checkbox', id, checked: !!r.permissions[f.key], disabled: locked, onchange: sync });
+          return h('label', { class: 'switch perm-row' }, inputs[f.key], f.label);
+        }
+        const labels = f.key === 'staffScope' ? STAFF_LABELS : SCOPE_LABELS;
+        inputs[f.key] = h('select', { id, disabled: locked, onchange: sync }, f.values.map(v => h('option', { value: v, selected: (r.permissions[f.key] || 'none') === v }, labels[v])));
+        return h('div', { class: 'field perm-row' }, h('label', { for: id }, f.label), inputs[f.key]);
+      }))));
+    sync();
+    const msg = h('div', { class: 'notice', hidden: true });
+    editorBox.replaceChildren(h('div', { class: 'card editor' },
+      h('h2', null, isNew ? 'Uusi rooli' : `Muokkaa roolia: ${r.label}`),
+      locked ? h('div', { class: 'notice' }, 'Admin-roolilla on aina kaikki oikeudet, eikä sitä voi muuttaa.') : null,
+      h('div', { class: 'row' }, h('div', { class: 'field' }, h('label', { for: 'r-label' }, 'Roolin nimi'), label),
+        h('div', { class: 'field' }, h('label', { for: 'r-desc' }, 'Kuvaus'), desc)),
+      h('div', { class: 'field' }, h('label', { class: 'switch' }, foundation, 'A-klinikkasäätiön työntekijä'),
+        h('p', { class: 'help help-below' }, 'Säätiöläiset näkyvät työntekijäseurannassa kaikille nimeltä ja kaikkien hankkeiden luvuin. Muut kirjaajat (esim. tuntityöntekijät) näkyvät katsojan oikeuksien mukaan.')),
+      h('div', { class: 'field' }, h('label', { for: 'r-rec' }, 'Kirjauksiin tallentuva kirjaajan rooli'), recorder),
+      !isNew ? h('p', { class: 'help' }, 'Roolin tunniste (Entra ID -sovellusroolin arvo): ', h('code', null, r.key)) : null,
+      h('h3', null, 'Oikeudet'), summary, permBox,
+      h('p', { class: 'help' }, '”Omat hankkeet” tarkoittaa käyttäjälle valittuja hankkeita (Käyttäjät-välilehti). Korjaus- ja poisto-oikeus voi olla enintään yhtä laaja kuin selausoikeus.'),
+      !isNew ? h('div', { class: 'field' }, h('label', { class: 'switch' }, active, 'Rooli käytössä'),
+        r.users ? h('p', { class: 'help help-below' }, `Roolissa on ${r.users} aktiivista käyttäjää. Roolin voi poistaa käytöstä vasta, kun heille on vaihdettu toinen rooli.`) : null) : null,
+      msg,
+      locked ? h('div', { class: 'actions' }, h('button', { class: 'btn btn-secondary', type: 'button', onclick: () => editorBox.replaceChildren() }, 'Sulje')) :
+      h('div', { class: 'actions' },
+        h('button', { class: 'btn btn-primary', type: 'button', onclick: async () => {
+          const body = { label: label.value, description: desc.value, recorder_index: Number(recorder.value), foundation: foundation.checked, active: active.checked, permissions: read() };
+          try {
+            if (isNew) await api('/roles', { method: 'POST', body }); else await api('/roles/' + r.key, { method: 'PUT', body });
+            await loadMe(); toast(isNew ? 'Rooli luotu.' : 'Tallennettu.'); viewRoles();
+          } catch (ex) { msg.className = 'notice err'; msg.textContent = ex.message; msg.hidden = false; }
+        } }, isNew ? 'Luo rooli' : 'Tallenna'),
+        !isNew && !r.builtin && !r.users ? h('button', { class: 'btn btn-secondary', type: 'button', onclick: async (ev) => {
+          const b = ev.currentTarget;
+          if (!b.classList.contains('confirming')) { b.classList.add('confirming'); b.textContent = 'Vahvista poisto'; return; }
+          try { await api('/roles/' + r.key, { method: 'DELETE' }); await loadMe(); toast('Rooli poistettu.'); viewRoles(); }
+          catch (ex) { toast(ex.message, true); }
+        } }, 'Poista rooli') : null,
+        h('button', { class: 'btn btn-secondary', type: 'button', onclick: () => editorBox.replaceChildren() }, 'Peruuta'))));
+    editorBox.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+
+  $app.replaceChildren(adminTabs('#/hallinta/roolit'),
+    h('div', { class: 'page-head' }, h('p', { class: 'muted' }, 'Roolit määräävät, mitä käyttäjä näkee ja voi tehdä. Käyttäjälle valitaan rooli Käyttäjät-välilehdellä.'),
+      h('button', { class: 'btn btn-primary', type: 'button', onclick: () => openEditor(null) }, '+ Uusi rooli')),
+    editorBox,
+    h('div', { class: 'table-wrap' }, h('table', null,
+      h('thead', null, h('tr', null, h('th', null, 'Rooli'), h('th', null, 'Oikeudet'), h('th', { class: 'num' }, 'Käyttäjiä'), h('th', null, 'Tila'))),
+      h('tbody', null, roles.map(r => h('tr', { class: 'clickable' + (r.active ? '' : ' dim'), tabindex: '0', onclick: () => openEditor(r), onkeydown: (e) => { if (e.key === 'Enter') openEditor(r); } },
+        h('td', null, h('strong', null, r.label), r.description ? h('div', { class: 'small muted' }, r.description) : null,
+          r.foundation ? h('span', { class: 'badge blue' }, 'Säätiöläinen') : null),
+        h('td', { class: 'small' }, permissionSummary(r.permissions, r.locked)),
+        h('td', { class: 'num' }, fmtNum(r.users)),
+        h('td', null, r.active ? h('span', { class: 'badge green' }, 'Käytössä') : h('span', { class: 'badge grey' }, 'Pois käytöstä'))))))));
+}
+
 function adminTabs(active) {
   const p = state.me.permissions;
   const t = (href, text) => h('a', { href, class: active === href ? 'active' : null }, text);
@@ -1584,6 +1708,7 @@ function adminTabs(active) {
     p.manageQuestions ? t('#/hallinta/ohjauspalvelut', 'Ohjauspalvelut') : null,
     p.manageProjects ? t('#/hallinta/hankkeet', 'Hankkeet') : null,
     p.manageUsers ? t('#/hallinta/kayttajat', 'Käyttäjät') : null,
+    p.manageUsers ? t('#/hallinta/roolit', 'Roolit') : null,
     p.manageUsers ? t('#/hallinta/toiminnot', 'Toiminnot') : null,
     p.manageUsers ? t('#/hallinta/testidata', 'Testidata') : null,
     p.manageUsers ? t('#/hallinta/loki', 'Tapahtumaloki') : null));
@@ -1592,16 +1717,19 @@ function adminTabs(active) {
 // --- Käyttäjät
 async function viewUsers() {
   $app.classList.add('container');
-  const [{ users }, { projects }, cfg] = await Promise.all([api('/users'), api('/projects'), api('/auth/config')]);
+  const [{ users }, { projects }, cfg, roleData] = await Promise.all([api('/users'), api('/projects'), api('/auth/config'), api('/roles')]);
   const roles = state.me.roles;
+  const roleMeta = Object.fromEntries(roleData.roles.map(r => [r.key, r]));
   const METHODS = { entra: 'Säätiön Microsoft-tunnus (Entra ID)', local: 'Sähköposti + salasana + todennussovellus' };
-  const defaultMethod = (r) => (r === 'tuntityontekija' || !cfg.entra ? 'local' : 'entra');
+  // Säätiöläisille oletuksena Microsoft-tunnus, muille sähköposti + salasana + MFA
+  const defaultMethod = (r) => (!(roleMeta[r] || {}).foundation || !cfg.entra ? 'local' : 'entra');
+  const defaultRole = roleMeta.hanketyontekija && roleMeta.hanketyontekija.active ? 'hanketyontekija' : roleData.roles.find(r => r.active).key;
   const editorBox = h('div');
   const pname = (id) => (projects.find(p => p.id === id) || {}).name || '?';
 
   function openEditor(u) {
     const isNew = !u;
-    u = u || { name: '', email: '', role: 'hanketyontekija', active: 1, project_ids: [], auth_method: defaultMethod('hanketyontekija') };
+    u = u || { name: '', email: '', role: defaultRole, active: 1, project_ids: [], auth_method: defaultMethod(defaultRole) };
     const method = h('select', { id: 'u-method' }, Object.entries(METHODS).map(([k, v]) => h('option', { value: k, selected: k === u.auth_method }, v)));
     let methodTouched = !isNew;
     const methodHelp = h('p', { class: 'help help-below' });
@@ -1612,20 +1740,15 @@ async function viewUsers() {
     method.addEventListener('change', () => { methodTouched = true; syncMethod(); });
     const name = h('input', { type: 'text', id: 'u-name', value: u.name });
     const email = h('input', { type: 'email', id: 'u-email', value: u.email });
-    const role = h('select', { id: 'u-role' }, Object.entries(roles).map(([k, v]) => h('option', { value: k, selected: k === u.role }, v)));
+    const role = h('select', { id: 'u-role' }, roleData.roles.filter(r => r.active || r.key === u.role).map(r => h('option', { value: r.key, selected: r.key === u.role }, r.label)));
     const active = h('input', { type: 'checkbox', checked: !!u.active });
     const pboxes = projects.map(p => ({ id: p.id, el: h('input', { type: 'checkbox', checked: u.project_ids.includes(p.id) }) }));
     const msg = h('div', { class: 'notice', hidden: true });
     const roleHelp = h('p', { class: 'help' });
-    const ROLE_HELP = {
-      admin: 'Kaikki oikeudet: kirjaukset, työntekijäseuranta, Excel-vienti, käyttäjien, hankkeiden ja kysymysten ylläpito. Hankevalinnat eivät rajoita adminia.',
-      tiimivetaja: 'Kirjaa, selaa, korjaa ja poistaa valittujen hankkeiden kirjauksia, näkee työntekijäseurannan ja lataa Excel-viennin.',
-      hanketyontekija: 'Kirjaa valittuihin hankkeisiin ja selaa omia kirjauksiaan.',
-      tuntityontekija: 'Kirjaa valittuihin hankkeisiin. Ei kirjausten selausta.',
-    };
     const syncHelp = () => {
-      roleHelp.replaceChildren(h('strong', null, state.me.roleDescriptions[role.value]), '. ', ROLE_HELP[role.value], ' ',
-        h('span', { class: 'muted' }, `Kirjauksiin tallentuu: ”${state.me.defaultRecorderRoles[role.value]}”.`));
+      const r = roleMeta[role.value] || {};
+      roleHelp.replaceChildren(r.description ? h('strong', null, r.description + '. ') : null, permissionSummary(r.permissions || {}, role.value === 'admin'), ' ',
+        r.permissions && r.permissions.record ? h('span', { class: 'muted' }, `Kirjauksiin tallentuu: ”${r.recorder_role}”.`) : null);
     };
     role.addEventListener('change', () => { syncHelp(); if (!methodTouched) { method.value = defaultMethod(role.value); syncMethod(); } }); syncHelp(); syncMethod();
 
@@ -2013,7 +2136,7 @@ async function viewAudit() {
   $app.classList.add('container');
   const { rows } = await api('/audit');
   const LABELS = { login: 'Kirjautuminen', login_failed: 'Epäonnistunut kirjautuminen', password_changed: 'Salasana vaihdettu', encounter_create: 'Kirjaus luotu',
-    encounter_update: 'Kirjaus korjattu', encounter_delete: 'Kirjaus poistettu', export: 'Excel-vienti', user_create: 'Käyttäjä luotu', user_update: 'Käyttäjä muokattu',
+    encounter_update: 'Kirjaus korjattu', encounter_delete: 'Kirjaus poistettu', export: 'Excel-vienti', user_create: 'Käyttäjä luotu', role_create: 'Rooli luotu', role_update: 'Rooli muokattu', role_delete: 'Rooli poistettu', user_update: 'Käyttäjä muokattu',
     user_reset_password: 'Salasana nollattu', demo_create: 'Testidataa luotu', demo_delete: 'Testidata poistettu', project_create: 'Hanke luotu', project_update: 'Hanke muokattu', question_create: 'Kysymys luotu', question_update: 'Kysymys muokattu',
     record_type_create: 'Kirjaustyyppi luotu', record_type_update: 'Kirjaustyyppi muokattu', feature_enable: 'Toiminto otettu käyttöön', mfa_failed: 'Väärä tunnistautumiskoodi', mfa_enrolled: 'Todennussovellus otettu käyttöön', user_reset_mfa: 'Todennussovellus nollattu', feature_disable: 'Toiminto piilotettu' };
   $app.replaceChildren(adminTabs('#/hallinta/loki'),

@@ -737,3 +737,10 @@ svg .series.cmp { stroke: #8a8f96; stroke-width: 2; stroke-dasharray: 5 4; }
 .segmented.type-cards { grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); }
 /* Puhelimessa allekkain, ettei sanoja katkota kesken */
 @media (max-width: 520px) { .segmented.type-cards { grid-template-columns: 1fr; } }
+
+/* Roolieditori */
+.perm-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 1rem; margin: .5rem 0 1rem; }
+.perm-group { border: 1px solid var(--line, #e2e2e2); border-radius: 10px; padding: .75rem 1rem 1rem; margin: 0; }
+.perm-group legend { font-weight: 700; padding: 0 .35rem; }
+.perm-row { margin: .5rem 0 0; }
+.perm-row select { width: 100%; }

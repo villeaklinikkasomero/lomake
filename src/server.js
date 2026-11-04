@@ -9,7 +9,9 @@ const rateLimit = require('express-rate-limit');
 const bcrypt = require('bcryptjs');
 
 const { db, ensureAdmin, audit, RECORDER_ROLES, RECORD_KINDS, DIGITAL_LOCATION, FEATURES, featureEnabled, setFeature, features } = require('./db');
-const { ROLES, PERMISSIONS, DEFAULT_RECORDER_ROLE_INDEX, can, scope, allowsEncounter } = require('./permissions');
+const perms = require('./permissions');
+const { can, scope, allowsEncounter } = perms;
+const recorderRoleOf = (role) => RECORDER_ROLES[perms.recorderIndex(role)] || RECORDER_ROLES[0];
 const { buildWorkbook } = require('./export');
 const demo = require('./demo');
 const clients = require('./clients');
@@ -216,7 +218,8 @@ function validateEncounter(body, user, projectIds, existing) {
 const VOLUNTEER = 'vapaaehtoinen';
 function projectMembers(projectId) {
   return db.prepare(`SELECT u.id, u.name, u.role FROM users u WHERE u.active = 1 AND u.is_test = 0
-    AND (u.role = 'admin' OR EXISTS (SELECT 1 FROM user_projects up WHERE up.user_id = u.id AND up.project_id = ?)) ORDER BY u.name`).all(projectId);
+    AND (u.role = 'admin' OR EXISTS (SELECT 1 FROM user_projects up WHERE up.user_id = u.id AND up.project_id = ?)) ORDER BY u.name`).all(projectId)
+    .filter(u => perms.permissionsOf(u.role).record);
 }
 function resolvePerformer(value, user, projectId, existing) {
   // Korjauksessa säilytetään alkuperäinen toteuttaja ja rooli, ellei toteuttajaa vaihdeta
@@ -226,12 +229,12 @@ function resolvePerformer(value, user, projectId, existing) {
   }
   if (value === VOLUNTEER) return { performer_type: VOLUNTEER, performed_by: null, recorder_role: RECORDER_ROLES[2] };
   const id = value == null || value === '' || value === 'self' ? user.id : Number(value);
-  if (id === user.id) return { performer_type: 'kayttaja', performed_by: user.id, recorder_role: RECORDER_ROLES[DEFAULT_RECORDER_ROLE_INDEX[user.role]] };
+  if (id === user.id) return { performer_type: 'kayttaja', performed_by: user.id, recorder_role: recorderRoleOf(user.role) };
   const u = db.prepare('SELECT id, role, active FROM users WHERE id = ?').get(id);
   if (!u || !projectMembers(projectId).some(m => m.id === id)) {
     return { error: 'Valitse kohtaamisen toteuttaja hankkeen käyttäjistä tai ”Vapaaehtoinen”.' };
   }
-  return { performer_type: 'kayttaja', performed_by: u.id, recorder_role: RECORDER_ROLES[DEFAULT_RECORDER_ROLE_INDEX[u.role]] };
+  return { performer_type: 'kayttaja', performed_by: u.id, recorder_role: recorderRoleOf(u.role) };
 }
 
 function encounterVisibleWhere(user, projectIds) {
@@ -414,9 +417,9 @@ app.get('/auth/callback', loginLimiter, async (req, res) => {
   const oid = claims.oid || claims.sub;
   const email = String(claims.email || claims.preferred_username || '').trim().toLowerCase();
   const name = String(claims.name || email).trim();
-  const roleClaims = Array.isArray(claims.roles) ? claims.roles.filter(r => ROLES[r]) : [];
-  // Useasta roolista valitaan laajin
-  const order = ['admin', 'tiimivetaja', 'hanketyontekija', 'tuntityontekija'];
+  const roleClaims = Array.isArray(claims.roles) ? claims.roles.filter(r => perms.role(r) && perms.role(r).active) : [];
+  // Useasta roolista valitaan ensimmäinen roolien järjestyksessä (Hallinta → Roolit)
+  const order = Object.keys(perms.roles());
   const entraRole = order.find(r => roleClaims.includes(r)) || null;
 
   let u = db.prepare('SELECT * FROM users WHERE entra_oid = ?').get(oid);
@@ -431,14 +434,14 @@ app.get('/auth/callback', loginLimiter, async (req, res) => {
   }
   if (!u) {
     const id = db.prepare(`INSERT INTO users (email, name, password_hash, role, recorder_role, must_change_password, auth_method, entra_oid)
-                           VALUES (?, ?, '!', ?, ?, 0, 'entra', ?)`).run(email || oid, name, entraRole, RECORDER_ROLES[DEFAULT_RECORDER_ROLE_INDEX[entraRole]], oid).lastInsertRowid;
+                           VALUES (?, ?, '!', ?, ?, 0, 'entra', ?)`).run(email || oid, name, entraRole, recorderRoleOf(entraRole), oid).lastInsertRowid;
     audit(null, 'user_create', 'user', id, { role: entraRole, method: 'entra' });
     u = db.prepare('SELECT * FROM users WHERE id = ?').get(id);
   } else {
     if (!u.active) return loginError(res, 'Tunnus on suljettu.');
     const role = entraRole || u.role;
     db.prepare(`UPDATE users SET entra_oid = ?, name = ?, role = ?, recorder_role = ?, must_change_password = 0 WHERE id = ?`)
-      .run(oid, name || u.name, role, RECORDER_ROLES[DEFAULT_RECORDER_ROLE_INDEX[role]], u.id);
+      .run(oid, name || u.name, role, recorderRoleOf(role), u.id);
     u = db.prepare('SELECT * FROM users WHERE id = ?').get(u.id);
   }
   completeLogin(req, res, u, 'entra', () => res.redirect('/#/kirjaa'));
@@ -448,7 +451,7 @@ app.post('/api/logout', (req, res) => { req.session.destroy(() => { res.clearCoo
 
 // Piilotettu toiminto poistaa siihen liittyvän oikeuden kaikilta rooleilta
 function effectivePermissions(role) {
-  const p = { ...PERMISSIONS[role] };
+  const p = perms.permissionsOf(role);
   if (!featureEnabled('paths')) p.pathScope = 'none';
   return p;
 }
@@ -456,17 +459,19 @@ function effectivePermissions(role) {
 app.get('/api/me', requireAuth, (req, res) => {
   const projects = db.prepare(`SELECT id, code, name, active, digital, color FROM projects WHERE id IN (${req.projectIds.map(() => '?').join(',') || 'NULL'}) ORDER BY sort, name`).all(...req.projectIds);
   res.json({
-    user: { id: req.user.id, email: req.user.email, name: req.user.name, role: req.user.role, roleLabel: ROLES[req.user.role].label,
-            mustChangePassword: !!req.user.must_change_password, authMethod: req.user.auth_method, mfaEnabled: !!req.user.mfa_enabled, recorderRole: RECORDER_ROLES[DEFAULT_RECORDER_ROLE_INDEX[req.user.role]] },
+    user: { id: req.user.id, email: req.user.email, name: req.user.name, role: req.user.role, roleLabel: perms.roleLabel(req.user.role),
+            mustChangePassword: !!req.user.must_change_password, authMethod: req.user.auth_method, mfaEnabled: !!req.user.mfa_enabled, recorderRole: recorderRoleOf(req.user.role) },
     permissions: effectivePermissions(req.user.role),
     features: features(),
     projects,
     // Työntekijäseurannan hankesuodatin: säätiöläisten luvut ovat kaikista hankkeista
     staffProjects: scope(req.user, 'staffScope') === 'none' ? [] : db.prepare('SELECT id, name FROM projects ORDER BY sort, name').all(),
+    // Tilastojen hankesuodatin
+    dashProjects: scope(req.user, 'dashScope') === 'all' ? db.prepare('SELECT id, name FROM projects ORDER BY sort, name').all() : projects.map(({ id, name }) => ({ id, name })),
     recorderRoles: RECORDER_ROLES,
-    defaultRecorderRoles: Object.fromEntries(Object.keys(ROLES).map(r => [r, RECORDER_ROLES[DEFAULT_RECORDER_ROLE_INDEX[r]]])),
-    roles: Object.fromEntries(Object.entries(ROLES).map(([k, v]) => [k, v.label])),
-    roleDescriptions: Object.fromEntries(Object.entries(ROLES).map(([k, v]) => [k, v.description])),
+    defaultRecorderRoles: Object.fromEntries(Object.keys(perms.roles()).map(r => [r, recorderRoleOf(r)])),
+    roles: Object.fromEntries(Object.values(perms.roles()).map(r => [r.key, r.label])),
+    roleDescriptions: Object.fromEntries(Object.values(perms.roles()).map(r => [r.key, r.description])),
     today: today(),
     clientTracking: clients.ENABLED,
     recordTypes: recordTypes(true).map(({ key, label, description, kind, count_label, active }) => ({ key, label, description, kind, count_label, active: !!active })),
@@ -492,7 +497,7 @@ app.get('/api/form', requireAuth, (req, res) => {
   const qs = db.prepare(`SELECT * FROM questions WHERE active = 1 AND (project_id IS NULL OR project_id IN (${req.projectIds.map(() => '?').join(',') || 'NULL'}))
                          ORDER BY project_id IS NOT NULL, sort, id`).all(...req.projectIds).map(parseQ);
   const services = db.prepare('SELECT id, name FROM referral_services WHERE active = 1 ORDER BY sort, name').all();
-  const members = Object.fromEntries(req.projectIds.map(pid => [pid, projectMembers(pid).filter(m => m.id !== req.user.id).map(({ id, name, role }) => ({ id, name, recorderRole: RECORDER_ROLES[DEFAULT_RECORDER_ROLE_INDEX[role]] }))]));
+  const members = Object.fromEntries(req.projectIds.map(pid => [pid, projectMembers(pid).filter(m => m.id !== req.user.id).map(({ id, name, role }) => ({ id, name, recorderRole: recorderRoleOf(role) }))]));
   res.json({ questions: qs, referralServices: featureEnabled('paths') ? services : [], clientTracking: clients.ENABLED, members, digitalLocation: DIGITAL_LOCATION });
 });
 
@@ -603,11 +608,13 @@ function staffScopeSql(req, alias = 'e') {
   if (s === 'all') return { sql: '1=1', params: [] };
   return { sql: `${alias}.project_id IN (${req.projectIds.map(() => '?').join(',') || 'NULL'})`, params: [...req.projectIds] };
 }
-// Säätiön työntekijät (admin, tiiminvetäjä, hanketyöntekijä) näkyvät kaikille seurannan käyttäjille
-// kaikkien hankkeiden luvuin. Tuntityöntekijät näkyvät oikeuksien mukaan (admin: kaikki,
-// tiiminvetäjä: omien hankkeiden, hanketyöntekijä: vain yhteismäärä omista hankkeista).
-const FOUNDATION_ROLES = ['admin', 'tiimivetaja', 'hanketyontekija'];
-const isFoundation = (role) => FOUNDATION_ROLES.includes(role);
+// Säätiön työntekijät (roolit, joilla on säätiöläinen-merkintä) näkyvät kaikille seurannan käyttäjille
+// kaikkien hankkeiden luvuin. Muut kirjaajat (tuntityöntekijät) näkyvät oikeuksien mukaan
+// (all: kaikki, projects: omien hankkeiden, own: vain yhteismäärä omista hankkeista).
+const isFoundation = (role) => perms.isFoundation(role);
+const sqlList = (keys) => (keys.length ? keys.map(k => `'${String(k).replace(/'/g, "''")}'`).join(',') : "''");
+const recordingKeys = (foundation) => Object.values(perms.roles()).filter(r => r.foundation === foundation && r.permissions.record).map(r => r.key);
+const foundationCond = () => `pu.role IN (${sqlList(perms.foundationKeys())})`;
 function staffFilters(req, { unscoped = false } = {}) {
   const sc = unscoped ? { sql: '1=1', params: [] } : staffScopeSql(req);
   const where = ['e.deleted_at IS NULL', sc.sql]; const params = [...sc.params];
@@ -620,10 +627,11 @@ const ratingQ = (key) => (db.prepare('SELECT id FROM questions WHERE key = ?').g
 
 // Tuntityöntekijät, jotka kuuluvat tarkastelijan näkyvyyteen (myös ne, joilla ei ole kirjauksia)
 function hourlyUserIds(req) {
-  if (scope(req.user, 'staffScope') === 'all') return db.prepare("SELECT id FROM users WHERE role = 'tuntityontekija' AND (active = 1 OR is_test = 1)").all().map(r => r.id);
+  const keys = sqlList(recordingKeys(false));
+  if (scope(req.user, 'staffScope') === 'all') return db.prepare(`SELECT id FROM users WHERE role IN (${keys}) AND (active = 1 OR is_test = 1)`).all().map(r => r.id);
   if (!req.projectIds.length) return [];
   return db.prepare(`SELECT DISTINCT up.user_id id FROM user_projects up JOIN users u ON u.id = up.user_id
-    WHERE u.role = 'tuntityontekija' AND up.project_id IN (${req.projectIds.map(() => '?').join(',')})`).all(...req.projectIds).map(r => r.id);
+    WHERE u.role IN (${keys}) AND up.project_id IN (${req.projectIds.map(() => '?').join(',')})`).all(...req.projectIds).map(r => r.id);
 }
 
 const STAFF_STATS_SQL = (where, roleCond) => `
@@ -639,22 +647,21 @@ const STAFF_STATS_SQL = (where, roleCond) => `
     LEFT JOIN encounter_answers w ON w.encounter_id = e.id AND w.question_id = ?
     LEFT JOIN encounter_answers c ON c.encounter_id = e.id AND c.question_id = ?
     WHERE ${where} AND ${roleCond} GROUP BY e.performed_by`;
-const FOUNDATION_COND = `pu.role IN (${FOUNDATION_ROLES.map(r => `'${r}'`).join(',')})`;
 
 app.get('/api/staff', requireAuth, (req, res) => {
   const sc = scope(req.user, 'staffScope');
   if (sc === 'none') return bad(res, 'Ei oikeutta.', 403);
   const wr = ratingQ('tyontekijan_arvio'), cr = ratingQ('asiakkaan_arvio');
   const fAll = staffFilters(req, { unscoped: true }), fScoped = staffFilters(req);
-  const foundationStats = db.prepare(STAFF_STATS_SQL(fAll.sql, FOUNDATION_COND)).all(wr, cr, ...fAll.params);
-  const hourlyStats = db.prepare(STAFF_STATS_SQL(fScoped.sql, `NOT ${FOUNDATION_COND}`)).all(wr, cr, ...fScoped.params);
+  const foundationStats = db.prepare(STAFF_STATS_SQL(fAll.sql, foundationCond())).all(wr, cr, ...fAll.params);
+  const hourlyStats = db.prepare(STAFF_STATS_SQL(fScoped.sql, `NOT ${foundationCond()}`)).all(wr, cr, ...fScoped.params);
   const blank = { rows: 0, encounters: 0, reach: 0, yksilo_rows: 0, ryhma_rows: 0, ryhma_encounters: 0, active_days: 0,
     last_date: null, last_saved: null, worker_rating: null, client_rating: null, client_rating_n: 0 };
   const load = (ids) => ids.length ? db.prepare(`SELECT id, name, role, recorder_role, active, is_test FROM users WHERE id IN (${ids.map(() => '?').join(',')})`).all(...ids) : [];
   const build = (users, stats) => { const m = new Map(stats.map(x => [x.user_id, x])); return users.map(u => ({ ...u, ...blank, ...(m.get(u.id) || {}) })); };
 
-  // Säätiöläiset: aktiiviset tiiminvetäjät ja hanketyöntekijät sekä kaikki, joilla on kirjauksia (myös admin)
-  const fIds = new Set([...db.prepare("SELECT id FROM users WHERE role IN ('tiimivetaja','hanketyontekija') AND (active = 1 OR is_test = 1)").all().map(r => r.id),
+  // Säätiöläiset: aktiiviset kirjaavat säätiöläiset (paitsi admin) sekä kaikki, joilla on kirjauksia
+  const fIds = new Set([...db.prepare(`SELECT id FROM users WHERE role IN (${sqlList(recordingKeys(true).filter(k => k !== 'admin'))}) AND (active = 1 OR is_test = 1)`).all().map(r => r.id),
     ...foundationStats.map(x => x.user_id)]);
   const foundation = build(load([...fIds]), foundationStats);
   const hIds = new Set([...hourlyUserIds(req), ...hourlyStats.map(x => x.user_id)]);
@@ -713,7 +720,7 @@ app.get('/api/staff/:id', requireAuth, (req, res) => {
   const byLocation = db.prepare(`SELECT a.value name, COUNT(*) rows, COALESCE(SUM(CASE WHEN e.kind <> 'tavoittaminen' THEN e.encounter_count END), 0) encounters FROM encounters e
     JOIN encounter_answers a ON a.encounter_id = e.id AND a.question_id = (SELECT id FROM questions WHERE key = 'sijainti')
     WHERE ${where} GROUP BY a.value ORDER BY encounters DESC`).all(...params);
-  res.json({ user: { ...u, roleLabel: ROLES[u.role].label }, kpi, monthly, byProject, workerRatings, byLocation });
+  res.json({ user: { ...u, roleLabel: perms.roleLabel(u.role) }, kpi, monthly, byProject, workerRatings, byLocation });
 });
 
 // ---------------------------------------------------------------------------
@@ -767,7 +774,7 @@ app.put('/api/features/:key', requireAuth, requirePerm('manageUsers'), (req, res
   res.json({ key: req.params.key, enabled: on });
 });
 
-// Tilastot (dashboard): admin kaikki, tiiminvetäjä ja hanketyöntekijä omat hankkeet
+// Tilastot (dashboard): säätiöläiset (admin, tiiminvetäjä, hanketyöntekijä) kaikki hankkeet
 app.get('/api/dashboard', requireAuth, (req, res) => {
   const s = scope(req.user, 'dashScope');
   if (s === 'none') return bad(res, 'Ei oikeutta.', 403);
@@ -836,6 +843,70 @@ app.get('/api/export', requireAuth, async (req, res) => {
 // ---------------------------------------------------------------------------
 const tempPassword = () => crypto.randomBytes(9).toString('base64url');
 
+// ---------------------------------------------------------------------------
+// Roolit ja oikeudet (Hallinta → Roolit)
+// ---------------------------------------------------------------------------
+function roleView(r) {
+  const n = db.prepare('SELECT COUNT(*) n FROM users WHERE role = ? AND active = 1').get(r.key).n;
+  return { key: r.key, label: r.label, description: r.description, recorder_index: r.recorderIndex, recorder_role: RECORDER_ROLES[r.recorderIndex],
+    foundation: r.foundation, builtin: r.builtin, active: r.active, sort: r.sort, permissions: r.permissions, locked: r.key === 'admin', users: n };
+}
+function validateRole(b) {
+  const label = String(b.label || '').trim();
+  if (label.length < 2 || label.length > 60) return 'Anna roolin nimi (2–60 merkkiä).';
+  if (String(b.description || '').length > 200) return 'Kuvaus on liian pitkä.';
+  if (![0, 1].includes(Number(b.recorder_index))) return 'Valitse, mikä kirjaajan rooli kirjauksiin tallentuu.';
+  return null;
+}
+app.get('/api/roles', requireAuth, requirePerm('manageUsers'), (req, res) => {
+  res.json({ roles: Object.values(perms.roles()).map(roleView), fields: perms.PERMISSION_FIELDS, recorderRoles: RECORDER_ROLES.slice(0, 2) });
+});
+app.post('/api/roles', requireAuth, requirePerm('manageUsers'), (req, res) => {
+  const b = req.body; const err = validateRole(b); if (err) return bad(res, err);
+  const label = String(b.label).trim();
+  if (Object.values(perms.roles()).some(r => r.label.toLowerCase() === label.toLowerCase())) return bad(res, 'Samanniminen rooli on jo olemassa.');
+  const base = label.toLowerCase().normalize('NFD').replace(/\p{M}+/gu, '').replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '').slice(0, 30) || 'rooli';
+  let key = base, i = 2; while (perms.role(key)) key = `${base}_${i++}`;
+  const sort = (db.prepare('SELECT MAX(sort) m FROM roles').get().m || 0) + 10;
+  const p = perms.normalizePermissions(b.permissions || {});
+  db.prepare('INSERT INTO roles (key, label, description, permissions, recorder_index, foundation, builtin, active, sort) VALUES (?, ?, ?, ?, ?, ?, 0, 1, ?)')
+    .run(key, label, String(b.description || '').trim() || null, JSON.stringify(p), Number(b.recorder_index), b.foundation === false ? 0 : 1, sort);
+  perms.invalidate();
+  audit(req.user.id, 'role_create', 'role', key, { label, permissions: p });
+  res.status(201).json({ key });
+});
+app.put('/api/roles/:key', requireAuth, requirePerm('manageUsers'), (req, res) => {
+  const r = perms.role(req.params.key); if (!r) return bad(res, 'Roolia ei löydy.', 404);
+  if (r.key === 'admin') return bad(res, 'Admin-roolin oikeuksia ei voi muuttaa.');
+  const b = req.body; const err = validateRole(b); if (err) return bad(res, err);
+  const label = String(b.label).trim();
+  if (Object.values(perms.roles()).some(x => x.key !== r.key && x.label.toLowerCase() === label.toLowerCase())) return bad(res, 'Samanniminen rooli on jo olemassa.');
+  const active = b.active === false ? 0 : 1;
+  if (!active && db.prepare('SELECT COUNT(*) n FROM users WHERE role = ? AND active = 1').get(r.key).n) return bad(res, 'Roolissa on käyttäjiä. Vaihda heille ensin toinen rooli.');
+  const p = perms.normalizePermissions(b.permissions || {});
+  // Oman käyttäjienhallintaoikeuden poistaminen estetään
+  if (r.key === req.user.role && !p.manageUsers) return bad(res, 'Et voi poistaa omalta rooliltasi käyttäjienhallintaoikeutta.');
+  const recorderChanged = Number(b.recorder_index) !== r.recorderIndex;
+  db.transaction(() => {
+    db.prepare('UPDATE roles SET label = ?, description = ?, permissions = ?, recorder_index = ?, foundation = ?, active = ? WHERE key = ?')
+      .run(label, String(b.description || '').trim() || null, JSON.stringify(p), Number(b.recorder_index), b.foundation === false ? 0 : 1, active, r.key);
+    // Kirjaajan rooli seuraa käyttöoikeusroolia; jo tallennetut kirjaukset eivät muutu
+    if (recorderChanged) db.prepare('UPDATE users SET recorder_role = ? WHERE role = ?').run(RECORDER_ROLES[Number(b.recorder_index)], r.key);
+  })();
+  perms.invalidate();
+  audit(req.user.id, 'role_update', 'role', r.key, { label, permissions: p, active });
+  res.json({ ok: true });
+});
+app.delete('/api/roles/:key', requireAuth, requirePerm('manageUsers'), (req, res) => {
+  const r = perms.role(req.params.key); if (!r) return bad(res, 'Roolia ei löydy.', 404);
+  if (r.builtin) return bad(res, 'Valmista roolia ei voi poistaa. Voit poistaa sen käytöstä.');
+  if (db.prepare('SELECT COUNT(*) n FROM users WHERE role = ?').get(r.key).n) return bad(res, 'Roolilla on käyttäjiä (myös suljettuja). Poista rooli käytöstä tai vaihda käyttäjien rooli.');
+  db.prepare('DELETE FROM roles WHERE key = ?').run(r.key);
+  perms.invalidate();
+  audit(req.user.id, 'role_delete', 'role', r.key, { label: r.label });
+  res.json({ ok: true });
+});
+
 app.get('/api/users', requireAuth, requirePerm('manageUsers'), (req, res) => {
   const users = db.prepare('SELECT id, email, name, role, recorder_role, active, last_login_at, created_at, auth_method, mfa_enabled, entra_oid IS NOT NULL entra_linked FROM users ORDER BY name').all();
   const links = db.prepare('SELECT user_id, project_id FROM user_projects').all();
@@ -843,17 +914,17 @@ app.get('/api/users', requireAuth, requirePerm('manageUsers'), (req, res) => {
   res.json({ users });
 });
 
-function validateUserBody(b) {
+function validateUserBody(b, currentRole = null) {
   if (!b.name || String(b.name).trim().length < 2) return 'Anna nimi.';
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(b.email || ''))) return 'Anna kelvollinen sähköpostiosoite.';
-  if (!ROLES[b.role]) return 'Valitse rooli.';
+  if (!perms.role(b.role) || (!perms.role(b.role).active && b.role !== currentRole)) return 'Valitse rooli.';
   if (!Array.isArray(b.project_ids)) return 'Virheelliset hankkeet.';
   if (b.auth_method != null && !['local', 'entra'].includes(b.auth_method)) return 'Valitse kirjautumistapa.';
   return null;
 }
 // Kirjaajan rooli johdetaan aina käyttöoikeusroolista, sitä ei valita erikseen.
 function recorderRoleFor(b) {
-  return RECORDER_ROLES[DEFAULT_RECORDER_ROLE_INDEX[b.role]];
+  return recorderRoleOf(b.role);
 }
 function setUserProjects(userId, ids) {
   db.prepare('DELETE FROM user_projects WHERE user_id = ?').run(userId);
@@ -881,11 +952,11 @@ app.put('/api/users/:id', requireAuth, requirePerm('manageUsers'), (req, res) =>
   const id = Number(req.params.id);
   const u = db.prepare('SELECT * FROM users WHERE id = ?').get(id);
   if (!u) return bad(res, 'Käyttäjää ei löydy.', 404);
-  const err = validateUserBody(req.body); if (err) return bad(res, err);
+  const err = validateUserBody(req.body, u.role); if (err) return bad(res, err);
   const other = db.prepare('SELECT id FROM users WHERE email = ? AND id <> ?').get(req.body.email, id);
   if (other) return bad(res, 'Sähköpostiosoite on jo käytössä.');
   const active = req.body.active === false ? 0 : 1;
-  if (id === req.user.id && (req.body.role !== 'admin' || !active)) return bad(res, 'Et voi poistaa omaa admin-oikeuttasi.');
+  if (id === req.user.id && (!perms.permissionsOf(req.body.role).manageUsers || !active)) return bad(res, 'Et voi poistaa omaa käyttäjienhallintaoikeuttasi.');
   const method = req.body.auth_method || u.auth_method;
   if (id === req.user.id && method !== u.auth_method) return bad(res, 'Et voi vaihtaa omaa kirjautumistapaasi.');
   let temporaryPassword = null;
@@ -937,7 +1008,8 @@ function normColor(v) {
   if (!parts.length || parts.length > 2 || !parts.every(x => /^#[0-9a-f]{6}$/.test(x))) return false;
   return parts.join(',');
 }
-app.get('/api/projects', requireAuth, requirePerm('manageProjects'), (req, res) => {
+// Hankelista myös käyttäjien ylläpitäjälle (hankkeiden valinta käyttäjälle)
+app.get('/api/projects', requireAuth, (req, res, next) => (can(req.user, 'manageProjects') || can(req.user, 'manageUsers') ? next() : bad(res, 'Ei oikeutta.', 403)), (req, res) => {
   res.json({ projects: db.prepare(`SELECT p.*, (SELECT COUNT(*) FROM encounters e WHERE e.project_id = p.id AND e.deleted_at IS NULL) encounter_rows
                                    FROM projects p ORDER BY sort, name`).all() });
 });

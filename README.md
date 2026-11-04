@@ -35,13 +35,23 @@ Kirjautumistapa valitaan käyttäjäkohtaisesti kohdassa Hallinta → Käyttäj�
 
 **Microsoft Entra ID:** Microsoft-kirjautuminen otetaan käyttöön asettamalla `ENTRA_TENANT_ID`, `ENTRA_CLIENT_ID`, `ENTRA_CLIENT_SECRET` ja `APP_URL`. Paluuosoite on `APP_URL/auth/callback`. Kirjautumissivulle tulee silloin painike *Kirjaudu Microsoft-tunnuksella*.
 
-- Sovellusrekisteröinnissä määritellään sovellusroolit, joiden arvot ovat `admin`, `tiimivetaja`, `hanketyontekija` ja `tuntityontekija`. Kun Entrassa on annettu rooli, se ohittaa sovelluksen roolin ja päivittyy jokaisella kirjautumisella. Käyttäjä, jolla on rooli, luodaan automaattisesti ensimmäisellä kirjautumisella.
+- Sovellusrekisteröinnissä määritellään sovellusroolit, joiden arvot ovat roolien tunnisteet: `admin`, `tiimivetaja`, `hanketyontekija`, `tuntityontekija` ja itse luotujen roolien tunnisteet (näkyvät kohdassa Hallinta → Roolit). Jos käyttäjällä on Entrassa useita rooleja, valitaan roolilistassa ensimmäisenä oleva. Kun Entrassa on annettu rooli, se ohittaa sovelluksen roolin ja päivittyy jokaisella kirjautumisella. Käyttäjä, jolla on rooli, luodaan automaattisesti ensimmäisellä kirjautumisella.
 - Ilman Entra-roolia käyttäjä pääsee sisään vain, jos admin on luonut hänelle etukäteen Microsoft-tunnuksen samalla sähköpostiosoitteella. Silloin rooli tulee sovelluksesta.
 - Hankkeisiin liittäminen tehdään aina sovelluksessa.
 - Toisen organisaation tunnuksilla ei pääse sisään. Sähköpostiosoite, jolle on sovelluksessa salasanatunnus, ei yhdisty Microsoft-kirjautumiseen ilman adminin päätöstä.
 - Kirjautuminen käyttää valtuutuskoodia PKCE-suojauksella, ja state, nonce ja PKCE-tunniste ovat lyhytikäisessä allekirjoitetussa evästeessä.
 
 ## Roolit
+
+Roolit ja niiden oikeudet ovat ylläpidettäviä kohdassa **Hallinta → Roolit** (vaatii käyttäjienhallintaoikeuden). Admin voi luoda uusia rooleja ja määrittää jokaiselle oikeudelle laajuuden: *Ei*, *Omat*, *Omat hankkeet* tai *Kaikki*. Esimerkiksi rooli, jolla on pelkkä lukuoikeus tilastoihin ja työntekijäseurantaan, luodaan asettamalla Tilastot ja Työntekijäseuranta arvoon *Kaikki* ja jättämällä muut oikeudet pois. Käyttäjä ilman kirjausoikeutta ohjataan kirjautuessaan suoraan ensimmäiseen näkymään, johon hänellä on oikeus.
+
+- **A-klinikkasäätiön työntekijä** -valinta: säätiöläiset näkyvät työntekijäseurannassa kaikille nimeltä ja kaikkien hankkeiden luvuin.
+- **Kirjaajan rooli** määrää, mikä *Olen*-tieto kirjauksiin tallentuu. Muutos koskee uusia kirjauksia, ja jo tallennetut kirjaukset säilyvät ennallaan.
+- Korjaus- ja poisto-oikeus voi olla enintään yhtä laaja kuin selausoikeus.
+- Admin-rooli pitää aina kaikki oikeudet, eikä sitä voi muuttaa. Valmiita rooleja ei voi poistaa, mutta niitä voi muokata. Roolin voi poistaa käytöstä tai poistaa vasta, kun kenelläkään ei ole sitä.
+- Muutokset tulevat voimaan heti, ja ne kirjataan tapahtumalokiin.
+
+Valmiiden roolien oletusoikeudet:
 
 | | Admin | Tiiminvetäjä | Hanketyöntekijä | Tuntityöntekijä (avustaja) |
 |---|---|---|---|---|
@@ -52,12 +62,12 @@ Kirjautumistapa valitaan käyttäjäkohtaisesti kohdassa Hallinta → Käyttäj�
 | Poistaa kirjauksia | kaikki | omat hankkeet | – | – |
 | Excel-vienti | kaikki hankkeet | omat hankkeet | – | – |
 | Työntekijäseuranta | kaikki | säätiöläiset (kaikki hankkeet) + omien hankkeiden tuntityöntekijät | säätiöläiset (kaikki hankkeet); tuntityöntekijöistä vain yhteismäärät | – |
-| Tilastot (dashboard) | kaikki | omat hankkeet | omat hankkeet | – |
+| Tilastot (dashboard) | kaikki hankkeet | kaikki hankkeet | kaikki hankkeet | – |
 | Asiakaspolut (koosteet, hankekohtaiset; oletuksena piilotettu) | kaikki | omien hankkeiden kirjaukset | – | – |
 | Asiakastunnisteen haku kirjatessa | ✓ | ✓ | ✓ | ✓ |
 | Käyttäjät, hankkeet, kysymykset, loki | ✓ | – | – | – |
 
-Oikeudet on koottu yhteen tiedostoon, `src/permissions.js`. Esimerkiksi tuntityöntekijälle voi antaa omien kirjausten selauksen ja korjauksen asettamalla sinne `viewScope: 'own'` ja `editScope: 'own'`.
+Oikeuksien kuvaukset ja sallitut arvot ovat tiedostossa `src/permissions.js`, ja valmiiden roolien oletukset ovat tiedostossa `src/db.js`. Roolit tallennetaan tietokannan `roles`-tauluun.
 
 Kirjauslistassa ja kirjauksen tiedoissa ei näy nimimerkkejä: niitä ei tallenneta selväkielisinä lainkaan (ks. Asiakastunnisteet), joten niitä ei voi näyttää kenellekään.
 
@@ -97,7 +107,7 @@ Kysymyksiä voi lisätä, muokata, järjestää ja ottaa pois käytöstä. Kysym
 
 ## Tilastot (dashboard)
 
-Määrittelydokumentin dashboard-mallin mukainen näkymä (valikossa **Tilastot**). Admin näkee kaikki hankkeet, tiiminvetäjä ja hanketyöntekijä omat hankkeensa.
+Määrittelydokumentin dashboard-mallin mukainen näkymä (valikossa **Tilastot**). Säätiön työntekijät (admin, tiiminvetäjä ja hanketyöntekijä) näkevät kaikkien hankkeiden tilastot. Tilastot ovat koosteita, joten yksittäisiä kirjauksia ei näe; Excel-raakadata noudattaa edelleen vientioikeutta (tiiminvetäjä: omat hankkeet).
 
 - **Rajaukset:** aikaväli (pikavalinnat: tämä vuosi, edellinen vuosi, 30 pv, tämä kk), hanke, kohtaamisen tyyppi, kirjaajan rooli, ikä ja sukupuoli. Rajaukset koskevat kaikkia näkymän lukuja. **Lataa raakadata (Excel)** käyttää aikaväliä ja hanketta.
 - **Kohtaamiset yhteensä** ja **eri henkilöiden määrä (arvio)** näytetään erillisinä tunnuslukuina, ja kumpaankin lasketaan muutos edelliseen yhtä pitkään jaksoon.

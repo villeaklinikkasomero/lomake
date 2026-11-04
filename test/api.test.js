@@ -530,11 +530,12 @@ test('tilastot: koosteet, rajaukset, vertailujakso ja oikeudet', async () => {
   // Ikärajaus
   const ik = await users.admin('GET', `/dashboard?from=2020-01-01&to=${today}&ika=${encodeURIComponent('18–29 vuotta')}`);
   assert.ok(ik.data.totals.rows >= 1 && ik.data.totals.rows < all.n);
-  // Hanketyöntekijä: vain omat hankkeet (Katuklinikka)
+  // Hanketyöntekijä näkee kaikkien hankkeiden tilastot (koosteet)
   const ht = await users.hanketyontekija('GET', `/dashboard?from=2020-01-01&to=${today}`);
   assert.equal(ht.status, 200);
-  assert.ok(ht.data.byProject.every(p => p.name === 'Katuklinikka'));
-  assert.equal((await users.hanketyontekija('GET', `/dashboard?project_id=${P().JALMA}`)).status, 403);
+  assert.equal(ht.data.totals.rows, all.n);
+  assert.equal((await users.hanketyontekija('GET', `/dashboard?from=2020-01-01&to=${today}&project_id=${P().JALMA}`)).status, 200);
+  assert.equal((await users.tuntityontekija('GET', '/dashboard')).status !== 200, true);
   // Ei tunnisteita tai vapaatekstejä
   assert.ok(!/revontuli|Keskustelu|Hyvä keskustelu/i.test(JSON.stringify(a.data)));
 });
@@ -663,4 +664,51 @@ test('ehdolliset kysymykset: näkyvät ja vaaditaan vain ehdon täyttyessä; luk
   assert.equal(nq.status, 201, JSON.stringify(nq.data));
   const bad = await users.admin('POST', '/questions', { key: 'testi_ehto2', label: 'Testi', type: 'text', show_if: { key: 'voljy_asumistuki', values: ['Kyllä'] } });
   assert.equal(bad.status, 400, 'yhteinen kysymys ei voi riippua hankekohtaisesta');
+});
+
+test('roolit: uusi lukurooli, oikeuksien tarkistus ja suojaukset', async () => {
+  const a = users.admin;
+  const list = await a('GET', '/roles');
+  assert.equal(list.status, 200);
+  assert.ok(['admin', 'tiimivetaja', 'hanketyontekija', 'tuntityontekija'].every(k => list.data.roles.some(r => r.key === k)));
+  assert.equal((await users.tiimivetaja('GET', '/roles')).status, 403);
+
+  // Lukija: vain tilastot ja työntekijäseuranta
+  const r = await a('POST', '/roles', { label: 'Tilastojen lukija', description: 'Vain luku', recorder_index: 0, foundation: false,
+    permissions: { dashScope: 'all', staffScope: 'all', editScope: 'all', manageUsers: 'kyllä', bogus: true } });
+  assert.equal(r.status, 201, JSON.stringify(r.data));
+  const key = r.data.key;
+  const saved = (await a('GET', '/roles')).data.roles.find(x => x.key === key);
+  assert.equal(saved.permissions.editScope, 'none', 'korjaus ei voi olla laajempi kuin selaus');
+  assert.equal(saved.permissions.manageUsers, false);
+  assert.equal(saved.permissions.bogus, undefined);
+  assert.equal((await a('POST', '/roles', { label: 'tilastojen LUKIJA', recorder_index: 0 })).status, 400);
+
+  const u = await a('POST', '/users', { name: 'Lukija', email: 'lukija@t.fi', role: key, project_ids: [] });
+  assert.equal(u.status, 201);
+  let c = await login('lukija@t.fi', u.data.temporaryPassword);
+  await c('POST', '/me/password', { current: u.data.temporaryPassword, next: 'Uusi-salasana-123' });
+  c = await login('lukija@t.fi', 'Uusi-salasana-123');
+  const me = await c('GET', '/me');
+  assert.equal(me.data.user.roleLabel, 'Tilastojen lukija');
+  assert.equal(me.data.permissions.record, false);
+  assert.equal((await c('GET', '/dashboard')).status, 200);
+  assert.equal((await c('GET', '/staff')).status, 200);
+  assert.equal((await c('GET', '/encounters')).status, 403);
+  assert.equal((await c('POST', '/encounters', basePayload(P().JALMA))).status, 403);
+  assert.equal((await c('GET', '/export?from=2026-01-01&to=2026-12-31')).status, 403);
+  assert.equal((await c('GET', '/users')).status, 403);
+
+  // Oikeuksien muutos tulee voimaan heti
+  assert.equal((await a('PUT', '/roles/' + key, { label: 'Tilastojen lukija', recorder_index: 0, permissions: { dashScope: 'all' } })).status, 200);
+  assert.equal((await c('GET', '/staff')).status, 403);
+
+  // Suojaukset
+  assert.equal((await a('PUT', '/roles/admin', { label: 'Admin', recorder_index: 0, permissions: {} })).status, 400);
+  assert.equal((await a('PUT', '/roles/' + key, { label: 'Tilastojen lukija', recorder_index: 0, active: false, permissions: { dashScope: 'all' } })).status, 400, 'roolissa käyttäjiä');
+  assert.equal((await a('DELETE', '/roles/' + key)).status, 400);
+  assert.equal((await a('DELETE', '/roles/tuntityontekija')).status, 400);
+  assert.equal((await a('POST', '/users', { name: 'X', email: 'x@t.fi', role: 'olematon', project_ids: [] })).status, 400);
+  const tmp = await a('POST', '/roles', { label: 'Poistettava', recorder_index: 1 });
+  assert.equal((await a('DELETE', '/roles/' + tmp.data.key)).status, 200);
 });
