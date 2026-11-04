@@ -732,3 +732,8 @@ svg .series.cmp { stroke: #8a8f96; stroke-width: 2; stroke-dasharray: 5 4; }
 .hbars.pickable .hbar.active .hbar-label { font-weight: 700; color: var(--blue, #0037D3); }
 .btn.mt { margin-top: .75rem; }
 .cond-values { margin-top: .5rem; }
+
+/* Kirjaustyypit samalle riville, kun tilaa riittää (kapeilla näytöillä rivitys) */
+.segmented.type-cards { grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); }
+/* Puhelimessa allekkain, ettei sanoja katkota kesken */
+@media (max-width: 520px) { .segmented.type-cards { grid-template-columns: 1fr; } }

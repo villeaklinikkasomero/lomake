@@ -446,7 +446,7 @@ function renderEncounterForm(opts) {
         h('p', null, 'Jos dialogi on luonteeltaan jatkuvaa (esim. tukihenkilötyöskentely), kohtaamiseksi lasketaan ne päivät, jolloin vuorovaikutusta on tapahtunut. Digialustalla yksi kysymys–vastaus-kokonaisuus jatkokysymyksineen = yksi kohtaaminen.'))
     : '');
   const typeField = h('div', { class: 'field', id: 'fw-type' }, h('div', { class: 'label', id: 'l-type' }, 'Valitse, mitä raportoit', h('span', { class: 'req' }, '*')),
-    h('div', { class: 'segmented', role: 'radiogroup', 'aria-labelledby': 'l-type' },
+    h('div', { class: 'segmented type-cards', role: 'radiogroup', 'aria-labelledby': 'l-type' },
       // Käytössä olevat tyypit; korjattaessa myös kirjauksen oma (mahdollisesti käytöstä poistettu) tyyppi
       recordTypes().filter(t => t.active || t.key === init.encounter_type).map(t => h('label', { class: 'opt' },
         h('input', { type: 'radio', name: 'encounter_type', value: t.key, checked: s.encounter_type === t.key, onchange: () => { s.encounter_type = t.key; renderDynamic(); } }),
