@@ -461,6 +461,8 @@ app.get('/api/me', requireAuth, (req, res) => {
     permissions: effectivePermissions(req.user.role),
     features: features(),
     projects,
+    // Työntekijäseurannan hankesuodatin: säätiöläisten luvut ovat kaikista hankkeista
+    staffProjects: scope(req.user, 'staffScope') === 'none' ? [] : db.prepare('SELECT id, name FROM projects ORDER BY sort, name').all(),
     recorderRoles: RECORDER_ROLES,
     defaultRecorderRoles: Object.fromEntries(Object.keys(ROLES).map(r => [r, RECORDER_ROLES[DEFAULT_RECORDER_ROLE_INDEX[r]]])),
     roles: Object.fromEntries(Object.entries(ROLES).map(([k, v]) => [k, v.label])),

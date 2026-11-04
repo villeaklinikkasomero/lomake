@@ -1002,8 +1002,12 @@ function staffFilterBar(onChange, st = staffState) {
   return h('div', { class: 'card' }, h('div', { class: 'filters' },
     h('div', { class: 'field' }, h('label', { for: 's-from' }, 'Alkaen'), fromEl),
     h('div', { class: 'field' }, h('label', { for: 's-to' }, 'Päättyen'), toEl),
-    state.me.projects.length > 1 ? h('div', { class: 'field' }, h('label', { for: 's-proj' }, 'Hanke'),
-      f('project_id', h('select', { id: 's-proj' }, h('option', { value: '' }, 'Kaikki hankkeet'), state.me.projects.map(x => h('option', { value: x.id }, x.name))))) : null),
+    (() => {
+      // Työntekijät-näkymässä kaikki hankkeet (säätiöläisten luvut kaikista hankkeista), asiakaspoluissa omat
+      const list = st !== pathState && (state.me.staffProjects || []).length ? state.me.staffProjects : state.me.projects;
+      return list.length > 1 ? h('div', { class: 'field' }, h('label', { for: 's-proj' }, 'Hanke'),
+        f('project_id', h('select', { id: 's-proj' }, h('option', { value: '' }, 'Kaikki hankkeet'), list.map(x => h('option', { value: x.id }, x.name))))) : null;
+    })()),
     h('div', { class: 'actions presets' }, presets.map(([label, fn]) => h('button', { type: 'button', class: 'btn btn-secondary btn-sm', onclick: () => {
       [staffState.from, staffState.to] = fn(); fromEl.value = staffState.from; toEl.value = staffState.to; onChange(); } }, label))));
 }
