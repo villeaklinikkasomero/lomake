@@ -212,6 +212,7 @@ function validateEncounter(body, user, projectIds, existing) {
     switch (q.type) {
       case 'text': case 'textarea': {
         v = String(v).trim().slice(0, q.type === 'text' ? 200 : 4000);
+        if (q.key === 'kadunnimi') v = streets.streetOnly(v);   // vain kadun nimi, ei talonumeroa
         if (!v) { if (q.required) return { error: `Vastaa kysymykseen: ${q.label}` }; continue; }
         const hit = sensitiveHit(v);
         if (hit) return { error: `Kenttä "${q.label}" näyttää sisältävän ${hit} näyttävää tietoa. Älä kirjaa asiakkaan tunnistetietoja.` };

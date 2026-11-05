@@ -520,4 +520,17 @@ function setFeature(key, on) {
 }
 const features = () => Object.fromEntries(Object.keys(FEATURES).map(k => [k, featureEnabled(k)]));
 
+// Kadunnimistä poistetaan talonumerot ja tarkennukset myös aiemmin tallennetuista kirjauksista
+once('kadunnimi_ilman_numeroa', () => {
+  const { streetOnly } = require('./streets');
+  const q = db.prepare("SELECT id FROM questions WHERE key = 'kadunnimi'").get();
+  if (!q) return;
+  const upd = db.prepare('UPDATE encounter_answers SET value = ? WHERE encounter_id = ? AND question_id = ?');
+  const del = db.prepare('DELETE FROM encounter_answers WHERE encounter_id = ? AND question_id = ?');
+  for (const r of db.prepare('SELECT encounter_id, value FROM encounter_answers WHERE question_id = ?').all(q.id)) {
+    const v = streetOnly(r.value);
+    if (!v) del.run(r.encounter_id, q.id); else if (v !== r.value) upd.run(v, r.encounter_id, q.id);
+  }
+});
+
 module.exports = { db, ensureAdmin, audit, RECORDER_ROLES, RECORD_KINDS, DIGITAL_LOCATION, FEATURES, featureEnabled, setFeature, features };

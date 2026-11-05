@@ -877,6 +877,21 @@ const BRAND_SWATCHES = [['#0037d3', 'Sininen'], ['#00a0f4', 'Vaaleansininen'], [
   ['#ffe000', 'Keltainen'], ['#a437b8', 'Violetti'], ['#000000', 'Musta'], ['#919396', 'Harmaa']];
 
 // Täydennysehdotukset tekstikenttään (ARIA-combobox). Haku alkaa 2 merkistä.
+// Vain kadun nimi (sama sääntö kuin palvelimella, src/streets.js): talonumero ja tarkennukset pois
+function streetOnly(value) {
+  let t = String(value || '').replace(/\s+/g, ' ').trim();
+  t = t.split(/[,;(/]/)[0].trim();
+  const out = [];
+  for (const [i, w] of t.split(' ').entries()) {
+    if (i === 0 && /^\d+\.$/.test(w)) { out.push(w); continue; }
+    if (/^\d/.test(w)) break;
+    const m = w.match(/^(\D+?)\d/);
+    if (m) { out.push(m[1]); break; }
+    out.push(w);
+  }
+  return out.join(' ').replace(/[\s.,:;-]+$/, '').trim();
+}
+
 let suggestSeq = 0;
 function attachSuggest(input, q, answers, set) {
   const listId = 'sg-' + q.key + '-' + (++suggestSeq);
@@ -921,6 +936,18 @@ function attachSuggest(input, q, answers, set) {
     if (input.value.trim().length >= 2) load();
   });
   input.addEventListener('blur', () => setTimeout(close, 120));
+  let note = null;
+  if (q.key === 'kadunnimi') {
+    // Talonumero ja tarkemmat tiedot poistetaan heti, kun kentästä poistutaan
+    note = h('p', { class: 'help help-below', hidden: true, role: 'status' });
+    input.addEventListener('change', () => {
+      const cleaned = streetOnly(input.value);
+      if (cleaned !== input.value.trim()) {
+        input.value = cleaned; set(cleaned);
+        note.textContent = 'Talonumero ja tarkemmat tiedot poistettiin. Tallennetaan vain kadun nimi.'; note.hidden = false;
+      } else note.hidden = true;
+    });
+  }
   input.addEventListener('keydown', (e) => {
     if (list.hidden) return;
     if (e.key === 'ArrowDown') { e.preventDefault(); active = (active + 1) % items.length; draw(input.value.trim()); }
@@ -928,7 +955,7 @@ function attachSuggest(input, q, answers, set) {
     else if (e.key === 'Enter' && active >= 0) { e.preventDefault(); choose(items[active]); }
     else if (e.key === 'Escape') { e.preventDefault(); close(); }
   });
-  return h('div', { class: 'suggest' }, input, pop);
+  return h('div', { class: 'suggest' }, input, pop, note);
 }
 
 function renderQuestion(q, answers) {

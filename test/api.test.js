@@ -549,12 +549,12 @@ test('täydennysehdotukset: kunnat ja aiemmin kirjatut, kadut kaupungin mukaan, 
   assert.equal((await tv('GET', '/suggest?key=tyontekijan_huomiot&q=hy')).data.items.length, 0, 'vain sallitut kysymykset');
   // Kadunnimi: kaksi kirjausta Tampereella, yksi Turussa toisen käyttäjän tekemänä
   for (let i = 0; i < 2; i++) await tv('POST', '/encounters', basePayload(p.KATUKLINIKKA, { answers: { tyontekijan_arvio: '4', sijainti: 'Kadulla tai muulla julkisella paikalla', kaupunki: 'Tampere', kadunnimi: 'Hämeenkatu' } }));
-  await users.admin('POST', '/encounters', basePayload(p.KATUKLINIKKA, { answers: { tyontekijan_arvio: '4', sijainti: 'Kadulla tai muulla julkisella paikalla', kaupunki: 'Turku', kadunnimi: 'Hämeenkatu 5 rappu' } }));
+  await users.admin('POST', '/encounters', basePayload(p.KATUKLINIKKA, { answers: { tyontekijan_arvio: '4', sijainti: 'Kadulla tai muulla julkisella paikalla', kaupunki: 'Turku', kadunnimi: 'Kummitusraitti 5 rappu' } }));
   r = await tv('GET', '/suggest?key=kadunnimi&q=häm&kaupunki=tampere');
   assert.equal(r.data.items[0], 'Hämeenkatu', 'eniten käytetty ensin');
-  r = await tv('GET', '/suggest?key=kadunnimi&q=rappu');
-  assert.ok(!r.data.items.includes('Hämeenkatu 5 rappu'), 'toisen yksittäinen arvo ei näy');
-  assert.ok((await users.admin('GET', '/suggest?key=kadunnimi&q=rappu')).data.items.includes('Hämeenkatu 5 rappu'), 'oma arvo näkyy');
+  r = await tv('GET', '/suggest?key=kadunnimi&q=kummitus');
+  assert.ok(!r.data.items.includes('Kummitusraitti'), 'toisen yksittäinen arvo ei näy');
+  assert.ok((await users.admin('GET', '/suggest?key=kadunnimi&q=kummitus')).data.items.includes('Kummitusraitti'), 'oma arvo näkyy');
   // Hankerajaus: hanketyöntekijä (vain Katuklinikka) näkee Katuklinikan kirjaukset
   assert.ok((await users.hanketyontekija('GET', '/suggest?key=kadunnimi&q=häm')).data.items.includes('Hämeenkatu'));
 });
@@ -733,4 +733,15 @@ test('uudelleenlähetys samalla tunnisteella ei luo kaksoiskirjausta', async () 
   // Toisen käyttäjän tunniste ei palauta toisen kirjausta
   const c = await users.tiimivetaja('POST', '/encounters', basePayload(P().KATUKLINIKKA, { client_request_id: rid }));
   assert.equal(c.status, 201); assert.notEqual(c.data.id, rid);
+});
+
+test('kadunnimestä tallentuu vain kadun nimi', async () => {
+  const r = await users.admin('POST', '/encounters', basePayload(P().JALMA, { answers: { tyontekijan_arvio: '4', sijainti: 'Kadulla tai muulla julkisella paikalla', kaupunki: 'Helsinki', kadunnimi: 'Mannerheimintie 12 A 5' } }));
+  assert.equal(r.status, 201, JSON.stringify(r.data));
+  const v = db.prepare(`SELECT a.value FROM encounter_answers a JOIN questions q ON q.id = a.question_id WHERE q.key = 'kadunnimi' AND a.encounter_id = ?`).get(r.data.id);
+  assert.equal(v.value, 'Mannerheimintie');
+  const { streetOnly } = require('../src/streets');
+  assert.equal(streetOnly('Kauppakatu 3, Tampere'), 'Kauppakatu');
+  assert.equal(streetOnly('2. linja 5'), '2. linja');
+  assert.equal(streetOnly('Aleksis Kiven katu 3 C 22'), 'Aleksis Kiven katu');
 });
