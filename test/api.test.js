@@ -712,3 +712,12 @@ test('roolit: uusi lukurooli, oikeuksien tarkistus ja suojaukset', async () => {
   const tmp = await a('POST', '/roles', { label: 'Poistettava', recorder_index: 1 });
   assert.equal((await a('DELETE', '/roles/' + tmp.data.key)).status, 200);
 });
+
+test('kohtaamisen päivä ei voi olla tulevaisuudessa (Suomen aika)', async () => {
+  const fi = new Intl.DateTimeFormat('sv-SE', { timeZone: 'Europe/Helsinki' }).format(new Date());
+  const d = new Date(fi + 'T12:00:00Z'); d.setUTCDate(d.getUTCDate() + 1);
+  const r = await users.admin('POST', '/encounters', basePayload(P().JALMA, { encounter_date: d.toISOString().slice(0, 10) }));
+  assert.equal(r.status, 400); assert.match(r.data.error, /tulevaisuudessa/);
+  assert.equal((await users.admin('GET', '/me')).data.today, fi);
+  assert.equal((await users.admin('POST', '/encounters', basePayload(P().JALMA, { encounter_date: fi }))).status, 201);
+});

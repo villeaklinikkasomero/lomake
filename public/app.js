@@ -64,11 +64,14 @@ const sensitiveHit = (t) => { for (const p of SENSITIVE) if (p.re.test(t)) retur
 // ---------------------------------------------------------------------------
 // Tila ja reititys
 // ---------------------------------------------------------------------------
-const state = { me: null, form: null };
+const state = { me: null, form: null, meAt: 0, formAt: 0 };
+// Oikeudet, hankkeet ja lomakkeen tiedot (esim. toteuttajalista) päivitetään siirryttäessä näkymästä toiseen,
+// jos ne on haettu yli minuutti sitten. Näin roolien ja käyttäjien muutokset näkyvät ilman uudelleenkirjautumista.
+const FRESH_MS = 60 * 1000;
 const go = (hash) => { if (location.hash === hash) route(); else location.hash = hash; };
 
 async function loadMe() {
-  try { state.me = await api('/me'); } catch { state.me = null; }
+  try { state.me = await api('/me'); state.meAt = Date.now(); } catch { state.me = null; }
   return state.me;
 }
 
@@ -102,7 +105,7 @@ async function route() {
     history.replaceState(null, '', '#/kirjaudu');
   }
   const hash = location.hash || (state.me ? homeHash(state.me.permissions) : '#/kirjaa');
-  if (!state.me && hash !== '#/kirjaudu') await loadMe();
+  if (hash !== '#/kirjaudu' && (!state.me || Date.now() - state.meAt > FRESH_MS)) await loadMe();
   if (!state.me && hash !== '#/kirjaudu') return go('#/kirjaudu');
   if (state.me && state.me.user.mustChangePassword && hash !== '#/salasana') return go('#/salasana');
   const r = ROUTES.find(x => x.re.test(hash));
@@ -357,7 +360,10 @@ async function viewPassword() {
 // ---------------------------------------------------------------------------
 // Kirjauslomake (uusi ja korjaus)
 // ---------------------------------------------------------------------------
-async function loadForm() { if (!state.form) state.form = await api('/form'); return state.form; }
+async function loadForm() {
+  if (!state.form || Date.now() - state.formAt > FRESH_MS) { state.form = await api('/form'); state.formAt = Date.now(); }
+  return state.form;
+}
 
 async function viewRecord() {
   $app.classList.add('container');
@@ -403,7 +409,7 @@ function renderEncounterForm(opts) {
   const projects = opts.projects || me.projects.filter(p => p.active);
   const s = {
     project_id: init.project_id || (projects.length === 1 ? projects[0].id : null),
-    encounter_date: init.encounter_date || me.today,
+    encounter_date: init.encounter_date || todayIso(),
     encounter_type: init.encounter_type || null,
     encounter_count: init.encounter_count ?? '',
     person_count: init.person_count ?? '',
@@ -441,8 +447,24 @@ function renderEncounterForm(opts) {
   const dynamic = h('div');
 
   // --- Perustiedot
-  const dateInput = h('input', { type: 'date', id: 'f-date', class: 'input-narrow', value: s.encounter_date, max: me.today, min: '2020-01-01', required: true,
-    oninput: (e) => { s.encounter_date = e.target.value; } });
+  // Tulevia päiviä ei voi valita. Kaikki selaimet (esim. iPhonen Safari) eivät noudata max-rajaa
+  // kalenterissa, joten tuleva päivä palautetaan heti tähän päivään ja siitä kerrotaan.
+  const maxDate = todayIso();
+  const dateNote = h('p', { class: 'help help-below warn-text', hidden: true, role: 'status' });
+  const dateInput = h('input', { type: 'date', id: 'f-date', class: 'input-narrow', value: s.encounter_date, max: maxDate, min: '2020-01-01', required: true });
+  const checkDate = () => {
+    const v = dateInput.value;
+    if (v && v > maxDate) {
+      dateInput.value = maxDate; s.encounter_date = maxDate;
+      dateNote.textContent = 'Kohtaamista ei voi kirjata tulevalle päivälle. Päiväksi vaihdettiin tämä päivä.'; dateNote.hidden = false;
+    } else if (v && v < '2020-01-01') {
+      dateInput.value = s.encounter_date || maxDate;
+      dateNote.textContent = 'Tarkista päivämäärä.'; dateNote.hidden = false;
+    } else { if (v !== s.encounter_date) dateNote.hidden = true; s.encounter_date = v; }
+  };
+  dateInput.addEventListener('input', checkDate);
+  dateInput.addEventListener('change', checkDate);
+  dateInput.addEventListener('blur', checkDate);
 
   const projectField = projects.length === 1
     ? h('div', { class: 'field' }, h('div', { class: 'label' }, 'Hanke'), h('p', null, h('strong', null, projects[0].name)))
@@ -472,7 +494,8 @@ function renderEncounterForm(opts) {
     setTimeout(() => syncLocation(), 0);
     performerSelect.replaceChildren(
       h('option', { value: String(me.user.id) }, `Minä (${me.user.name})`),
-      list.length ? h('optgroup', { label: 'Hankkeen työntekijät' }, list.map(m => h('option', { value: String(m.id) }, m.name))) : null,
+      list.length ? h('optgroup', { label: 'Hankkeen työntekijät' }, list.map(m => h('option', { value: String(m.id) }, m.name)))
+        : s.project_id ? h('option', { disabled: true, value: '' }, 'Hankkeeseen ei ole liitetty muita kirjaajia') : null,
       h('option', { value: VOLUNTEER }, 'Vapaaehtoinen tai vertainen'));
     performerSelect.value = s.performer;
     drawPerformerNote();
@@ -504,8 +527,8 @@ function renderEncounterForm(opts) {
         h('p', null, 'Jos raportoit pitkäkestoisesta ryhmästä tai dialogista, merkitse aloituspäivä.')),
       h('div', { class: 'date-row' }, dateInput, h('div', { class: 'date-chips' },
         [['Tänään', 0], ['Eilen', 1], ['Toissapäivänä', 2]].map(([t, n]) => h('button', { type: 'button', class: 'chip', onclick: () => {
-          const d = new Date(me.today + 'T12:00:00'); d.setDate(d.getDate() - n); s.encounter_date = d.toISOString().slice(0, 10); dateInput.value = s.encounter_date;
-          clearFieldError(dateInput); } }, t))))),
+          const d = new Date(maxDate + 'T12:00:00'); d.setDate(d.getDate() - n); s.encounter_date = d.toISOString().slice(0, 10); dateInput.value = s.encounter_date;
+          dateNote.hidden = true; clearFieldError(dateInput); } }, t)))), dateNote),
     projectField, roleField, typeField);
 
   // --- Dynaaminen osa: yksilö/ryhmä, yhteiset ja hankekohtaiset kysymykset
@@ -613,7 +636,7 @@ function renderEncounterForm(opts) {
       if (sensitiveHit(s.client.ref)) return ['Tunniste näyttää sisältävän tunnistetietoja. Älä käytä oikeaa nimeä tai yhteystietoja.', 'fw-client'];
     }
     if (!s.encounter_date) return ['Anna kohtaamisen ajankohta.', 'fw-date'];
-    if (s.encounter_date > me.today) return ['Kohtaamisen ajankohta ei voi olla tulevaisuudessa.', 'fw-date'];
+    if (s.encounter_date > todayIso()) return ['Kohtaamisen ajankohta ei voi olla tulevaisuudessa.', 'fw-date'];
     if (!s.project_id) return ['Valitse hanke.', 'fw-project'];
     if (!s.encounter_type) return ['Valitse, mitä raportoit.', 'fw-type'];
     if (kind() !== 'yksilo') {
@@ -1052,6 +1075,13 @@ function staffFilterBar(onChange, st = staffState) {
     })()),
     h('div', { class: 'actions presets' }, presets.map(([label, fn]) => h('button', { type: 'button', class: 'btn btn-secondary btn-sm', onclick: () => {
       [staffState.from, staffState.to] = fn(); fromEl.value = staffState.from; toEl.value = staffState.to; onChange(); } }, label))));
+}
+// Tämä päivä: palvelimen päivä (Suomen aika). Jos sovellus on ollut auki yön yli, käytetään laitteen
+// päivää, kun se on tasan päivän palvelimen päivää edellä (estää silti laitteen väärän kellon tulevat päivät).
+function todayIso() {
+  const d = new Date(); const dev = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  const t = new Date(state.me.today + 'T12:00:00'); t.setDate(t.getDate() + 1);
+  return dev === t.toISOString().slice(0, 10) ? dev : state.me.today;
 }
 function isoDaysAgo(n) { const d = new Date(state.me.today + 'T12:00:00'); d.setDate(d.getDate() - n); return d.toISOString().slice(0, 10); }
 function staffQuery() {

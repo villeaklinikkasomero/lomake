@@ -102,7 +102,9 @@ function requireAuth(req, res, next) {
 const requirePerm = (perm) => (req, res, next) => (can(req.user, perm) ? next() : bad(res, 'Ei oikeutta.', 403));
 
 const isDate = (s) => typeof s === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s) && !isNaN(Date.parse(s + 'T00:00:00Z'));
-const today = () => new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+// Päivämäärä Suomen ajassa (palvelin voi olla UTC-ajassa, jolloin yöllä päivä olisi väärä)
+const APP_TZ = process.env.APP_TIMEZONE || 'Europe/Helsinki';
+const today = () => new Intl.DateTimeFormat('sv-SE', { timeZone: APP_TZ, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
 const toInt = (v) => (v === '' || v == null ? null : Number.isInteger(Number(v)) ? Number(v) : NaN);
 
 // Henkilötunnus, sähköposti ja puhelinnumero – estetään vapaatekstikentissä.
