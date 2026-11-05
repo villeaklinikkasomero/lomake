@@ -109,6 +109,17 @@ Tyyppejä ei poisteta vaan ne otetaan pois käytöstä, jolloin vanhat kirjaukse
 
 Kysymyksiä voi lisätä, muokata, järjestää ja ottaa pois käytöstä. Kysymyksiä **ei poisteta**, ja jokaisella kysymyksellä on pysyvä tunniste (`key`). Näin aiempien vuosien raportointi säilyy, vaikka lomake muuttuisi. Kysymyksen tyyppiä ei voi muuttaa sen jälkeen, kun kysymykseen on vastattu. Tyypit ovat lyhyt teksti, pitkä teksti, luku, valinta (yksi tai useita), arvio 1–5 ja päivämäärä.
 
+## Virheloki ja ongelmailmoitukset
+
+**Hallinta → Virheloki** kokoaa testauksen ja ylläpidon tueksi:
+
+- palvelinvirheet pinojälkineen; käyttäjä näkee virhekoodin, jonka voi ilmoittaa
+- hylätyt tallennukset ja oikeusvirheet (esim. tarkistuksen virheilmoitus)
+- selaimen JavaScript-virheet sekä yhteyskatkot (esim. Safarin ”Load failed”), jotka lähetetään, kun yhteys palaa
+- käyttäjien ilmoitukset valikon kohdasta **Ilmoita ongelmasta**.
+
+Riveihin tallentuu aika, näkymä, rooli, laite ja selain sekä sovelluksen versio. Lomakkeiden sisältöä ei tallenneta, ja henkilötunnukselta, sähköpostilta ja puhelinnumerolta näyttävät merkkijonot poistetaan. **Kopioi lista** kopioi rivit tekstinä, ja **Lataa CSV** lataa ne Exceliin. Rivit poistuvat `ERROR_LOG_RETENTION_DAYS` päivän jälkeen (oletus 90).
+
 ## Tilastot (dashboard)
 
 Määrittelydokumentin dashboard-mallin mukainen näkymä (valikossa **Tilastot**). Säätiön työntekijät (admin, tiiminvetäjä ja hanketyöntekijä) näkevät kaikkien hankkeiden tilastot. Tilastot ovat koosteita, joten yksittäisiä kirjauksia ei näe; Excel-raakadata noudattaa edelleen vientioikeutta (tiiminvetäjä: omat hankkeet).

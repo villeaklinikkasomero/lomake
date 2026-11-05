@@ -50,11 +50,12 @@ async function api(path, opts = {}) {
   try {
     res = await fetch('/api' + path, {
       method: opts.method || 'GET',
-      headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'kohtaamiset' },
+      headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'kohtaamiset', 'X-View': location.hash.split('?')[0] || '#/' },
       body: opts.body ? JSON.stringify(opts.body) : undefined,
       credentials: 'same-origin',
     });
-  } catch {
+  } catch (fx) {
+    queueError({ kind: 'network', method: opts.method || 'GET', path: '/api' + path.split('?')[0], message: String(fx && fx.message || 'verkkovirhe') });
     // Verkkovirhe (Safari: "Load failed", Chrome: "Failed to fetch"): yhteys katkesi tai palvelin käynnistyy uudelleen
     const err = new Error('Yhteys palvelimeen katkesi. Tarkista verkkoyhteys ja yritä hetken kuluttua uudelleen. Täyttämäsi tiedot ovat tallessa lomakkeella.');
     err.network = true; throw err;
@@ -63,10 +64,41 @@ async function api(path, opts = {}) {
   if ([502, 503, 504].includes(res.status)) { const err = new Error('Palvelu käynnistyy uudelleen. Yritä hetken kuluttua uudelleen. Täyttämäsi tiedot ovat tallessa lomakkeella.'); err.network = true; throw err; }
   let data = null;
   try { data = await res.json(); } catch { /* ei JSONia */ }
+  if (res.ok && pendingErrors.length) flushErrors();
   if (res.status === 401 && !path.startsWith('/login')) { state.me = null; go('#/kirjaudu'); throw new Error((data && data.error) || 'Kirjaudu sisään.'); }
-  if (!res.ok) throw new Error((data && data.error) || 'Toiminto epäonnistui.');
+  if (!res.ok) { const err = new Error((data && data.error) || 'Toiminto epäonnistui.'); err.fromApi = true; err.code = data && data.code; throw err; }
   return data;
 }
+
+// ---------------------------------------------------------------------------
+// Virheiden ilmoittaminen virhelokiin (Hallinta → Virheloki). Lomakkeen sisältöä ei lähetetä.
+// ---------------------------------------------------------------------------
+const pendingErrors = []; let reportedErrors = 0;
+function queueError(e) {
+  if (reportedErrors >= 25) return;           // ei tulvaa samalta sivulataukselta
+  reportedErrors++;
+  pendingErrors.push({ ...e, view: location.hash.split('?')[0] || '#/' });
+  if (e.kind !== 'network') flushErrors();     // yhteyskatkot lähetetään, kun yhteys taas toimii
+}
+let flushing = false;
+async function flushErrors() {
+  if (flushing || !pendingErrors.length) return;
+  flushing = true;
+  const items = pendingErrors.splice(0, 10);
+  try {
+    const r = await fetch('/api/client-errors', { method: 'POST', credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'kohtaamiset' }, body: JSON.stringify({ items }) });
+    if (!r.ok && r.status !== 429) pendingErrors.unshift(...items);
+  } catch { pendingErrors.unshift(...items); }
+  finally { flushing = false; }
+}
+function reportJsError(err, where) {
+  if (!err || err.fromApi || err.network) return;  // palvelimen virheet on jo kirjattu palvelimella
+  queueError({ kind: 'js_error', message: `${where ? where + ': ' : ''}${err.message || String(err)}`, detail: err.stack ? String(err.stack).slice(0, 2000) : null });
+}
+window.addEventListener('error', (e) => reportJsError(e.error || { message: e.message, stack: `${e.filename}:${e.lineno}:${e.colno}` }));
+window.addEventListener('unhandledrejection', (e) => reportJsError(e.reason));
+window.addEventListener('online', () => flushErrors());
 
 // Sama tunnistetietotarkistus kuin palvelimella (varoitus jo kirjoittaessa).
 const SENSITIVE = [
@@ -109,6 +141,8 @@ const ROUTES = [
   { re: /^#\/hallinta\/kysymykset$/, view: viewQuestions, perm: (p) => p.manageQuestions },
   { re: /^#\/hallinta\/kirjaustyypit$/, view: viewRecordTypes, perm: (p) => p.manageQuestions },
   { re: /^#\/hallinta\/loki$/, view: viewAudit, perm: (p) => p.manageUsers },
+  { re: /^#\/hallinta\/virheloki$/, view: viewErrors, perm: (p) => p.manageUsers },
+  { re: /^#\/ilmoita$/, view: viewFeedback },
   { re: /^#\/hallinta\/testidata$/, view: viewDemo, perm: (p) => p.manageUsers },
   { re: /^#\/hallinta\/toiminnot$/, view: viewFeatures, perm: (p) => p.manageUsers },
 ];
@@ -134,7 +168,7 @@ async function route() {
   $app.classList.toggle('container', hash !== '#/kirjaudu');
   $app.replaceChildren(h('div', { class: 'loading' }, 'Ladataan…'));
   try { await r.view(...hash.match(r.re).slice(1)); }
-  catch (e) { $app.replaceChildren(h('div', { class: 'notice err' }, e.message)); }
+  catch (e) { reportJsError(e, 'näkymä'); $app.replaceChildren(h('div', { class: 'notice err' }, e.message)); }
   $app.focus({ preventScroll: true });
   window.scrollTo(0, 0);
 }
@@ -152,6 +186,7 @@ const ICONS = {
   logout: 'M15 4h4a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1h-4M10 17l-5-5 5-5M5 12h11',
   menu: 'M4 7h16M4 12h16M4 17h16',
   close: 'M6 6l12 12M18 6L6 18',
+  flag: 'M5 21V4M5 4h11l-2 4 2 4H5',
 };
 function icon(name, size = 20) {
   const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
@@ -188,6 +223,7 @@ function renderNav(hash) {
     h('div', { class: 'nav-user' },
       h(u.authMethod === 'entra' ? 'div' : 'a', u.authMethod === 'entra' ? { class: 'who', title: 'Kirjautunut Microsoft-tunnuksella' } : { href: '#/salasana', class: 'who' + (hash === '#/salasana' ? ' active' : ''), title: 'Vaihda salasana' },
         h('span', { class: 'avatar', 'aria-hidden': 'true' }, initials), h('span', { class: 'who-text' }, h('strong', null, u.name), h('small', null, u.roleLabel))),
+      h('a', { href: '#/ilmoita', class: 'nav-logout' + (hash === '#/ilmoita' ? ' active' : '') }, icon('flag'), h('span', null, 'Ilmoita ongelmasta')),
       h('button', { type: 'button', class: 'nav-logout', onclick: logout }, icon('logout'), h('span', null, 'Kirjaudu ulos'))),
   ].filter(Boolean));
   nav.classList.remove('open');
@@ -1802,7 +1838,8 @@ function adminTabs(active) {
     p.manageUsers ? t('#/hallinta/roolit', 'Roolit') : null,
     p.manageUsers ? t('#/hallinta/toiminnot', 'Toiminnot') : null,
     p.manageUsers ? t('#/hallinta/testidata', 'Testidata') : null,
-    p.manageUsers ? t('#/hallinta/loki', 'Tapahtumaloki') : null));
+    p.manageUsers ? t('#/hallinta/loki', 'Tapahtumaloki') : null,
+    p.manageUsers ? t('#/hallinta/virheloki', 'Virheloki') : null));
 }
 
 // --- Käyttäjät
@@ -2223,13 +2260,108 @@ async function viewFeatures() {
 }
 
 // --- Tapahtumaloki
+// --- Ilmoita ongelmasta (testaajat ja käyttäjät)
+async function viewFeedback() {
+  $app.classList.add('container');
+  const text = h('textarea', { id: 'fb-text', rows: 6, maxlength: 1000, placeholder: 'Esim. Tallennus ei onnistunut Osis-hankkeen ryhmäkirjauksessa, tuli ilmoitus ”Load failed”.' });
+  const where = h('input', { type: 'text', id: 'fb-where', maxlength: 100, placeholder: 'Esim. Uusi kirjaus, Tilastot, Työntekijät' });
+  const msg = h('div', { class: 'notice', hidden: true });
+  const btn = h('button', { class: 'btn btn-primary', type: 'button', onclick: async () => {
+    const t = text.value.trim();
+    if (t.length < 5) { msg.className = 'notice err'; msg.textContent = 'Kirjoita lyhyt kuvaus ongelmasta.'; msg.hidden = false; return; }
+    const hit = sensitiveHit(t);
+    if (hit) { msg.className = 'notice err'; msg.textContent = `Teksti näyttää sisältävän ${hit} näyttävää tietoa. Poista tunnistetiedot.`; msg.hidden = false; return; }
+    btn.disabled = true;
+    try {
+      const r = await fetch('/api/client-errors', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'kohtaamiset' },
+        body: JSON.stringify({ items: [{ kind: 'feedback', message: t, view: where.value.trim() || null }] }) }).then(x => x.json());
+      $app.replaceChildren(h('div', { class: 'narrow' }, h('div', { class: 'card success' }, h('h1', null, 'Kiitos!'),
+        h('p', null, 'Ilmoitus on tallennettu virhelokiin. Tunniste: ', h('strong', { class: 'mono' }, (r.codes || [])[0] || '–')),
+        h('p', { class: 'muted' }, 'Laite, selain ja sovelluksen versio tallentuivat ilmoitukseen automaattisesti.'),
+        h('div', { class: 'actions' }, h('a', { class: 'btn btn-primary', href: homeHash(state.me.permissions) }, 'Takaisin')))));
+    } catch { msg.className = 'notice err'; msg.textContent = 'Lähetys ei onnistunut. Tarkista verkkoyhteys.'; msg.hidden = false; btn.disabled = false; }
+  } }, 'Lähetä ilmoitus');
+  $app.replaceChildren(h('div', { class: 'narrow' },
+    h('h1', null, 'Ilmoita ongelmasta'),
+    h('p', { class: 'muted' }, 'Kerro, mitä yritit tehdä ja mitä tapahtui. Ilmoitus menee ylläpidon virhelokiin.'),
+    h('div', { class: 'notice info small' }, 'Älä kirjoita asiakkaan nimeä, yhteystietoja tai muita tunnistetietoja.'),
+    h('div', { class: 'card' },
+      h('div', { class: 'field' }, h('label', { for: 'fb-where' }, 'Missä kohdassa? (vapaaehtoinen)'), where),
+      h('div', { class: 'field' }, h('label', { for: 'fb-text' }, 'Mitä tapahtui?'), text),
+      msg, h('div', { class: 'actions' }, btn))));
+}
+
+// --- Virheloki (ylläpito)
+const errorState = { days: '7', kind: '' };
+async function viewErrors() {
+  $app.classList.add('container');
+  const KIND = { server_error: 'Palvelinvirhe', rejected: 'Hylätty pyyntö', js_error: 'Selainvirhe', network: 'Yhteyskatko', feedback: 'Käyttäjän ilmoitus' };
+  const KIND_BADGE = { server_error: 'red', js_error: 'red', network: 'grey', rejected: 'blue', feedback: 'green' };
+  const box = h('div');
+  const asText = (rows) => rows.map(r => [fmtDateTime(r.at), r.code, KIND[r.kind] || r.kind, r.status || '', r.method ? `${r.method} ${r.path || ''}` : (r.path || ''),
+    r.view || '', state.me.roles[r.role] || r.role || '', r.device || '', r.build || '', (r.message || '').replace(/\s+/g, ' ')].join(' | ')).join('\n');
+  async function load() {
+    box.replaceChildren(h('div', { class: 'loading' }, 'Ladataan…'));
+    const { rows, build } = await api(`/errors?days=${errorState.days}&kind=${errorState.kind}`);
+    // Yhteenveto: samanlaiset virheet ryhmiteltyinä
+    const groups = new Map();
+    for (const r of rows) {
+      const k = `${r.kind}|${r.status || ''}|${r.path || r.view || ''}|${(r.message || '').slice(0, 120)}`;
+      const g = groups.get(k) || { ...r, n: 0, users: new Set(), last: r.at }; g.n++; if (r.user_id) g.users.add(r.user_id); groups.set(k, g);
+    }
+    const summary = [...groups.values()].filter(g => g.kind !== 'feedback').sort((a, b) => b.n - a.n).slice(0, 15);
+    const copyText = `Virheloki ${errorState.days} pv, versio ${build}, ${rows.length} riviä\nAika | Koodi | Tyyppi | Tila | Pyyntö | Näkymä | Rooli | Laite | Versio | Viesti\n` + asText(rows);
+    box.replaceChildren(
+      h('div', { class: 'stats' },
+        ...['server_error', 'js_error', 'network', 'rejected', 'feedback'].map(k => h('div', { class: 'stat' }, h('b', null, fmtNum(rows.filter(r => r.kind === k).length)), h('span', null, KIND[k])))),
+      h('div', { class: 'actions' },
+        h('button', { class: 'btn btn-primary', type: 'button', onclick: async (ev) => {
+          try { await navigator.clipboard.writeText(copyText); ev.currentTarget.textContent = 'Kopioitu ✓'; } catch { toast('Kopiointi ei onnistunut.', true); } } }, 'Kopioi lista'),
+        h('button', { class: 'btn btn-secondary', type: 'button', onclick: () => {
+          const csv = '﻿' + ['Aika;Koodi;Tyyppi;Tila;Pyyntö;Näkymä;Käyttäjä;Rooli;Laite;Versio;Viesti;Lisätiedot'].concat(rows.map(r => [fmtDateTime(r.at), r.code, KIND[r.kind] || r.kind, r.status || '',
+            r.method ? `${r.method} ${r.path || ''}` : (r.path || ''), r.view || '', r.user_name || '', state.me.roles[r.role] || r.role || '', r.device || '', r.build || '', r.message || '', r.detail || '']
+            .map(v => `"${String(v).replace(/"/g, '""')}"`).join(';'))).join('\r\n');
+          const a = h('a', { href: URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' })), download: `virheloki_${state.me.today}.csv` }); document.body.append(a); a.click(); a.remove();
+        } }, 'Lataa CSV'),
+        h('button', { class: 'btn btn-secondary', type: 'button', onclick: async (ev) => {
+          const b = ev.currentTarget;
+          if (!b.classList.contains('confirming')) { b.classList.add('confirming'); b.textContent = 'Vahvista: tyhjennä koko loki'; return; }
+          try { await api('/errors', { method: 'DELETE' }); toast('Virheloki tyhjennetty.'); load(); } catch (ex) { toast(ex.message, true); }
+        } }, 'Tyhjennä loki')),
+      summary.length ? h('div', { class: 'card' }, h('h2', null, 'Yleisimmät'), h('div', { class: 'table-wrap' }, h('table', null,
+        h('thead', null, h('tr', null, h('th', { class: 'num' }, 'Kpl'), h('th', null, 'Tyyppi'), h('th', null, 'Missä'), h('th', null, 'Viesti'), h('th', { class: 'num' }, 'Käyttäjiä'), h('th', null, 'Viimeksi'))),
+        h('tbody', null, summary.map(g => h('tr', null, h('td', { class: 'num' }, h('strong', null, fmtNum(g.n))),
+          h('td', null, h('span', { class: 'badge ' + (KIND_BADGE[g.kind] || 'grey') }, KIND[g.kind] || g.kind), g.status ? ' ' + g.status : ''),
+          h('td', { class: 'small' }, g.method ? `${g.method} ${g.path || ''}` : (g.view || g.path || '')),
+          h('td', { class: 'small' }, g.message || ''), h('td', { class: 'num' }, fmtNum(g.users.size)), h('td', { class: 'small muted' }, fmtDateTime(g.last)))))))) : null,
+      !rows.length ? h('div', { class: 'card empty' }, 'Ei virheitä valitulla aikavälillä.') :
+      h('div', { class: 'table-wrap' }, h('table', null,
+        h('thead', null, h('tr', null, h('th', null, 'Aika'), h('th', null, 'Koodi'), h('th', null, 'Tyyppi'), h('th', null, 'Missä'), h('th', null, 'Viesti'), h('th', null, 'Käyttäjä'), h('th', null, 'Laite'))),
+        h('tbody', null, rows.map(r => h('tr', null,
+          h('td', { class: 'small' }, fmtDateTime(r.at)), h('td', { class: 'mono small' }, r.code),
+          h('td', null, h('span', { class: 'badge ' + (KIND_BADGE[r.kind] || 'grey') }, KIND[r.kind] || r.kind), r.status ? ' ' + r.status : ''),
+          h('td', { class: 'small' }, r.method ? `${r.method} ${r.path || ''}` : '', r.view ? h('div', { class: 'muted' }, r.view) : null),
+          h('td', { class: 'small' }, r.message || '', r.detail ? h('details', null, h('summary', null, 'Lisätiedot'), h('pre', { class: 'small pre-wrap' }, r.detail)) : null),
+          h('td', { class: 'small' }, r.user_name || '–', r.role ? h('div', { class: 'muted' }, state.me.roles[r.role] || r.role) : null),
+          h('td', { class: 'small muted' }, r.device || '', r.build ? h('div', null, 'v. ' + r.build) : null)))))));
+  }
+  const sel = (key, opts) => { const el = h('select', null, opts.map(([v, t]) => h('option', { value: v, selected: errorState[key] === v }, t))); el.addEventListener('change', () => { errorState[key] = el.value; load(); }); return el; };
+  $app.replaceChildren(adminTabs('#/hallinta/virheloki'),
+    h('p', { class: 'muted' }, 'Palvelinvirheet, hylätyt tallennukset, selaimen virheet, yhteyskatkot ja käyttäjien ilmoitukset. Lomakkeiden sisältöä ei tallenneta, ja tunnistetiedoilta näyttävät merkkijonot poistetaan. Rivit poistuvat 90 päivän jälkeen. ”Kopioi lista” kopioi rivit tekstinä, jonka voi liittää esimerkiksi keskusteluun Clauden kanssa.'),
+    h('div', { class: 'card' }, h('div', { class: 'filters' },
+      h('div', { class: 'field' }, h('label', null, 'Aikaväli'), sel('days', [['1', 'Vuorokausi'], ['7', '7 päivää'], ['30', '30 päivää'], ['90', '90 päivää']])),
+      h('div', { class: 'field' }, h('label', null, 'Tyyppi'), sel('kind', [['', 'Kaikki'], ['server_error', 'Palvelinvirheet'], ['js_error', 'Selainvirheet'], ['network', 'Yhteyskatkot'], ['rejected', 'Hylätyt pyynnöt'], ['feedback', 'Käyttäjien ilmoitukset']])))),
+    box);
+  await load();
+}
+
 async function viewAudit() {
   $app.classList.add('container');
   const { rows } = await api('/audit');
   const LABELS = { login: 'Kirjautuminen', login_failed: 'Epäonnistunut kirjautuminen', password_changed: 'Salasana vaihdettu', encounter_create: 'Kirjaus luotu',
     encounter_update: 'Kirjaus korjattu', encounter_delete: 'Kirjaus poistettu', export: 'Excel-vienti', user_create: 'Käyttäjä luotu', role_create: 'Rooli luotu', role_update: 'Rooli muokattu', role_delete: 'Rooli poistettu', user_update: 'Käyttäjä muokattu',
     user_reset_password: 'Salasana nollattu', demo_create: 'Testidataa luotu', demo_delete: 'Testidata poistettu', project_create: 'Hanke luotu', project_update: 'Hanke muokattu', question_create: 'Kysymys luotu', question_update: 'Kysymys muokattu',
-    record_type_create: 'Kirjaustyyppi luotu', record_type_update: 'Kirjaustyyppi muokattu', feature_enable: 'Toiminto otettu käyttöön', mfa_failed: 'Väärä tunnistautumiskoodi', mfa_enrolled: 'Todennussovellus otettu käyttöön', mfa_remember_device: 'Laite muistetaan (MFA)', user_reset_mfa: 'Todennussovellus nollattu', feature_disable: 'Toiminto piilotettu' };
+    record_type_create: 'Kirjaustyyppi luotu', errorlog_clear: 'Virheloki tyhjennetty', record_type_update: 'Kirjaustyyppi muokattu', feature_enable: 'Toiminto otettu käyttöön', mfa_failed: 'Väärä tunnistautumiskoodi', mfa_enrolled: 'Todennussovellus otettu käyttöön', mfa_remember_device: 'Laite muistetaan (MFA)', user_reset_mfa: 'Todennussovellus nollattu', feature_disable: 'Toiminto piilotettu' };
   $app.replaceChildren(adminTabs('#/hallinta/loki'),
     h('p', { class: 'muted' }, '200 viimeisintä tapahtumaa.'),
     h('div', { class: 'table-wrap' }, h('table', null,

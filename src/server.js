@@ -15,6 +15,7 @@ const recorderRoleOf = (role) => RECORDER_ROLES[perms.recorderIndex(role)] || RE
 const { buildWorkbook } = require('./export');
 const demo = require('./demo');
 const clients = require('./clients');
+const errorlog = require('./errorlog');
 const { dashboard } = require('./dashboard');
 const auth = require('./auth');
 const QRCode = require('qrcode');
@@ -72,6 +73,30 @@ app.use('/api', (req, res, next) => {
   if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method) && req.get('X-Requested-With') !== 'kohtaamiset') {
     return res.status(403).json({ error: 'Pyyntö hylätty.' });
   }
+  next();
+});
+
+// Virheloki: hylätyt muutospyynnöt (esim. tallennuksen tarkistus) ja oikeusvirheet kirjataan
+// Hallinta → Virheloki -näkymään. Palvelinvirheet kirjaa virheenkäsittelijä pinojälkineen.
+// Kirjautumisen virheitä (väärä salasana tms.) ei kirjata tänne; ne ovat tapahtumalokissa.
+const NO_ERRORLOG = /^\/(login|auth|logout|client-errors|me\/password)/;
+function requestContext(req) {
+  const uid = req.user ? req.user.id : req.session && req.session.userId;
+  const role = req.user ? req.user.role : uid ? (db.prepare('SELECT role FROM users WHERE id = ?').get(uid) || {}).role : null;
+  return { user_id: uid || null, role: role || null, device: errorlog.deviceOf(req.get('user-agent')), build: BUILD_ID,
+    method: req.method, path: req.originalUrl.split('?')[0], view: req.get('X-View') || null };
+}
+app.use('/api', (req, res, next) => {
+  const json = res.json.bind(res);
+  res.json = (body) => {
+    const st = res.statusCode;
+    if (!req._errorLogged && body && body.error && (st === 403 || st === 409 || st === 413 || st === 429 || (st === 400 && req.method !== 'GET'))
+        && !NO_ERRORLOG.test(req.originalUrl.replace(/^\/api/, ''))) {
+      req._errorLogged = true;
+      body = { ...body, code: errorlog.log({ source: 'server', kind: 'rejected', status: st, message: body.error, ...requestContext(req) }) };
+    }
+    return json(body);
+  };
   next();
 });
 
@@ -877,6 +902,34 @@ app.get('/api/export', requireAuth, async (req, res) => {
 const tempPassword = () => crypto.randomBytes(9).toString('base64url');
 
 // ---------------------------------------------------------------------------
+// Virheloki: selaimen ilmoitukset ja ylläpitonäkymä
+// ---------------------------------------------------------------------------
+const clientErrorLimiter = rateLimit({ windowMs: 15 * 60 * 1000, limit: 40, standardHeaders: true, legacyHeaders: false,
+  message: { error: 'Liian monta ilmoitusta.' } });
+app.post('/api/client-errors', clientErrorLimiter, (req, res) => {
+  const items = (Array.isArray(req.body.items) ? req.body.items : [req.body]).slice(0, 10);
+  const ctx = requestContext(req);
+  const codes = [];
+  for (const it of items) {
+    const kind = ['js_error', 'network', 'feedback'].includes(it.kind) ? it.kind : null;
+    if (!kind) continue;
+    if (kind === 'feedback' && !ctx.user_id) continue;   // palaute vain kirjautuneilta
+    codes.push(errorlog.log({ ...ctx, source: 'client', kind, method: it.method ? String(it.method).slice(0, 8) : null,
+      path: it.path ? String(it.path) : null, view: it.view ? String(it.view) : ctx.view, status: Number.isInteger(it.status) ? it.status : null,
+      message: it.message, detail: it.detail, code: /^[0-9A-F]{6}$/.test(String(it.code || '')) ? String(it.code) : undefined }));
+  }
+  res.status(201).json({ codes });
+});
+app.get('/api/errors', requireAuth, requirePerm('manageUsers'), (req, res) => {
+  res.json({ rows: errorlog.list({ days: req.query.days, kind: req.query.kind || null }), build: BUILD_ID });
+});
+app.delete('/api/errors', requireAuth, requirePerm('manageUsers'), (req, res) => {
+  const n = errorlog.clear();
+  audit(req.user.id, 'errorlog_clear', 'error_log', null, { deleted: n });
+  res.json({ deleted: n });
+});
+
+// ---------------------------------------------------------------------------
 // Roolit ja oikeudet (Hallinta → Roolit)
 // ---------------------------------------------------------------------------
 function roleView(r) {
@@ -1229,7 +1282,14 @@ app.use(express.static(PUBLIC_DIR, { index: false, setHeaders: (res, filePath) =
 app.get('/version', (req, res) => res.json({ build: BUILD_ID }));
 app.get(/^\/(?!api\/).*/, sendIndex);
 app.use('/api', (req, res) => bad(res, 'Ei löydy.', 404));
-app.use((err, req, res, next) => { console.error(err); bad(res, 'Palvelinvirhe.', 500); });
+app.use((err, req, res, next) => {
+  console.error(err);
+  // Liian suuri tai rikkinäinen pyyntö (express.json) on asiakkaan virhe
+  const st = err.status && err.status < 500 ? err.status : 500;
+  req._errorLogged = true;
+  const code = errorlog.log({ source: 'server', kind: st >= 500 ? 'server_error' : 'rejected', status: st, message: err.message, detail: err.stack, ...requestContext(req) });
+  res.status(st).json({ error: st >= 500 ? `Palvelinvirhe. Ilmoita virhekoodi ${code}, jos ongelma toistuu.` : 'Pyyntöä ei voitu käsitellä.', code });
+});
 
 if (require.main === module) {
   const created = ensureAdmin();
@@ -1243,8 +1303,8 @@ if (require.main === module) {
   else if (!process.env.PSEUDONYM_KEY) console.warn('HUOM: käytetään kehitysavainta asiakastunnisteille. Aseta PSEUDONYM_KEY tuotannossa.');
   const migrated = clients.migratePlaintextPseudonyms();
   if (migrated) console.log(`Selväkieliset nimimerkit muutettu tiivisteiksi: ${migrated} kirjausta.`);
-  clients.applyRetention();
-  setInterval(() => { try { clients.applyRetention(); } catch (e) { console.error(e); } }, 24 * 3600e3).unref();
+  clients.applyRetention(); errorlog.purge();
+  setInterval(() => { try { clients.applyRetention(); errorlog.purge(); } catch (e) { console.error(e); } }, 24 * 3600e3).unref();
   app.listen(PORT, () => console.log(`Kohtaamisten raportointi käynnissä: http://localhost:${PORT}`));
 }
 
