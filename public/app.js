@@ -39,13 +39,28 @@ function toast(msg, isErr) {
   clearTimeout(toastTimer); toastTimer = setTimeout(() => { t.className = 'toast'; }, 3500);
 }
 
+function newRequestId() {
+  if (window.crypto && crypto.randomUUID) return crypto.randomUUID();
+  const b = crypto.getRandomValues(new Uint8Array(16)); b[6] = (b[6] & 15) | 64; b[8] = (b[8] & 63) | 128;
+  const x = [...b].map(v => v.toString(16).padStart(2, '0')).join('');
+  return `${x.slice(0, 8)}-${x.slice(8, 12)}-${x.slice(12, 16)}-${x.slice(16, 20)}-${x.slice(20)}`;
+}
 async function api(path, opts = {}) {
-  const res = await fetch('/api' + path, {
-    method: opts.method || 'GET',
-    headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'kohtaamiset' },
-    body: opts.body ? JSON.stringify(opts.body) : undefined,
-    credentials: 'same-origin',
-  });
+  let res;
+  try {
+    res = await fetch('/api' + path, {
+      method: opts.method || 'GET',
+      headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'kohtaamiset' },
+      body: opts.body ? JSON.stringify(opts.body) : undefined,
+      credentials: 'same-origin',
+    });
+  } catch {
+    // Verkkovirhe (Safari: "Load failed", Chrome: "Failed to fetch"): yhteys katkesi tai palvelin käynnistyy uudelleen
+    const err = new Error('Yhteys palvelimeen katkesi. Tarkista verkkoyhteys ja yritä hetken kuluttua uudelleen. Täyttämäsi tiedot ovat tallessa lomakkeella.');
+    err.network = true; throw err;
+  }
+  // Palvelin käynnistymässä (esim. julkaisun aikana)
+  if ([502, 503, 504].includes(res.status)) { const err = new Error('Palvelu käynnistyy uudelleen. Yritä hetken kuluttua uudelleen. Täyttämäsi tiedot ovat tallessa lomakkeella.'); err.network = true; throw err; }
   let data = null;
   try { data = await res.json(); } catch { /* ei JSONia */ }
   if (res.status === 401 && !path.startsWith('/login')) { state.me = null; go('#/kirjaudu'); throw new Error((data && data.error) || 'Kirjaudu sisään.'); }
@@ -376,7 +391,14 @@ async function viewRecord() {
   const { questions, referralServices, clientTracking, members } = await loadForm();
   const prefill = state.lastBasics || null;
   renderEncounterForm({ questions, referralServices, clientTracking, members, allowClient: true, initial: prefill, onSubmit: async (payload) => {
-    const r = await api('/encounters', { method: 'POST', body: payload });
+    // Lyhyet katkokset (mobiiliverkko, palvelun uudelleenkäynnistys) yritetään automaattisesti uudelleen.
+    // Sama tunniste estää kaksoiskirjauksen, jos ensimmäinen yritys ehti tallentua.
+    let r;
+    for (const wait of [0, 2000, 4000, 8000]) {
+      if (wait) { toast('Yhteys katkesi – yritetään uudelleen…'); await new Promise(x => setTimeout(x, wait)); }
+      try { r = await api('/encounters', { method: 'POST', body: payload }); break; }
+      catch (ex) { if (!ex.network || wait === 8000) throw ex; }
+    }
     state.lastBasics = { project_id: payload.project_id, encounter_date: payload.encounter_date, encounter_type: payload.encounter_type, performer: payload.performer };
     showSaved(payload, r.id);
   } });
@@ -410,6 +432,8 @@ function renderEncounterForm(opts) {
   const s = {
     project_id: init.project_id || (projects.length === 1 ? projects[0].id : null),
     encounter_date: init.encounter_date || todayIso(),
+    // Kirjauksen tunniste uudelleenlähetyksiä varten (sama koko lomakkeen ajan)
+    requestId: newRequestId(),
     encounter_type: init.encounter_type || null,
     encounter_count: init.encounter_count ?? '',
     person_count: init.person_count ?? '',
@@ -495,7 +519,7 @@ function renderEncounterForm(opts) {
     performerSelect.replaceChildren(
       h('option', { value: String(me.user.id) }, `Minä (${me.user.name})`),
       list.length ? h('optgroup', { label: 'Hankkeen työntekijät' }, list.map(m => h('option', { value: String(m.id) }, m.name)))
-        : s.project_id ? h('option', { disabled: true, value: '' }, 'Hankkeeseen ei ole liitetty muita kirjaajia') : null,
+        : h('option', { disabled: true, value: '' }, s.project_id ? 'Hankkeeseen ei ole liitetty muita kirjaajia' : 'Valitse ensin hanke, niin sen työntekijät näkyvät tässä'),
       h('option', { value: VOLUNTEER }, 'Vapaaehtoinen tai vertainen'));
     performerSelect.value = s.performer;
     drawPerformerNote();
@@ -604,7 +628,7 @@ function renderEncounterForm(opts) {
     for (const q of qs) if (shown(q) && s.answers[q.key] != null && s.answers[q.key] !== '') answers[q.key] = s.answers[q.key];
     const payload = { project_id: s.project_id, encounter_date: s.encounter_date, encounter_type: s.encounter_type,
       encounter_count: kind() === 'yksilo' ? 1 : s.encounter_count, person_count: kind() === 'ryhma' ? s.person_count : null,
-      answers, performer: s.performer };
+      answers, performer: s.performer, client_request_id: s.requestId };
     if (opts.allowClient && kind() === 'yksilo') {
       // Palaava asiakas: haetaan automaattisesti, jos hakua ei ole tehty
       if (s.client.mode === 'existing' && s.client.checkedRef !== s.client.ref) {

@@ -721,3 +721,16 @@ test('kohtaamisen päivä ei voi olla tulevaisuudessa (Suomen aika)', async () =
   assert.equal((await users.admin('GET', '/me')).data.today, fi);
   assert.equal((await users.admin('POST', '/encounters', basePayload(P().JALMA, { encounter_date: fi }))).status, 201);
 });
+
+test('uudelleenlähetys samalla tunnisteella ei luo kaksoiskirjausta', async () => {
+  const rid = require('crypto').randomUUID();
+  const before = db.prepare('SELECT COUNT(*) n FROM encounters').get().n;
+  const a = await users.admin('POST', '/encounters', basePayload(P().JALMA, { client_request_id: rid }));
+  const b = await users.admin('POST', '/encounters', basePayload(P().JALMA, { client_request_id: rid }));
+  assert.equal(a.status, 201); assert.equal(b.status, 201);
+  assert.equal(a.data.id, rid); assert.equal(b.data.id, rid); assert.equal(b.data.duplicate, true);
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM encounters').get().n, before + 1);
+  // Toisen käyttäjän tunniste ei palauta toisen kirjausta
+  const c = await users.tiimivetaja('POST', '/encounters', basePayload(P().KATUKLINIKKA, { client_request_id: rid }));
+  assert.equal(c.status, 201); assert.notEqual(c.data.id, rid);
+});

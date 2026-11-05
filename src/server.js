@@ -528,13 +528,20 @@ app.get('/api/form', requireAuth, (req, res) => {
 });
 
 app.post('/api/encounters', requireAuth, requirePerm('record'), (req, res) => {
+  // Uudelleenlähetyksen tunniste: jos yhteys katkesi vastauksen aikana ja selain lähettää saman
+  // kirjauksen uudelleen, palautetaan jo tallennettu kirjaus eikä synny kaksoiskappaletta.
+  const reqId = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(req.body.client_request_id || '')) ? String(req.body.client_request_id).toLowerCase() : null;
+  if (reqId) {
+    const prev = db.prepare('SELECT id, created_by FROM encounters WHERE id = ?').get(reqId);
+    if (prev && prev.created_by === req.user.id) return res.status(201).json({ id: prev.id, duplicate: true });
+  }
   const v = validateEncounter(req.body, req.user, req.projectIds);
   if (v.error) return bad(res, v.error);
   // Palveluohjausten seuranta kuuluu Asiakaspolut-toimintoon: piilotettuna ohjauksia ei kirjata
   const body = featureEnabled('paths') ? req.body : { ...req.body, referrals: [], referral_updates: [] };
   const cp = clients.prepareClientPart(body, v.data.kind, sensitiveHit, v.data.project_id);
   if (cp.error) return bad(res, cp.error);
-  const id = crypto.randomUUID();
+  const id = reqId && !db.prepare('SELECT 1 FROM encounters WHERE id = ?').get(reqId) ? reqId : crypto.randomUUID();
   db.transaction(() => {
     db.prepare(`INSERT INTO encounters (id, project_id, encounter_date, encounter_type, kind, encounter_count, person_count, pseudonym, recorder_role, created_by, performed_by, performer_type)
                 VALUES (@id, @project_id, @encounter_date, @encounter_type, @kind, @encounter_count, @person_count, @pseudonym, @recorder_role, @created_by, @performed_by, @performer_type)`)
