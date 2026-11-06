@@ -29,7 +29,11 @@ const typeLabel = (t) => (recordType(t) || {}).label || t;
 const typeKind = (t) => (recordType(t) || {}).kind || t;
 const countLabel = (rt) => (rt && rt.count_label) || (rt && rt.kind === 'tavoittaminen' ? 'Tavoitettujen määrä' : 'Kohtaamisten määrä');
 const DIGITAL_LOCATION = 'Digialustalla';
-const VOLUNTEER = 'vapaaehtoinen';
+// Muut toteuttajat kuin käyttäjät (Hallinta → Toteuttajat, esim. vapaaehtoinen, vertainen)
+const performerTypes = () => (state.me && state.me.performerTypes) || [];
+const performerTypeOf = (key) => performerTypes().find(t => t.key === key) || null;
+const performerLabel = (key) => (performerTypeOf(key) || { label: key }).label;
+const isExternalPerformer = (row) => row.performer_type && row.performer_type !== 'kayttaja';
 const QTYPES = { text: 'Lyhyt teksti', textarea: 'Pitkä teksti', number: 'Luku', choice: 'Valinta (yksi)', multichoice: 'Valinta (useita)', rating: 'Arvio 1–5', date: 'Päivämäärä' };
 
 let toastTimer;
@@ -140,6 +144,7 @@ const ROUTES = [
   { re: /^#\/hallinta\/hankkeet$/, view: viewProjects, perm: (p) => p.manageProjects },
   { re: /^#\/hallinta\/kysymykset$/, view: viewQuestions, perm: (p) => p.manageQuestions },
   { re: /^#\/hallinta\/kirjaustyypit$/, view: viewRecordTypes, perm: (p) => p.manageQuestions },
+  { re: /^#\/hallinta\/toteuttajat$/, view: viewPerformerTypes, perm: (p) => p.manageQuestions },
   { re: /^#\/hallinta\/loki$/, view: viewAudit, perm: (p) => p.manageUsers },
   { re: /^#\/hallinta\/virheloki$/, view: viewErrors, perm: (p) => p.manageUsers },
   { re: /^#\/ilmoita$/, view: viewFeedback },
@@ -474,8 +479,8 @@ function renderEncounterForm(opts) {
     encounter_count: init.encounter_count ?? '',
     person_count: init.person_count ?? '',
     answers: { ...(init.answers || {}) },
-    // Kohtaamisen toteuttaja: käyttäjän id tai 'vapaaehtoinen' (oletus: kirjaaja itse)
-    performer: init.performer || (init.id ? (init.performer_type === VOLUNTEER ? VOLUNTEER : String(init.performed_by ?? init.created_by)) : String(me.user.id)),
+    // Kohtaamisen toteuttaja: käyttäjän id tai muun toteuttajan avain (oletus: kirjaaja itse)
+    performer: init.performer || (init.id ? (isExternalPerformer(init) ? init.performer_type : String(init.performed_by ?? init.created_by)) : String(me.user.id)),
     // Asiakastunniste ja ohjaukset (vain uusi yksilökirjaus)
     client: { mode: 'none', ref: '', generated: false, checkedRef: null, summary: null, available: null, updates: {} },
     referrals: new Set(),
@@ -486,7 +491,8 @@ function renderEncounterForm(opts) {
   const kind = () => typeKind(s.encounter_type);
   // Toteuttajan rooli ehdollisia kysymyksiä varten (esim. vain ammattilaisille)
   const performerRole = () => {
-    if (s.performer === VOLUNTEER) return me.recorderRoles[2];
+    const pt = performerTypeOf(s.performer);
+    if (pt) return init.id && init.performer_type === pt.key ? init.recorder_role : pt.recorderRole;
     if (s.performer === String(me.user.id)) return init.id && String(init.performed_by) === s.performer ? init.recorder_role : me.user.recorderRole;
     const m = ((opts.members || {})[s.project_id] || []).find(x => String(x.id) === s.performer);
     return m ? m.recorderRole : init.recorder_role;
@@ -539,7 +545,7 @@ function renderEncounterForm(opts) {
           h('option', { value: '' }, '– Valitse hanke –'),
           projects.map(p => h('option', { value: p.id, selected: p.id === s.project_id }, p.name))));
 
-  // Kohtaamisen toteuttaja: oma nimi, toinen hankkeen käyttäjä tai vapaaehtoinen. Raportoinnin rooli määräytyy toteuttajasta.
+  // Kohtaamisen toteuttaja: oma nimi, toinen hankkeen käyttäjä tai muu toteuttaja (esim. vapaaehtoinen, vertainen). Raportoinnin rooli määräytyy toteuttajasta.
   const performerSelect = h('select', { id: 'f-performer', 'aria-describedby': 'h-performer', onchange: (e) => { s.performer = e.target.value; drawPerformerNote(); syncLocation(); } });
   const performerNote = h('p', { class: 'help help-below', id: 'h-performer' });
   const drawPerformerNote = () => performerNote.replaceChildren(s.performer === String(me.user.id)
@@ -548,15 +554,17 @@ function renderEncounterForm(opts) {
   function drawPerformer() {
     const list = ((opts.members || {})[s.project_id] || []).slice();
     // Korjauksessa alkuperäinen toteuttaja näkyy, vaikka hän ei olisi enää hankkeessa
-    if (init.id && init.performer_type !== VOLUNTEER && init.performed_by && init.performed_by !== me.user.id && !list.some(m => m.id === init.performed_by)) list.push({ id: init.performed_by, name: init.performed_by_name || 'Alkuperäinen toteuttaja' });
-    const values = [String(me.user.id), ...list.map(m => String(m.id)), VOLUNTEER];
+    if (init.id && !isExternalPerformer(init) && init.performed_by && init.performed_by !== me.user.id && !list.some(m => m.id === init.performed_by)) list.push({ id: init.performed_by, name: init.performed_by_name || 'Alkuperäinen toteuttaja' });
+    // Muut toteuttajat: käytössä olevat sekä korjattavan kirjauksen oma (vaikka poistettu käytöstä)
+    const others = performerTypes().filter(t => t.active || (init.id && init.performer_type === t.key));
+    const values = [String(me.user.id), ...list.map(m => String(m.id)), ...others.map(t => t.key)];
     if (!values.includes(s.performer)) s.performer = String(me.user.id);
     setTimeout(() => syncLocation(), 0);
     performerSelect.replaceChildren(
       h('option', { value: String(me.user.id) }, `Minä (${me.user.name})`),
       list.length ? h('optgroup', { label: 'Hankkeen työntekijät' }, list.map(m => h('option', { value: String(m.id) }, m.name)))
         : h('option', { disabled: true, value: '' }, s.project_id ? 'Hankkeeseen ei ole liitetty muita kirjaajia' : 'Valitse ensin hanke, niin sen työntekijät näkyvät tässä'),
-      h('option', { value: VOLUNTEER }, 'Vapaaehtoinen tai vertainen'));
+      others.length ? h('optgroup', { label: 'Muut toteuttajat' }, others.map(t => h('option', { value: t.key }, t.label))) : null);
     performerSelect.value = s.performer;
     drawPerformerNote();
   }
@@ -793,8 +801,8 @@ function renderClientSection(s, opts) {
           }
         }
         if (c.mode === 'new' && c.checkedRef === c.ref && c.ref) {
-          out.push(c.available ? h('p', { class: 'ok-text' }, '✓ Nimimerkki on vapaa.')
-            : h('p', { class: 'field-error' }, 'Nimimerkki on jo toisen asiakkaan käytössä. Valitse toinen tai luo nimimerkki.'));
+          out.push(c.available ? h('p', { class: 'ok-text' }, '✓ Nimimerkki on vapaa. Se tallentuu, kun tallennat kirjauksen.')
+            : h('p', { class: 'field-error' }, 'Nimimerkki on jo toisen asiakkaan käytössä. Valitse toinen tai generoi nimimerkki.'));
         }
         if (c.mode === 'new' && c.generated && c.ref) {
           out.push(h('div', { class: 'notice info' }, h('p', null, 'Kerro nimimerkki asiakkaalle: ', h('strong', { class: 'code-big' }, c.ref)),
@@ -810,13 +818,15 @@ function renderClientSection(s, opts) {
         c.mode === 'none' ? h('p', { class: 'help' }, services.length ? 'Ilman tunnistetta asiakkaan palveluihin ohjautumista ei voi seurata.'
           : 'Ilman tunnistetta kohtaaminen lasketaan täysin anonyymiksi, eikä se sisälly eri henkilöiden määrään.') : [
           h('p', { class: 'help' }, c.mode === 'existing' ? 'Kirjoita asiakkaan nimimerkki tai tunnus. Kirjainkoolla, välilyönneillä, väliviivoilla tai ääkkösillä ei ole väliä.'
-            : 'Keksi asiakkaan kanssa nimimerkki tai luo helposti muistettava nimimerkki, esim. ”Sininen Kettu”. Älä käytä oikeaa nimeä.'),
+            : 'Keksi asiakkaan kanssa nimimerkki ja kirjoita se kenttään, tai generoi helposti muistettava nimimerkki. Älä käytä oikeaa nimeä. Nimimerkki tallentuu kirjauksen mukana, kun tallennat lomakkeen.'),
+          // Kentän vieressä haku/tarkistus; nimimerkin generointi omana kohtanaan kentän alla
           h('div', { class: 'actions client-row' }, input,
-            c.mode === 'existing' ? h('button', { type: 'button', class: 'btn btn-secondary', onclick: check }, 'Hae')
-              : h('button', { type: 'button', class: 'btn btn-secondary', onclick: async () => {
-                  if (!s.project_id) { toast('Valitse ensin hanke.', true); return; }
-                  try { const r = await api('/clients/generate', { method: 'POST', body: { project_id: s.project_id } }); c.ref = r.code; c.generated = true; c.checkedRef = r.code; c.available = true; draw(); }
-                  catch (ex) { toast(ex.message, true); } } }, 'Luo nimimerkki')),
+            h('button', { type: 'button', class: 'btn btn-secondary', onclick: () => check() }, c.mode === 'existing' ? 'Hae' : 'Tarkista')),
+          c.mode === 'new' ? h('div', { class: 'client-generate' }, h('span', { class: 'muted' }, 'Ei ideaa? '),
+            h('button', { type: 'button', class: 'btn btn-secondary btn-sm', onclick: async () => {
+              if (!s.project_id) { toast('Valitse ensin hanke.', true); return; }
+              try { const r = await api('/clients/generate', { method: 'POST', body: { project_id: s.project_id } }); c.ref = r.code; c.generated = true; c.checkedRef = r.code; c.available = true; draw(); }
+              catch (ex) { toast(ex.message, true); } } }, 'Generoi nimimerkki')) : null,
           status]));
       setTimeout(() => { drawStatus(); if (focusInput) input.focus(); }, 0);
     } else {
@@ -1064,8 +1074,8 @@ async function viewList() {
         h('td', { 'data-label': 'Tyyppi' }, h('span', { class: 'badge ' + (row.kind === 'ryhma' ? 'blue' : row.kind === 'tavoittaminen' ? 'green' : '') }, typeLabel(row.encounter_type))),
         h('td', { class: 'num', 'data-label': row.kind === 'tavoittaminen' ? 'Tavoitettuja' : 'Kohtaamisia' }, fmtNum(row.encounter_count), row.kind === 'tavoittaminen' ? h('span', { class: 'small muted block' }, 'tavoitettua') : null),
         h('td', { class: 'num', 'data-label': 'Henkilöitä' }, row.person_count == null ? '–' : fmtNum(row.person_count)),
-        p.viewScope !== 'own' ? h('td', { 'data-label': 'Toteuttaja' }, row.performer_type === VOLUNTEER ? 'Vapaaehtoinen' : (row.performed_by_name || row.created_by_name),
-          row.performer_type === VOLUNTEER || (row.performed_by && row.performed_by !== row.created_by) ? h('span', { class: 'small muted block' }, `kirjannut ${row.created_by_name}`) : null) : null,
+        p.viewScope !== 'own' ? h('td', { 'data-label': 'Toteuttaja' }, isExternalPerformer(row) ? performerLabel(row.performer_type) : (row.performed_by_name || row.created_by_name),
+          isExternalPerformer(row) || (row.performed_by && row.performed_by !== row.created_by) ? h('span', { class: 'small muted block' }, `kirjannut ${row.created_by_name}`) : null) : null,
         h('td', { class: 'small muted', 'data-label': 'Tallennettu' }, fmtDateTime(row.created_at), row.updated_at ? h('span', { class: 'badge grey' }, ' korjattu') : null)))))));
     const end = Math.min(listState.offset + PAGE, r.total);
     pager.replaceChildren(h('span', { class: 'small muted' }, `Näytetään ${listState.offset + 1}–${end} / ${r.total}`),
@@ -1114,7 +1124,7 @@ async function viewDetail(id) {
       e.kind === 'yksilo' ? [h('dt', null, 'Asiakkaan tunniste'), h('dd', null, e.client_linked ? 'Tunnistettu asiakas (tunniste suojattu)' : 'Ei tunnistetta')] : null,
       e.referrals && e.referrals.length ? [h('dt', null, 'Ohjattu palveluun'), h('dd', null, e.referrals.map(r => h('div', null, r.service, ' ', referralBadge(r.status))))] : null,
       e.referral_updates && e.referral_updates.length ? [h('dt', null, 'Kuitatut ohjaukset'), h('dd', null, e.referral_updates.map(r => h('div', null, `${r.service} (ohjattu ${fmtDate(r.referred_on)}) `, referralBadge(r.status))))] : null,
-      h('dt', null, 'Kohtaamisen toteutti'), h('dd', null, e.performer_type === VOLUNTEER ? 'Vapaaehtoinen, vertainen tai kokemusasiantuntija' : (e.performed_by_name || '–')),
+      h('dt', null, 'Kohtaamisen toteutti'), h('dd', null, isExternalPerformer(e) ? performerLabel(e.performer_type) : (e.performed_by_name || '–')),
       h('dt', null, 'Toteuttajan rooli'), h('dd', null, e.recorder_role),
       h('dt', null, 'Kirjaaja'), h('dd', null, e.created_by_name || '–'),
       h('dt', null, 'Tallennettu'), h('dd', null, fmtDateTime(e.created_at)),
@@ -1859,6 +1869,7 @@ function adminTabs(active) {
   return h('div', null, h('h1', null, 'Hallinta'), h('nav', { class: 'tabs' },
     p.manageQuestions ? t('#/hallinta/kysymykset', 'Kysymykset') : null,
     p.manageQuestions ? t('#/hallinta/kirjaustyypit', 'Kirjaustyypit') : null,
+    p.manageQuestions ? t('#/hallinta/toteuttajat', 'Toteuttajat') : null,
     p.manageQuestions ? t('#/hallinta/ohjauspalvelut', 'Ohjauspalvelut') : null,
     p.manageProjects ? t('#/hallinta/hankkeet', 'Hankkeet') : null,
     p.manageUsers ? t('#/hallinta/kayttajat', 'Käyttäjät') : null,
@@ -2173,6 +2184,43 @@ async function viewQuestions() {
 }
 
 // --- Kirjaustyypit ("Valitse, mitä raportoit")
+// --- Muut toteuttajat (vapaaehtoinen, vertainen ym.)
+async function viewPerformerTypes() {
+  $app.classList.add('container');
+  const { types, recorderRoles } = await api('/performer-types');
+  const msg = h('div', { class: 'notice', hidden: true });
+  const recSel = (val, id) => h('select', { id }, recorderRoles.map((r, i) => h('option', { value: i, selected: i === val }, r)));
+  const save = async (key, body) => {
+    try {
+      if (key) await api('/performer-types/' + key, { method: 'PUT', body }); else await api('/performer-types', { method: 'POST', body });
+      await loadMe(); state.form = null; toast(key ? 'Tallennettu.' : 'Lisätty.'); viewPerformerTypes();
+    } catch (ex) { msg.className = 'notice err'; msg.textContent = ex.message; msg.hidden = false; }
+  };
+  const rows = types.map(t => {
+    const label = h('input', { type: 'text', value: t.label, maxlength: 60, 'aria-label': 'Nimi' });
+    const rec = recSel(t.recorder_index, 'pt-rec-' + t.key);
+    const active = h('input', { type: 'checkbox', checked: t.active });
+    return h('tr', { class: t.active ? null : 'dim' },
+      h('td', null, label), h('td', null, rec),
+      h('td', { class: 'num' }, fmtNum(t.encounter_rows)),
+      h('td', null, h('label', { class: 'switch' }, active, 'Käytössä')),
+      h('td', null, h('button', { class: 'btn btn-secondary btn-sm', type: 'button',
+        onclick: () => save(t.key, { label: label.value, recorder_index: Number(rec.value), active: active.checked }) }, 'Tallenna')));
+  });
+  const newLabel = h('input', { type: 'text', id: 'pt-new', maxlength: 60, placeholder: 'esim. Kokemusasiantuntija' });
+  const newRec = recSel(2, 'pt-new-rec');
+  $app.replaceChildren(adminTabs('#/hallinta/toteuttajat'),
+    h('p', { class: 'muted' }, 'Lomakkeen kohdassa ”Kohtaamisen toteutti” voi valita oman nimen, hankkeen työntekijän tai jonkin alla olevista toteuttajista. Kirjaukseen tallentuu toteuttaja sekä valittu kirjaajan rooli, jota tilastot ja Excel käyttävät. Toteuttajaa ei poisteta, jotta vanhat kirjaukset säilyvät; poista se tarvittaessa käytöstä.'),
+    msg,
+    h('div', { class: 'table-wrap' }, h('table', null,
+      h('thead', null, h('tr', null, h('th', null, 'Toteuttaja'), h('th', null, 'Kirjauksiin tallentuva rooli'), h('th', { class: 'num' }, 'Kirjauksia'), h('th', null, 'Tila'), h('th', null, ''))),
+      h('tbody', null, rows))),
+    h('div', { class: 'card' }, h('h2', null, 'Lisää toteuttaja'),
+      h('div', { class: 'row' }, h('div', { class: 'field' }, h('label', { for: 'pt-new' }, 'Nimi'), newLabel),
+        h('div', { class: 'field' }, h('label', { for: 'pt-new-rec' }, 'Kirjauksiin tallentuva rooli'), newRec)),
+      h('div', { class: 'actions' }, h('button', { class: 'btn btn-primary', type: 'button', onclick: () => save(null, { label: newLabel.value, recorder_index: Number(newRec.value) }) }, 'Lisää'))));
+}
+
 async function viewRecordTypes() {
   $app.classList.add('container');
   const { types, kinds } = await api('/record-types');
@@ -2388,7 +2436,7 @@ async function viewAudit() {
   const LABELS = { login: 'Kirjautuminen', login_failed: 'Epäonnistunut kirjautuminen', password_changed: 'Salasana vaihdettu', encounter_create: 'Kirjaus luotu',
     encounter_update: 'Kirjaus korjattu', encounter_delete: 'Kirjaus poistettu', export: 'Excel-vienti', user_create: 'Käyttäjä luotu', role_create: 'Rooli luotu', role_update: 'Rooli muokattu', role_delete: 'Rooli poistettu', user_update: 'Käyttäjä muokattu',
     user_reset_password: 'Salasana nollattu', demo_create: 'Testidataa luotu', demo_delete: 'Testidata poistettu', project_create: 'Hanke luotu', project_update: 'Hanke muokattu', question_create: 'Kysymys luotu', question_update: 'Kysymys muokattu',
-    record_type_create: 'Kirjaustyyppi luotu', errorlog_clear: 'Virheloki tyhjennetty', record_type_update: 'Kirjaustyyppi muokattu', feature_enable: 'Toiminto otettu käyttöön', mfa_failed: 'Väärä tunnistautumiskoodi', mfa_enrolled: 'Todennussovellus otettu käyttöön', mfa_remember_device: 'Laite muistetaan (MFA)', user_reset_mfa: 'Todennussovellus nollattu', feature_disable: 'Toiminto piilotettu' };
+    record_type_create: 'Kirjaustyyppi luotu', performer_type_create: 'Toteuttaja lisätty', performer_type_update: 'Toteuttaja muokattu', errorlog_clear: 'Virheloki tyhjennetty', record_type_update: 'Kirjaustyyppi muokattu', feature_enable: 'Toiminto otettu käyttöön', mfa_failed: 'Väärä tunnistautumiskoodi', mfa_enrolled: 'Todennussovellus otettu käyttöön', mfa_remember_device: 'Laite muistetaan (MFA)', user_reset_mfa: 'Todennussovellus nollattu', feature_disable: 'Toiminto piilotettu' };
   $app.replaceChildren(adminTabs('#/hallinta/loki'),
     h('p', { class: 'muted' }, '200 viimeisintä tapahtumaa.'),
     h('div', { class: 'table-wrap' }, h('table', null,

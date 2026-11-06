@@ -334,6 +334,19 @@ if (!db.prepare("PRAGMA table_info(encounters)").all().some(c => c.name === 'per
 }
 db.exec('CREATE INDEX IF NOT EXISTS ix_enc_performed_by ON encounters(performed_by)');
 
+// Muut toteuttajat kuin sovelluksen käyttäjät (esim. vapaaehtoinen, vertainen). Ylläpidettävissä
+// kohdassa Hallinta → Toteuttajat. encounters.performer_type on joko 'kayttaja' tai tämän taulun key.
+//   recorder_index = mikä kirjaajan rooli (RECORDER_ROLES) kirjaukseen tallentuu
+db.exec(`CREATE TABLE IF NOT EXISTS performer_types (
+  key            TEXT PRIMARY KEY,
+  label          TEXT NOT NULL,
+  recorder_index INTEGER NOT NULL DEFAULT 2,
+  active         INTEGER NOT NULL DEFAULT 1,
+  sort           INTEGER NOT NULL DEFAULT 0
+)`);
+db.prepare("INSERT OR IGNORE INTO performer_types (key, label, recorder_index, sort) VALUES ('vapaaehtoinen', 'Vapaaehtoinen', 2, 10)").run();
+db.prepare("INSERT OR IGNORE INTO performer_types (key, label, recorder_index, sort) VALUES ('vertainen', 'Vertainen', 2, 20)").run();
+
 // ---------------------------------------------------------------------------
 // Kirjaustyypit ("Valitse, mitä raportoit") ovat ylläpidettäviä. Jokaisella tyypillä on
 // toimintatapa (kind), joka määrää lomakkeen määräkentät ja tilastoinnin:

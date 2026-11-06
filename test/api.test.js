@@ -745,3 +745,25 @@ test('kadunnimestä tallentuu vain kadun nimi', async () => {
   assert.equal(streetOnly('2. linja 5'), '2. linja');
   assert.equal(streetOnly('Aleksis Kiven katu 3 C 22'), 'Aleksis Kiven katu');
 });
+
+test('muut toteuttajat: vapaaehtoinen ja vertainen erikseen, ylläpidettävät', async () => {
+  const p = P(); const tv = users.tiimivetaja;
+  const me = await tv('GET', '/me');
+  assert.deepEqual(me.data.performerTypes.filter(t => t.active).map(t => t.label), ['Vapaaehtoinen', 'Vertainen']);
+  const r = await tv('POST', '/encounters', basePayload(p.KATUKLINIKKA, { performer: 'vertainen' }));
+  assert.equal(r.status, 201, JSON.stringify(r.data));
+  const e = db.prepare('SELECT * FROM encounters WHERE id = ?').get(r.data.id);
+  assert.equal(e.performer_type, 'vertainen'); assert.equal(e.performed_by, null);
+  assert.equal(e.recorder_role, 'Vertainen, kokemusasiantuntija tai vapaaehtoinen');
+  // Admin lisää toteuttajan ja valitsee sille roolin
+  assert.equal((await tv('POST', '/performer-types', { label: 'X', recorder_index: 2 })).status, 403);
+  const add = await users.admin('POST', '/performer-types', { label: 'Kokemusasiantuntija', recorder_index: 1 });
+  assert.equal(add.status, 201);
+  const r2 = await tv('POST', '/encounters', basePayload(p.KATUKLINIKKA, { performer: add.data.key }));
+  assert.equal(db.prepare('SELECT recorder_role FROM encounters WHERE id = ?').get(r2.data.id).recorder_role, 'Tuntityöntekijä tai ulkopuolinen asiantuntija, ohjaaja, avustaja tai neuvontapalvelun vastaaja');
+  // Käytöstä poistettu ei kelpaa uusiin kirjauksiin
+  assert.equal((await users.admin('PUT', '/performer-types/' + add.data.key, { label: 'Kokemusasiantuntija', recorder_index: 1, active: false })).status, 200);
+  assert.equal((await tv('POST', '/encounters', basePayload(p.KATUKLINIKKA, { performer: add.data.key }))).status, 400);
+  const list = await users.admin('GET', '/performer-types');
+  assert.ok(list.data.types.find(t => t.key === 'vertainen').encounter_rows >= 1);
+});

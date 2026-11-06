@@ -195,6 +195,25 @@ Viennissä valitaan aikaväli ja hankkeet (yksi, useita tai kaikki). Jokainen ta
 
 `users`, `projects`, `user_projects`, `questions`, `encounters` (yksi rivi = yksi tallennus), `encounter_answers` (vastaukset rivimuodossa: encounter_id, question_id, value) ja `audit_log`. Uudet kysymykset eivät vaadi skeemamuutoksia. Power BI voi lukea `encounters`- ja `encounter_answers`-tauluja suoraan tai niistä tehtyä pivot-näkymää. Poistot ovat pehmeitä (`deleted_at`).
 
+## Testit
+
+**Rajapintatestit** (`test/`, Noden oma testityökalu `node --test`) tarkistavat roolit, oikeudet, validoinnin ja kirjautumisen suoraan API:a vasten:
+
+```bash
+npm test
+```
+
+**Selaintestit eli E2E-testit** (`e2e/`, [Playwright](https://playwright.dev)) käyttävät sovellusta oikeassa selaimessa kuten käyttäjä: kirjautuminen, kirjauksen tallennus, pakolliset kentät ja henkilötunnuksen esto. Jokainen testi ajetaan sekä työpöytä- että mobiilikoossa.
+
+```bash
+npx playwright install chromium   # kerran: lataa testiselaimen
+npm run test:e2e                  # aja testit
+npm run test:e2e:ui               # avaa Playwrightin käyttöliittymä (testien seuraaminen ja vianetsintä)
+npx playwright show-report        # näytä edellisen ajon raportti
+```
+
+Playwright käynnistää sovelluksen itse (`e2e/server.js`) porttiin 3100 omalla väliaikaisella tietokannalla, joten testit eivät koske kehitys- tai tuotantodataan. Testikäyttäjät ovat tiedostossa `e2e/users.js`.
+
 ## Ennen tuotantoa
 
 - **Kirjautuminen**: prototyypissä on sähköposti ja salasana (bcrypt, istunnot, kirjautumisyritysten rajoitus, pakotettu salasananvaihto). Tuotannossa suositus on Microsoft Entra ID -kertakirjautuminen, jolloin roolit voi ohjata Entra-ryhmillä.

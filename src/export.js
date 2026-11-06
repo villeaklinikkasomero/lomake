@@ -23,6 +23,7 @@ const dateOnly = (s) => { const [y, m, d] = s.split('-').map(Number); return new
 
 function buildWorkbook({ from, to, projectIds }) {
   const ph = projectIds.map(() => '?').join(',');
+  const performerLabels = Object.fromEntries(db.prepare('SELECT key, label FROM performer_types').all().map(r => [r.key, r.label]));
   const encounters = db.prepare(`
     SELECT e.*, p.code project_code, p.name project_name
     FROM encounters e JOIN projects p ON p.id = e.project_id
@@ -68,6 +69,7 @@ function buildWorkbook({ from, to, projectIds }) {
     { header: 'Hanke', key: 'project_name', width: 32 },
     { header: 'Hanketunnus', key: 'project_code', width: 14 },
     { header: 'Toteuttajan rooli', key: 'recorder_role', width: 40 },
+    { header: 'Toteuttaja', key: 'performer', width: 18 },
     { header: 'Kirjattu toisen puolesta', key: 'on_behalf', width: 12 },
     { header: 'Kirjauksen tyyppi', key: 'encounter_type', width: 22 },
     { header: 'Kohtaamisten määrä', key: 'encounter_count', width: 12 },
@@ -94,7 +96,8 @@ function buildWorkbook({ from, to, projectIds }) {
       project_name: e.project_name,
       project_code: e.project_code,
       recorder_role: e.recorder_role,
-      on_behalf: e.performer_type === 'vapaaehtoinen' || (e.performed_by != null && e.performed_by !== e.created_by) ? 'kyllä' : 'ei',
+      performer: e.performer_type === 'kayttaja' ? 'Työntekijä' : (performerLabels[e.performer_type] || e.performer_type),
+      on_behalf: e.performer_type !== 'kayttaja' || (e.performed_by != null && e.performed_by !== e.created_by) ? 'kyllä' : 'ei',
       encounter_type: typeLabels[e.encounter_type] || e.encounter_type,
       encounter_count: e.kind === 'tavoittaminen' ? null : e.encounter_count,
       reach_count: e.kind === 'tavoittaminen' ? e.encounter_count : null,

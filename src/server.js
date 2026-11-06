@@ -241,9 +241,11 @@ function validateEncounter(body, user, projectIds, existing) {
   };
 }
 
-// Kohtaamisen toteuttaja: kirjaaja itse (oletus), toinen hankkeen käyttäjä tai vapaaehtoinen.
+// Kohtaamisen toteuttaja: kirjaaja itse (oletus), toinen hankkeen käyttäjä tai muu toteuttaja
+// (Hallinta → Toteuttajat, esim. vapaaehtoinen tai vertainen).
 // Kirjaajan rooli (raportoinnin "Olen"-tieto) määräytyy toteuttajasta.
-const VOLUNTEER = 'vapaaehtoinen';
+const performerTypes = (all) => db.prepare(`SELECT * FROM performer_types ${all ? '' : 'WHERE active = 1'} ORDER BY sort, label`).all();
+const performerType = (key) => db.prepare('SELECT * FROM performer_types WHERE key = ?').get(String(key || ''));
 function projectMembers(projectId) {
   return db.prepare(`SELECT u.id, u.name, u.role FROM users u WHERE u.active = 1 AND u.is_test = 0
     AND (u.role = 'admin' OR EXISTS (SELECT 1 FROM user_projects up WHERE up.user_id = u.id AND up.project_id = ?)) ORDER BY u.name`).all(projectId)
@@ -252,15 +254,16 @@ function projectMembers(projectId) {
 function resolvePerformer(value, user, projectId, existing) {
   // Korjauksessa säilytetään alkuperäinen toteuttaja ja rooli, ellei toteuttajaa vaihdeta
   if (existing) {
-    const cur = existing.performer_type === VOLUNTEER ? VOLUNTEER : String(existing.performed_by);
+    const cur = existing.performer_type !== 'kayttaja' ? existing.performer_type : String(existing.performed_by);
     if (value == null || value === '' || String(value) === cur) return { performer_type: existing.performer_type, performed_by: existing.performed_by, recorder_role: existing.recorder_role };
   }
-  if (value === VOLUNTEER) return { performer_type: VOLUNTEER, performed_by: null, recorder_role: RECORDER_ROLES[2] };
+  const pt = value != null && !/^\d+$/.test(String(value)) && value !== 'self' ? performerType(value) : null;
+  if (pt && pt.active) return { performer_type: pt.key, performed_by: null, recorder_role: RECORDER_ROLES[pt.recorder_index] || RECORDER_ROLES[2] };
   const id = value == null || value === '' || value === 'self' ? user.id : Number(value);
   if (id === user.id) return { performer_type: 'kayttaja', performed_by: user.id, recorder_role: recorderRoleOf(user.role) };
   const u = db.prepare('SELECT id, role, active FROM users WHERE id = ?').get(id);
   if (!u || !projectMembers(projectId).some(m => m.id === id)) {
-    return { error: 'Valitse kohtaamisen toteuttaja hankkeen käyttäjistä tai ”Vapaaehtoinen”.' };
+    return { error: 'Valitse kohtaamisen toteuttaja hankkeen käyttäjistä tai muista toteuttajista (esim. vapaaehtoinen).' };
   }
   return { performer_type: 'kayttaja', performed_by: u.id, recorder_role: recorderRoleOf(u.role) };
 }
@@ -527,6 +530,7 @@ app.get('/api/me', requireAuth, (req, res) => {
     today: today(),
     clientTracking: clients.ENABLED,
     recordTypes: recordTypes(true).map(({ key, label, description, kind, count_label, active }) => ({ key, label, description, kind, count_label, active: !!active })),
+    performerTypes: performerTypes(true).map(t => ({ key: t.key, label: t.label, recorderRole: RECORDER_ROLES[t.recorder_index], active: !!t.active })),
   });
 });
 
@@ -1203,6 +1207,41 @@ app.put('/api/questions/:id', requireAuth, requirePerm('manageQuestions'), (req,
   res.json({ ok: true });
 });
 // Kirjaustyypit (Hallinta → Kirjaustyypit). Tyyppejä ei poisteta, ne otetaan pois käytöstä.
+// Muut toteuttajat (Hallinta → Toteuttajat)
+function validatePerformerType(b) {
+  const label = String(b.label || '').trim();
+  if (label.length < 2 || label.length > 60) return 'Anna nimi (2–60 merkkiä).';
+  if (![0, 1, 2].includes(Number(b.recorder_index))) return 'Valitse kirjauksiin tallentuva rooli.';
+  return null;
+}
+app.get('/api/performer-types', requireAuth, requirePerm('manageQuestions'), (req, res) => {
+  const counts = Object.fromEntries(db.prepare("SELECT performer_type k, COUNT(*) n FROM encounters WHERE deleted_at IS NULL AND performer_type <> 'kayttaja' GROUP BY performer_type").all().map(r => [r.k, r.n]));
+  res.json({ types: performerTypes(true).map(t => ({ ...t, active: !!t.active, encounter_rows: counts[t.key] || 0 })), recorderRoles: RECORDER_ROLES });
+});
+app.post('/api/performer-types', requireAuth, requirePerm('manageQuestions'), (req, res) => {
+  const b = req.body; const err = validatePerformerType(b); if (err) return bad(res, err);
+  const label = String(b.label).trim();
+  if (performerTypes(true).some(t => t.label.toLowerCase() === label.toLowerCase())) return bad(res, 'Samanniminen toteuttaja on jo olemassa.');
+  const base = label.toLowerCase().normalize('NFD').replace(/\p{M}+/gu, '').replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '').slice(0, 30) || 'toteuttaja';
+  let key = /^\d+$/.test(base) || ['kayttaja', 'self'].includes(base) ? 't_' + base : base, i = 2;
+  while (performerType(key)) key = `${base}_${i++}`;
+  const sort = (db.prepare('SELECT MAX(sort) m FROM performer_types').get().m || 0) + 10;
+  db.prepare('INSERT INTO performer_types (key, label, recorder_index, sort) VALUES (?, ?, ?, ?)').run(key, label, Number(b.recorder_index), sort);
+  audit(req.user.id, 'performer_type_create', 'performer_type', key, { label });
+  res.status(201).json({ key });
+});
+app.put('/api/performer-types/:key', requireAuth, requirePerm('manageQuestions'), (req, res) => {
+  const t = performerType(req.params.key); if (!t) return bad(res, 'Toteuttajaa ei löydy.', 404);
+  const b = req.body; const err = validatePerformerType(b); if (err) return bad(res, err);
+  const label = String(b.label).trim();
+  if (performerTypes(true).some(x => x.key !== t.key && x.label.toLowerCase() === label.toLowerCase())) return bad(res, 'Samanniminen toteuttaja on jo olemassa.');
+  const active = b.active === false ? 0 : 1;
+  // Kirjauksiin tallentunut rooli ei muutu jälkikäteen; uusi rooli koskee uusia kirjauksia
+  db.prepare('UPDATE performer_types SET label = ?, recorder_index = ?, active = ? WHERE key = ?').run(label, Number(b.recorder_index), active, t.key);
+  audit(req.user.id, 'performer_type_update', 'performer_type', t.key, { label, active });
+  res.json({ ok: true });
+});
+
 app.get('/api/record-types', requireAuth, requirePerm('manageQuestions'), (req, res) => {
   const counts = Object.fromEntries(db.prepare('SELECT encounter_type k, COUNT(*) n FROM encounters WHERE deleted_at IS NULL GROUP BY encounter_type').all().map(r => [r.k, r.n]));
   res.json({ types: recordTypes(true).map(t => ({ ...t, active: !!t.active, encounter_rows: counts[t.key] || 0 })), kinds: RECORD_KINDS });
@@ -1280,7 +1319,7 @@ app.use(express.static(PUBLIC_DIR, { index: false, setHeaders: (res, filePath) =
   // Versioidut tiedostot: selain tarkistaa muutokset aina (ETag), joten päivitys näkyy heti.
   res.setHeader('Cache-Control', 'no-cache');
 } }));
-app.get('/version', (req, res) => res.json({ build: BUILD_ID }));
+app.get('/version', (req, res) => res.json({ build: BUILD_ID, node: process.version }));  // Node-versio tietoturvapäivitysten tarkistamiseen
 app.get(/^\/(?!api\/).*/, sendIndex);
 app.use('/api', (req, res) => bad(res, 'Ei löydy.', 404));
 app.use((err, req, res, next) => {

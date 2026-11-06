@@ -752,3 +752,6 @@ svg .series.cmp { stroke: #8a8f96; stroke-width: 2; stroke-dasharray: 5 4; }
 .mfa-key p { flex-basis: 100%; margin: 0; }
 .mfa-key .mfa-secret { word-break: normal; overflow-wrap: normal; white-space: normal; letter-spacing: .04em; }
 .mfa-key .mfa-secret { word-spacing: .2em; }
+
+/* Nimimerkin generointi omana rivinään kentän alla */
+.client-generate { display: flex; align-items: center; gap: .4rem; flex-wrap: wrap; margin: -.1rem 0 .5rem; }
