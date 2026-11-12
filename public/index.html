@@ -7,6 +7,13 @@
   <meta name="format-detection" content="telephone=no">
   <title>Kohtaamisten raportointi</title>
   <link rel="icon" href="/brand/favicon.svg" type="image/svg+xml">
+  <!-- Sovellusversio (PWA): kotinäytön kuvake ja oma ikkuna -->
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="apple-touch-icon" href="/brand/apple-touch-icon.png">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Kohtaamiset">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
   <link rel="preload" href="/fonts/work-sans-latin-400-normal.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="stylesheet" href="/app.css">
 </head>
@@ -19,6 +26,8 @@
     </div>
   </header>
   <main id="app" class="container" tabindex="-1"></main>
+  <!-- Mobiilin alavalikko (näkyy kirjautuneena kapealla näytöllä) -->
+  <nav id="tabbar" class="tabbar" aria-label="Päävalikko" hidden></nav>
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
   <script src="/app.js"></script>
 </body>

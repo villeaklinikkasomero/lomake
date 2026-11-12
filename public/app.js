@@ -148,6 +148,7 @@ const ROUTES = [
   { re: /^#\/hallinta\/loki$/, view: viewAudit, perm: (p) => p.manageUsers },
   { re: /^#\/hallinta\/virheloki$/, view: viewErrors, perm: (p) => p.manageUsers },
   { re: /^#\/ilmoita$/, view: viewFeedback },
+  { re: /^#\/sovellus$/, view: viewInstall },
   { re: /^#\/hallinta\/testidata$/, view: viewDemo, perm: (p) => p.manageUsers },
   { re: /^#\/hallinta\/toiminnot$/, view: viewFeatures, perm: (p) => p.manageUsers },
 ];
@@ -192,6 +193,7 @@ const ICONS = {
   menu: 'M4 7h16M4 12h16M4 17h16',
   close: 'M6 6l12 12M18 6L6 18',
   flag: 'M5 21V4M5 4h11l-2 4 2 4H5',
+  phone: 'M8 2h8a2 2 0 0 1 2 2v16a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2zM11 18h2',
 };
 function icon(name, size = 20) {
   const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
@@ -204,7 +206,7 @@ function icon(name, size = 20) {
 function renderNav(hash) {
   const bar = document.getElementById('topbar');
   const nav = document.getElementById('nav');
-  if (!state.me || hash === '#/kirjaudu') { bar.hidden = true; document.body.classList.remove('has-nav'); return; }
+  if (!state.me || hash === '#/kirjaudu') { bar.hidden = true; document.body.classList.remove('has-nav'); renderTabbar(null); return; }
   bar.hidden = false; document.body.classList.add('has-nav');
   const p = state.me.permissions;
   const isActive = (href, prefix) => hash === href || (prefix && hash.startsWith(prefix));
@@ -228,13 +230,60 @@ function renderNav(hash) {
     h('div', { class: 'nav-user' },
       h(u.authMethod === 'entra' ? 'div' : 'a', u.authMethod === 'entra' ? { class: 'who', title: 'Kirjautunut Microsoft-tunnuksella' } : { href: '#/salasana', class: 'who' + (hash === '#/salasana' ? ' active' : ''), title: 'Vaihda salasana' },
         h('span', { class: 'avatar', 'aria-hidden': 'true' }, initials), h('span', { class: 'who-text' }, h('strong', null, u.name), h('small', null, u.roleLabel))),
+      !isStandalone() ? h('a', { href: '#/sovellus', class: 'nav-logout' + (hash === '#/sovellus' ? ' active' : '') }, icon('phone'), h('span', null, 'Asenna puhelimeen')) : null,
       h('a', { href: '#/ilmoita', class: 'nav-logout' + (hash === '#/ilmoita' ? ' active' : '') }, icon('flag'), h('span', null, 'Ilmoita ongelmasta')),
       h('button', { type: 'button', class: 'nav-logout', onclick: logout }, icon('logout'), h('span', null, 'Kirjaudu ulos'))),
   ].filter(Boolean));
   nav.classList.remove('open');
   const t = document.getElementById('menuToggle');
   t.setAttribute('aria-expanded', 'false'); t.replaceChildren(icon('menu', 22), h('span', { class: 'sr-only' }, 'Valikko'));
+  renderTabbar(hash);
 }
+
+// ---------------------------------------------------------------------------
+// Mobiilin alavalikko: keskellä "+" (uusi kirjaus), sivuilla tärkeimmät näkymät ja "Lisää" (koko valikko).
+// Lomakkeella alavalikko piilotetaan, jotta Tallenna-painike mahtuu alareunaan.
+// ---------------------------------------------------------------------------
+const FORM_ROUTE = /^#\/(kirjaa|kirjaukset\/[\w-]+\/muokkaa)$/;
+function renderTabbar(hash) {
+  const bar = document.getElementById('tabbar');
+  const on = !!(state.me && hash && !FORM_ROUTE.test(hash) && hash !== '#/kirjaudu' && hash !== '#/salasana' && !state.me.user.mustChangePassword);
+  document.body.classList.toggle('has-tabbar', on);
+  bar.hidden = !on;
+  if (!on) return;
+  const p = state.me.permissions;
+  const item = (href, label, ic, prefix) => {
+    const active = hash === href || (prefix && hash.startsWith(prefix));
+    return h('a', { href, class: 'tab' + (active ? ' active' : ''), 'aria-current': active ? 'page' : null }, icon(ic, 22), h('span', null, label));
+  };
+  const candidates = [
+    p.viewScope !== 'none' ? item('#/kirjaukset', p.viewScope === 'own' ? 'Omat' : 'Kirjaukset', 'list', '#/kirjaukset') : null,
+    p.dashScope !== 'none' ? item('#/tilastot', 'Tilastot', 'chart') : null,
+    p.staffScope !== 'none' ? item('#/tyontekijat', 'Työntekijät', 'users', '#/tyontekijat') : null,
+    p.exportScope !== 'none' ? item('#/vienti', 'Excel', 'download') : null,
+  ].filter(Boolean).slice(0, 3);
+  const more = h('button', { type: 'button', class: 'tab', 'aria-controls': 'nav', onclick: () => {
+    const nav = document.getElementById('nav'); const open = nav.classList.toggle('open');
+    if (open) window.scrollTo({ top: 0, behavior: 'smooth' });
+    const t = document.getElementById('menuToggle'); t.setAttribute('aria-expanded', String(open));
+    t.replaceChildren(icon(open ? 'close' : 'menu', 22), h('span', { class: 'sr-only' }, open ? 'Sulje valikko' : 'Valikko'));
+  } }, icon('menu', 22), h('span', null, 'Lisää'));
+  const plus = p.record ? h('a', { href: '#/kirjaa', class: 'tab tab-plus', 'aria-label': 'Uusi kirjaus' }, h('span', { class: 'tab-plus-btn' }, icon('plus', 26)), h('span', null, 'Kirjaa')) : null;
+  // Viisi paikkaa: kaksi vasemmalle, plus keskelle, loput oikealle ja viimeisenä "Lisää"
+  const left = candidates.slice(0, 2), right = candidates.slice(2);
+  const slots = plus ? [...left, ...Array(2 - left.length).fill(null), plus, ...right, ...Array(1 - right.length).fill(null), more]
+    : [...candidates, ...Array(3 - candidates.length).fill(null), more];
+  bar.className = 'tabbar' + (plus ? '' : ' tabbar-4');
+  bar.replaceChildren(...slots.map(x => x || h('span', { class: 'tab tab-empty', 'aria-hidden': 'true' })));
+}
+
+// Sovellusversio (PWA): service worker kotinäytön sovellusta ja yhteydettömän tilan ilmoitusta varten
+if ('serviceWorker' in navigator && location.protocol === 'https:') {
+  window.addEventListener('load', () => navigator.serviceWorker.register('/sw.js').catch(() => {}));
+}
+const isStandalone = () => window.matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+let installPrompt = null;
+window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); installPrompt = e; });
 document.getElementById('menuToggle').addEventListener('click', (e) => {
   const nav = document.getElementById('nav'); const open = nav.classList.toggle('open');
   e.currentTarget.setAttribute('aria-expanded', open);
@@ -344,7 +393,19 @@ async function viewLogin() {
     const keyBox = h('div', { class: 'mfa-key' }, h('code', { class: 'mfa-secret' }, r.secret), copyBtn,
       h('p', { class: 'small muted' }, `Tili: ${account} · tyyppi: aikaperusteinen (TOTP)`));
     const qrBox = h('div', { class: 'mfa-qr' }, h('img', { src: r.qr, alt: 'QR-koodi todennussovellukseen', width: '220', height: '220' }));
-    const setupSteps = mobile ? [
+    // iPhonessa otpauth-linkki avaa aina iOS:n oman Salasanat-sovelluksen, ei Microsoft Authenticatoria.
+    // Siksi iPhonessa ensisijainen tapa on avaimen kopiointi Authenticatoriin; Salasanat on vaihtoehto.
+    const ios = /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+    const setupSteps = mobile && ios ? [
+      h('li', null, 'Asenna ', h('strong', null, 'Microsoft Authenticator'), ' App Storesta, jos se ei ole jo puhelimessa.'),
+      h('li', null, 'Kopioi avain:', keyBox),
+      h('li', null, 'Avaa Microsoft Authenticator ja valitse ', h('strong', null, '+'), ' → ', h('strong', null, 'Muu tili (Google, Facebook jne.)'), ' → ',
+        h('strong', null, 'Tai syötä koodi manuaalisesti'), '. Kirjoita tilin nimeksi esim. ”Kohtaamiset” ja liitä avain.'),
+      h('li', null, 'Palaa tähän ikkunaan ja kirjoita tai liitä Authenticatorin näyttämä 6-numeroinen koodi.',
+        h('details', { class: 'define' }, h('summary', null, 'Muita tapoja'),
+          h('p', null, h('a', { href: r.otpauth }, 'Lisää iPhonen Salasanat-sovellukseen'), '. iPhone voi myös itse näyttää koodit: tällöin koodi löytyy Salasanat-sovelluksesta tältä tililtä, eikä Authenticatoria tarvita.'),
+          h('p', null, 'Lisäätkö tilin toiselle laitteelle? Lue QR-koodi toisen laitteen todennussovelluksella.'), qrBox)),
+    ] : mobile ? [
       h('li', null, 'Asenna puhelimeen todennussovellus, esim. ', h('strong', null, 'Microsoft Authenticator'), ' tai Google Authenticator.'),
       h('li', null, 'Lisää tili sovellukseen:',
         h('p', null, h('a', { class: 'btn btn-primary', href: r.otpauth }, 'Lisää todennussovellukseen')),
@@ -1881,6 +1942,7 @@ function adminTabs(active) {
 }
 
 // --- Käyttäjät
+const userFilter = { q: '', role: '', project: '', status: '' };
 async function viewUsers() {
   $app.classList.add('container');
   const [{ users }, { projects }, cfg, roleData] = await Promise.all([api('/users'), api('/projects'), api('/auth/config'), api('/roles')]);
@@ -1963,18 +2025,52 @@ async function viewUsers() {
       h('button', { class: 'btn btn-secondary btn-sm', type: 'button', onclick: () => viewUsers() }, 'Valmis')));
   }
 
+  // Haku ja rajaukset (säilyvät, kun palataan näkymään)
+  const f = userFilter;
+  const norm = (v) => String(v || '').toLocaleLowerCase('fi').normalize('NFD').replace(/\p{M}+/gu, '');
+  const matches = (u) => {
+    const q = norm(f.q).trim();
+    if (q && !q.split(/\s+/).every(w => norm(u.name).includes(w) || norm(u.email).includes(w))) return false;
+    if (f.role && u.role !== f.role) return false;
+    if (f.project && !(u.role === 'admin' || u.project_ids.includes(Number(f.project)))) return false;
+    if (f.status === 'active' && !u.active) return false;
+    if (f.status === 'closed' && u.active) return false;
+    if (f.status === 'nomfa' && !(u.active && u.auth_method === 'local' && !u.mfa_enabled)) return false;
+    if (f.status === 'never' && u.last_login_at) return false;
+    return true;
+  };
+  const tbody = h('tbody');
+  const count = h('p', { class: 'muted' });
+  const drawRows = () => {
+    const list = users.filter(matches).sort((a, b) => a.name.localeCompare(b.name, 'fi'));
+    count.textContent = list.length === users.length ? `${users.length} käyttäjää` : `${list.length} / ${users.length} käyttäjää`;
+    tbody.replaceChildren(...(list.length ? list.map(u => h('tr', { class: 'clickable' + (u.active ? '' : ' dim'), tabindex: '0', onclick: () => openEditor(u), onkeydown: (e) => { if (e.key === 'Enter') openEditor(u); } },
+      h('td', null, h('strong', null, u.name)), h('td', null, u.email), h('td', null, h('span', { class: 'badge blue' }, roles[u.role] || u.role)),
+      h('td', { class: 'small' }, u.auth_method === 'entra' ? 'Microsoft' : ['Salasana', ' ', u.mfa_enabled ? h('span', { class: 'badge green' }, 'MFA') : h('span', { class: 'badge grey' }, 'MFA ei vielä')]),
+      h('td', { class: 'small' }, u.role === 'admin' ? 'Kaikki' : u.project_ids.map(pname).join(', ') || h('span', { class: 'badge red' }, 'Ei hankkeita')),
+      h('td', { class: 'small muted' }, u.last_login_at ? fmtDateTime(u.last_login_at) : '–'),
+      h('td', null, u.active ? h('span', { class: 'badge green' }, 'Käytössä') : h('span', { class: 'badge grey' }, 'Suljettu'))))
+      : [h('tr', null, h('td', { colspan: 7, class: 'muted' }, 'Ei hakua vastaavia käyttäjiä.'))]));
+  };
+  const search = h('input', { type: 'text', inputmode: 'search', id: 'u-search', value: f.q, placeholder: 'Nimi tai sähköposti', autocomplete: 'off',
+    oninput: (e) => { f.q = e.target.value; drawRows(); } });
+  const sel = (key, id, first, opts) => { const el = h('select', { id }, h('option', { value: '' }, first), opts.map(([v, t]) => h('option', { value: v, selected: String(f[key]) === String(v) }, t)));
+    el.addEventListener('change', () => { f[key] = el.value; drawRows(); }); return el; };
+  drawRows();
   $app.replaceChildren(adminTabs('#/hallinta/kayttajat'),
-    h('div', { class: 'page-head' }, h('p', { class: 'muted' }, `${users.length} käyttäjää`),
+    h('div', { class: 'page-head' }, count,
       h('button', { class: 'btn btn-primary', type: 'button', onclick: () => openEditor(null) }, '+ Uusi käyttäjä')),
+    h('div', { class: 'card' }, h('div', { class: 'filters' },
+      h('div', { class: 'field' }, h('label', { for: 'u-search' }, 'Hae'), search),
+      h('div', { class: 'field' }, h('label', { for: 'u-role' + '-f' }, 'Rooli'), sel('role', 'u-role-f', 'Kaikki roolit', Object.entries(roles))),
+      h('div', { class: 'field' }, h('label', { for: 'u-proj-f' }, 'Hanke'), sel('project', 'u-proj-f', 'Kaikki hankkeet', projects.map(p => [p.id, p.name]))),
+      h('div', { class: 'field' }, h('label', { for: 'u-status-f' }, 'Tila'), sel('status', 'u-status-f', 'Kaikki', [['active', 'Käytössä'], ['closed', 'Suljettu'], ['nomfa', 'Todennussovellus ottamatta käyttöön'], ['never', 'Ei ole kirjautunut']]))),
+      h('p', { class: 'help' }, 'Todennussovelluksen (MFA) nollaus: avaa käyttäjä ja valitse ”Nollaa todennussovellus”. Käyttäjä ottaa sovelluksen uudelleen käyttöön seuraavalla kirjautumisella.')),
     editorBox,
     h('div', { class: 'table-wrap' }, h('table', null,
       h('thead', null, h('tr', null, h('th', null, 'Nimi'), h('th', null, 'Sähköposti'), h('th', null, 'Rooli'), h('th', null, 'Kirjautuminen'), h('th', null, 'Hankkeet'), h('th', null, 'Viimeksi kirjautunut'), h('th', null, 'Tila'))),
-      h('tbody', null, users.map(u => h('tr', { class: 'clickable', tabindex: '0', onclick: () => openEditor(u), onkeydown: (e) => { if (e.key === 'Enter') openEditor(u); } },
-        h('td', null, h('strong', null, u.name)), h('td', null, u.email), h('td', null, h('span', { class: 'badge blue' }, roles[u.role])),
-        h('td', { class: 'small' }, u.auth_method === 'entra' ? 'Microsoft' : ['Salasana', ' ', u.mfa_enabled ? h('span', { class: 'badge green' }, 'MFA') : h('span', { class: 'badge grey' }, 'MFA ei vielä')]),
-        h('td', { class: 'small' }, u.role === 'admin' ? 'Kaikki' : u.project_ids.map(pname).join(', ') || h('span', { class: 'badge red' }, 'Ei hankkeita')),
-        h('td', { class: 'small muted' }, u.last_login_at ? fmtDateTime(u.last_login_at) : '–'),
-        h('td', null, u.active ? h('span', { class: 'badge green' }, 'Käytössä') : h('span', { class: 'badge grey' }, 'Suljettu'))))))));
+      tbody)));
+  if (f.q) { search.focus(); search.setSelectionRange(f.q.length, f.q.length); }
 }
 
 // --- Hankkeet
@@ -2335,6 +2431,39 @@ async function viewFeatures() {
 }
 
 // --- Tapahtumaloki
+// --- Sovellusversion asennusohje
+async function viewInstall() {
+  $app.classList.add('container');
+  const ua = navigator.userAgent;
+  const ios = /iPhone|iPad|iPod/.test(ua) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  const android = /Android/.test(ua);
+  const steps = ios ? [
+    ['Avaa tämä sivu Safarissa', 'Asennus toimii iPhonessa Safari-selaimella.'],
+    ['Paina Jaa-painiketta', 'Neliö, josta nuoli osoittaa ylös – selaimen alareunassa (tai yläreunassa).'],
+    ['Valitse ”Lisää Koti-valikkoon”', 'Tarvittaessa vieritä valikkoa alaspäin. Nimeksi tulee Kohtaamiset.'],
+    ['Avaa Kohtaamiset kotinäytöltä', 'Sovellus avautuu omaan ikkunaansa ilman selaimen palkkeja. Kirjaudu kerran sisään.'],
+  ] : android ? [
+    ['Avaa tämä sivu Chromessa', 'Myös Edge ja Samsung Internet toimivat.'],
+    ['Paina selaimen valikkoa (⋮)', 'Oikeassa yläkulmassa.'],
+    ['Valitse ”Asenna sovellus” tai ”Lisää aloitusnäyttöön”', ''],
+    ['Avaa Kohtaamiset aloitusnäytöltä', 'Sovellus avautuu omaan ikkunaansa. Kirjaudu kerran sisään.'],
+  ] : [
+    ['Avaa tämä sivu puhelimella', 'Osoite on sama kuin tällä koneella.'],
+    ['iPhone: Safari → Jaa → ”Lisää Koti-valikkoon”', ''],
+    ['Android: Chrome → valikko (⋮) → ”Asenna sovellus”', ''],
+  ];
+  const btn = installPrompt ? h('button', { class: 'btn btn-primary btn-lg', type: 'button', onclick: async () => {
+    installPrompt.prompt(); const r = await installPrompt.userChoice.catch(() => null); installPrompt = null;
+    if (r && r.outcome === 'accepted') toast('Kohtaamiset asennettiin.'); viewInstall(); } }, 'Asenna sovellus') : null;
+  $app.replaceChildren(h('div', { class: 'narrow' },
+    h('h1', null, 'Kohtaamiset puhelimeen'),
+    h('p', { class: 'muted' }, 'Lisää Kohtaamiset puhelimen kotinäytölle, niin se toimii kuin sovellus: avautuu yhdellä napautuksella omaan ikkunaansa, ja alareunan valikosta pääset kirjaamaan (+) ja muihin näkymiin.'),
+    isStandalone() ? h('div', { class: 'notice ok' }, 'Käytät jo sovellusversiota.') : null,
+    btn ? h('div', { class: 'card' }, h('p', null, 'Selaimesi tukee suoraa asennusta:'), btn) : null,
+    h('ol', { class: 'install-steps card' }, steps.map(([t, d]) => h('li', null, h('strong', null, t), d ? h('span', { class: 'muted block' }, d) : null))),
+    h('p', { class: 'small muted' }, 'Sovellus ei tallenna kirjauksia puhelimeen: tiedot ovat aina palvelimella, ja kirjaaminen vaatii verkkoyhteyden. Kirjautuminen säilyy samalla tavalla kuin selaimessa.')));
+}
+
 // --- Ilmoita ongelmasta (testaajat ja käyttäjät)
 async function viewFeedback() {
   $app.classList.add('container');

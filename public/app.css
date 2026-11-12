@@ -755,3 +755,41 @@ svg .series.cmp { stroke: #8a8f96; stroke-width: 2; stroke-dasharray: 5 4; }
 
 /* Nimimerkin generointi omana rivinään kentän alla */
 .client-generate { display: flex; align-items: center; gap: .4rem; flex-wrap: wrap; margin: -.1rem 0 .5rem; }
+
+/* ---------------------------------------------------------------------------
+   Mobiilin alavalikko (sovellusmainen): keskellä "+", sivuilla näkymät ja "Lisää"
+   --------------------------------------------------------------------------- */
+.tabbar { display: none; }
+@media (max-width: 1023px) {
+  body.has-tabbar .tabbar:not([hidden]) {
+    display: grid; grid-template-columns: repeat(5, 1fr); align-items: end;
+    position: fixed; left: 0; right: 0; bottom: 0; z-index: 40;
+    background: rgba(255,255,255,.98); border-top: 1px solid var(--line); box-shadow: 0 -4px 16px rgba(16,32,64,.06);
+    padding: .3rem max(.25rem, env(safe-area-inset-right)) calc(.3rem + env(safe-area-inset-bottom)) max(.25rem, env(safe-area-inset-left));
+  }
+  body.has-tabbar .tabbar.tabbar-4:not([hidden]) { grid-template-columns: repeat(4, 1fr); }
+  body.has-tabbar { padding-bottom: calc(4.5rem + env(safe-area-inset-bottom)); }
+  body.has-tabbar .menu-toggle { display: none; }
+  body.has-tabbar .toast { bottom: calc(5.5rem + env(safe-area-inset-bottom)); }
+  .tab { display: flex; flex-direction: column; align-items: center; justify-content: flex-end; gap: .15rem; min-height: 52px; padding: .25rem 0;
+    color: var(--muted); text-decoration: none; font: inherit; font-size: .7rem; font-weight: 600; background: none; border: 0; cursor: pointer;
+    -webkit-tap-highlight-color: transparent; }
+  .tab .icon { color: inherit; }
+  .tab.active { color: var(--blue); }
+  .tab:focus-visible { outline: 2px solid var(--blue); outline-offset: -2px; border-radius: 10px; }
+  .tab-empty { pointer-events: none; }
+  .tab-plus { color: var(--ink); }
+  .tab-plus-btn { display: grid; place-items: center; width: 54px; height: 54px; margin-top: -1.4rem; border-radius: 50%;
+    background: var(--blue); color: #fff; box-shadow: 0 4px 14px rgba(0,55,211,.35); border: 3px solid #fff; }
+  .tab-plus-btn .icon { color: #fff; }
+  .tab-plus:active .tab-plus-btn { background: var(--blue-600); }
+  /* Ylävalikko avautuu "Lisää"-painikkeesta; pidetään se näkyvissä vierityksen aikana */
+  body.has-tabbar .nav.open { max-height: calc(100vh - 9rem); overflow-y: auto; }
+}
+/* Kotinäytöltä avattuna (sovellusversio) yläpalkki huomioi iPhonen loven */
+@media (display-mode: standalone) {
+  .topbar { padding-top: env(safe-area-inset-top); }
+}
+.install-steps { padding-left: 2.2rem; }
+.install-steps li { margin: .6rem 0; }
+.offline { padding-top: 3rem; }
