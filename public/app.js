@@ -242,13 +242,15 @@ function renderNav(hash) {
 
 // ---------------------------------------------------------------------------
 // Mobiilin alavalikko: keskellä "+" (uusi kirjaus), sivuilla tärkeimmät näkymät ja "Lisää" (koko valikko).
-// Lomakkeella alavalikko piilotetaan, jotta Tallenna-painike mahtuu alareunaan.
+// Lomakkeella alavalikko pysyy näkyvissä, ja Tallenna/Peruuta-palkki asettuu sen yläpuolelle.
 // ---------------------------------------------------------------------------
 const FORM_ROUTE = /^#\/(kirjaa|kirjaukset\/[\w-]+\/muokkaa)$/;
 function renderTabbar(hash) {
   const bar = document.getElementById('tabbar');
-  const on = !!(state.me && hash && !FORM_ROUTE.test(hash) && hash !== '#/kirjaudu' && hash !== '#/salasana' && !state.me.user.mustChangePassword);
+  const on = !!(state.me && hash && hash !== '#/kirjaudu' && hash !== '#/salasana' && !state.me.user.mustChangePassword);
+  const onForm = on && FORM_ROUTE.test(hash);
   document.body.classList.toggle('has-tabbar', on);
+  document.body.classList.toggle('tabbar-form', onForm);
   bar.hidden = !on;
   if (!on) return;
   const p = state.me.permissions;
@@ -264,18 +266,49 @@ function renderTabbar(hash) {
   ].filter(Boolean).slice(0, 3);
   const more = h('button', { type: 'button', class: 'tab', 'aria-controls': 'nav', onclick: () => {
     const nav = document.getElementById('nav'); const open = nav.classList.toggle('open');
-    if (open) window.scrollTo({ top: 0, behavior: 'smooth' });
+    if (open) { document.getElementById('topbar').classList.remove('topbar-hidden'); window.scrollTo({ top: 0, behavior: 'smooth' }); }
     const t = document.getElementById('menuToggle'); t.setAttribute('aria-expanded', String(open));
     t.replaceChildren(icon(open ? 'close' : 'menu', 22), h('span', { class: 'sr-only' }, open ? 'Sulje valikko' : 'Valikko'));
   } }, icon('menu', 22), h('span', null, 'Lisää'));
-  const plus = p.record ? h('a', { href: '#/kirjaa', class: 'tab tab-plus', 'aria-label': 'Uusi kirjaus' }, h('span', { class: 'tab-plus-btn' }, icon('plus', 26)), h('span', null, 'Kirjaa')) : null;
+  // Lomakkeella plus-painikkeen tilalla on U-muotoinen kuoppa (muilla sivuilla plus nousee palkista ylös)
+  const plus = onForm ? h('span', { class: 'tab tab-notch', 'aria-hidden': 'true' })
+    : p.record ? h('a', { href: '#/kirjaa', class: 'tab tab-plus', 'aria-label': 'Uusi kirjaus' }, h('span', { class: 'tab-plus-btn' }, icon('plus', 26)), h('span', null, 'Kirjaa')) : null;
   // Viisi paikkaa: kaksi vasemmalle, plus keskelle, loput oikealle ja viimeisenä "Lisää"
   const left = candidates.slice(0, 2), right = candidates.slice(2);
   const slots = plus ? [...left, ...Array(2 - left.length).fill(null), plus, ...right, ...Array(1 - right.length).fill(null), more]
     : [...candidates, ...Array(3 - candidates.length).fill(null), more];
   bar.className = 'tabbar' + (plus ? '' : ' tabbar-4');
   bar.replaceChildren(...slots.map(x => x || h('span', { class: 'tab tab-empty', 'aria-hidden': 'true' })));
+  syncTabbarHeight();
 }
+// Alavalikon todellinen korkeus CSS-muuttujaan, jotta lomakkeen Tallenna-palkki asettuu tarkasti sen yläpuolelle
+function syncTabbarHeight() {
+  const bar = document.getElementById('tabbar');
+  if (bar && !bar.hidden && bar.offsetHeight) document.documentElement.style.setProperty('--tabbar-h', bar.offsetHeight + 'px');
+}
+window.addEventListener('resize', syncTabbarHeight);
+if ('ResizeObserver' in window) new ResizeObserver(syncTabbarHeight).observe(document.getElementById('tabbar'));
+
+// Mobiilissa yläpalkki piiloutuu alas vieritettäessä ja palaa, kun vieritetään ylös (lisää tilaa lomakkeelle)
+(() => {
+  const mq = window.matchMedia('(max-width: 1023px)');
+  let lastY = window.scrollY, ticking = false;
+  const update = () => {
+    ticking = false;
+    const bar = document.getElementById('topbar'); const y = Math.max(0, window.scrollY);
+    const navOpen = document.getElementById('nav').classList.contains('open');
+    if (!mq.matches || navOpen || y < (bar.offsetHeight || 60)) bar.classList.remove('topbar-hidden');
+    else if (y > lastY + 8) bar.classList.add('topbar-hidden');
+    else if (y < lastY - 8) bar.classList.remove('topbar-hidden');
+    else return;            // pieni liike: ei muutosta, verrataan seuraavalla kerralla samaan lähtökohtaan
+    lastY = y;
+  };
+  window.addEventListener('scroll', () => { if (!ticking) { ticking = true; requestAnimationFrame(update); } }, { passive: true });
+  // Näkymän vaihtuessa yläpalkki aina näkyviin
+  window.addEventListener('hashchange', () => { document.getElementById('topbar').classList.remove('topbar-hidden'); lastY = 0; });
+  // Kun kenttä saa fokuksen, se ei saa jäädä yläpalkin alle
+  document.addEventListener('focusin', () => { lastY = window.scrollY; });
+})();
 
 // Sovellusversio (PWA): service worker kotinäytön sovellusta ja yhteydettömän tilan ilmoitusta varten
 if ('serviceWorker' in navigator && location.protocol === 'https:') {

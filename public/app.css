@@ -271,7 +271,7 @@ input, select, textarea, .opt { scroll-margin: 90px 0 120px; }
 
   /* Tallenna-painike kiinteänä alapalkkina */
   .sticky-actions { position: fixed; left: 0; right: 0; bottom: 0; margin: 0; z-index: 20;
-    background: rgba(255,255,255,.97); border-top: 1px solid var(--line); box-shadow: 0 -4px 16px rgba(16,32,64,.08);
+    background: #fff; border-top: 1px solid var(--line); box-shadow: 0 -4px 16px rgba(16,32,64,.08);
     padding: .6rem max(.75rem, env(safe-area-inset-right)) calc(.6rem + env(safe-area-inset-bottom)) max(.75rem, env(safe-area-inset-left)); flex-wrap: nowrap; }
   .sticky-actions .btn { flex: 1; min-height: 50px; }
   .sticky-actions .btn-primary { flex: 2; }
@@ -615,7 +615,7 @@ details.info[open] > summary { background: var(--blue); color: #fff; }
   .project-cards .opt span > .opt-desc { padding-left: 0; }
   .date-row input[type=date] { max-width: none; flex: 1 1 100%; }
   .segmented .opt span { padding: .7rem .75rem; }
-  .sticky-actions { background: rgba(255,255,255,.98); }
+  .sticky-actions { background: #fff; }
 }
 @media (max-width: 380px) { .project-cards { grid-template-columns: 1fr; } }
 /* Kapeat näytöt: sarakkeet saavat kutistua, pitkät sanat tavutetaan */
@@ -764,7 +764,7 @@ svg .series.cmp { stroke: #8a8f96; stroke-width: 2; stroke-dasharray: 5 4; }
   body.has-tabbar .tabbar:not([hidden]) {
     display: grid; grid-template-columns: repeat(5, 1fr); align-items: end;
     position: fixed; left: 0; right: 0; bottom: 0; z-index: 40;
-    background: rgba(255,255,255,.98); border-top: 1px solid var(--line); box-shadow: 0 -4px 16px rgba(16,32,64,.06);
+    background: #fff; border-top: 1px solid var(--line); box-shadow: 0 -4px 16px rgba(16,32,64,.06);
     padding: .3rem max(.25rem, env(safe-area-inset-right)) calc(.3rem + env(safe-area-inset-bottom)) max(.25rem, env(safe-area-inset-left));
   }
   body.has-tabbar .tabbar.tabbar-4:not([hidden]) { grid-template-columns: repeat(4, 1fr); }
@@ -785,7 +785,24 @@ svg .series.cmp { stroke: #8a8f96; stroke-width: 2; stroke-dasharray: 5 4; }
   .tab-plus:active .tab-plus-btn { background: var(--blue-600); }
   /* Ylävalikko avautuu "Lisää"-painikkeesta; pidetään se näkyvissä vierityksen aikana */
   body.has-tabbar .nav.open { max-height: calc(100vh - 9rem); overflow-y: auto; }
+
+  /* Lomakkeella Tallenna/Peruuta-palkki on heti alavalikon yläpuolella; plus-painike on silloin matala */
+  :root { --tabbar-h: calc(52px + .6rem + 1px + env(safe-area-inset-bottom)); }
+  body.has-tabbar .sticky-actions { bottom: var(--tabbar-h); padding-bottom: .6rem; }
+  body.tabbar-form .sticky-actions { box-shadow: 0 -4px 14px rgba(16,32,64,.06); }
+  body.tabbar-form .tabbar { box-shadow: none; }
+  .tab-notch { position: relative; pointer-events: none; }
+  .tab-notch::before { content: ''; position: absolute; left: 50%; top: calc(-.3rem - 1px); transform: translateX(-50%);
+    width: 66px; height: 31px; background: var(--bg); border: 1px solid var(--line); border-top: 0; border-radius: 0 0 33px 33px;
+    box-shadow: inset 0 -4px 8px rgba(16,32,64,.06); }
+  body.tabbar-form .toast { bottom: calc(var(--tabbar-h) + 5rem); }
 }
+/* Mobiilissa yläpalkki liukuu piiloon alas vieritettäessä */
+@media (max-width: 1023px) {
+  .topbar { transition: transform .22s ease; }
+  .topbar.topbar-hidden { transform: translateY(calc(-100% + env(safe-area-inset-top))); }
+}
+@media (max-width: 1023px) and (prefers-reduced-motion: reduce) { .topbar { transition: none; } }
 /* Kotinäytöltä avattuna (sovellusversio) yläpalkki huomioi iPhonen loven */
 @media (display-mode: standalone) {
   .topbar { padding-top: env(safe-area-inset-top); }
