@@ -230,14 +230,37 @@ function renderNav(hash) {
     h('div', { class: 'nav-user' },
       h(u.authMethod === 'entra' ? 'div' : 'a', u.authMethod === 'entra' ? { class: 'who', title: 'Kirjautunut Microsoft-tunnuksella' } : { href: '#/salasana', class: 'who' + (hash === '#/salasana' ? ' active' : ''), title: 'Vaihda salasana' },
         h('span', { class: 'avatar', 'aria-hidden': 'true' }, initials), h('span', { class: 'who-text' }, h('strong', null, u.name), h('small', null, u.roleLabel))),
+      themeSwitch(),
       !isStandalone() ? h('a', { href: '#/sovellus', class: 'nav-logout' + (hash === '#/sovellus' ? ' active' : '') }, icon('phone'), h('span', null, 'Asenna puhelimeen')) : null,
       h('a', { href: '#/ilmoita', class: 'nav-logout' + (hash === '#/ilmoita' ? ' active' : '') }, icon('flag'), h('span', null, 'Ilmoita ongelmasta')),
       h('button', { type: 'button', class: 'nav-logout', onclick: logout }, icon('logout'), h('span', null, 'Kirjaudu ulos'))),
   ].filter(Boolean));
-  nav.classList.remove('open');
-  const t = document.getElementById('menuToggle');
-  t.setAttribute('aria-expanded', 'false'); t.replaceChildren(icon('menu', 22), h('span', { class: 'sr-only' }, 'Valikko'));
   renderTabbar(hash);
+  setNavOpen(false);
+}
+
+// Valikon avaus ja sulku (yläpalkin painike ja alavalikon "Lisää" näyttävät molemmat X:n, kun valikko on auki)
+function setNavOpen(open) {
+  const nav = document.getElementById('nav');
+  nav.classList.toggle('open', open);
+  document.body.classList.toggle('nav-open', open);
+  if (open) { document.getElementById('topbar').classList.remove('topbar-hidden'); window.scrollTo({ top: 0, behavior: 'smooth' }); }
+  const t = document.getElementById('menuToggle');
+  t.setAttribute('aria-expanded', String(open));
+  t.replaceChildren(icon(open ? 'close' : 'menu', 22), h('span', { class: 'sr-only' }, open ? 'Sulje valikko' : 'Valikko'));
+  const more = document.getElementById('tabMore');
+  if (more) { more.setAttribute('aria-expanded', String(open)); more.replaceChildren(icon(open ? 'close' : 'menu', 22), h('span', null, open ? 'Sulje' : 'Lisää')); }
+}
+
+// Teemavalinta (Automaattinen / Vaalea / Tumma); itse teeman asettaa theme.js
+function themeSwitch() {
+  if (!window.krTheme) return null;
+  const opts = [['auto', 'Auto'], ['light', 'Vaalea'], ['dark', 'Tumma']];
+  const wrap = h('div', { class: 'theme-switch', role: 'group', 'aria-label': 'Ulkoasu' });
+  const draw = () => wrap.replaceChildren(...opts.map(([v, label]) => h('button', { type: 'button', 'aria-pressed': String(window.krTheme.get() === v),
+    title: v === 'auto' ? 'Seuraa laitteen asetusta' : null, onclick: () => { window.krTheme.set(v); draw(); } }, label)));
+  draw();
+  return wrap;
 }
 
 // ---------------------------------------------------------------------------
@@ -264,12 +287,8 @@ function renderTabbar(hash) {
     p.staffScope !== 'none' ? item('#/tyontekijat', 'Työntekijät', 'users', '#/tyontekijat') : null,
     p.exportScope !== 'none' ? item('#/vienti', 'Excel', 'download') : null,
   ].filter(Boolean).slice(0, 3);
-  const more = h('button', { type: 'button', class: 'tab', 'aria-controls': 'nav', onclick: () => {
-    const nav = document.getElementById('nav'); const open = nav.classList.toggle('open');
-    if (open) { document.getElementById('topbar').classList.remove('topbar-hidden'); window.scrollTo({ top: 0, behavior: 'smooth' }); }
-    const t = document.getElementById('menuToggle'); t.setAttribute('aria-expanded', String(open));
-    t.replaceChildren(icon(open ? 'close' : 'menu', 22), h('span', { class: 'sr-only' }, open ? 'Sulje valikko' : 'Valikko'));
-  } }, icon('menu', 22), h('span', null, 'Lisää'));
+  const more = h('button', { type: 'button', id: 'tabMore', class: 'tab', 'aria-controls': 'nav', 'aria-expanded': 'false',
+    onclick: () => setNavOpen(!document.getElementById('nav').classList.contains('open')) }, icon('menu', 22), h('span', null, 'Lisää'));
   // Lomakkeella plus-painikkeen tilalla on U-muotoinen kuoppa (muilla sivuilla plus nousee palkista ylös)
   const plus = onForm ? h('span', { class: 'tab tab-notch', 'aria-hidden': 'true' })
     : p.record ? h('a', { href: '#/kirjaa', class: 'tab tab-plus', 'aria-label': 'Uusi kirjaus' }, h('span', { class: 'tab-plus-btn' }, icon('plus', 26)), h('span', null, 'Kirjaa')) : null;
@@ -317,11 +336,9 @@ if ('serviceWorker' in navigator && location.protocol === 'https:') {
 const isStandalone = () => window.matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
 let installPrompt = null;
 window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); installPrompt = e; });
-document.getElementById('menuToggle').addEventListener('click', (e) => {
-  const nav = document.getElementById('nav'); const open = nav.classList.toggle('open');
-  e.currentTarget.setAttribute('aria-expanded', open);
-  e.currentTarget.replaceChildren(icon(open ? 'close' : 'menu', 22), h('span', { class: 'sr-only' }, open ? 'Sulje valikko' : 'Valikko'));
-});
+document.getElementById('menuToggle').addEventListener('click', () => setNavOpen(!document.getElementById('nav').classList.contains('open')));
+// Esc sulkee valikon
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && document.getElementById('nav').classList.contains('open')) setNavOpen(false); });
 
 async function logout() {
   try { await api('/logout', { method: 'POST' }); } catch { /* ohitetaan */ }
