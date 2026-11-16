@@ -825,6 +825,20 @@ app.get('/api/paths', requireAuth, (req, res) => {
   res.json(clients.pathStats({ from: isDate(req.query.from) ? req.query.from : null, to: isDate(req.query.to) ? req.query.to : null, projectIds, projectId }));
 });
 
+// Toistuvat yksilöasiakkuudet (samat oikeudet kuin asiakaspoluilla). Vain koosteita.
+app.get('/api/recurring', requireAuth, (req, res) => {
+  if (!featureEnabled('paths')) return bad(res, 'Asiakaspolut eivät ole käytössä.', 404);
+  const s = scope(req.user, 'pathScope');
+  if (s === 'none') return bad(res, 'Ei oikeutta.', 403);
+  const projectIds = s === 'all' ? db.prepare('SELECT id FROM projects').all().map(r => r.id) : req.projectIds;
+  const projectId = req.query.project_id ? Number(req.query.project_id) : null;
+  if (projectId && !projectIds.includes(projectId)) return bad(res, 'Ei oikeutta.', 403);
+  const from = isDate(req.query.from) ? req.query.from : today().slice(0, 4) + '-01-01';
+  const to = isDate(req.query.to) ? req.query.to : today();
+  if (from > to) return bad(res, 'Tarkista aikaväli.');
+  res.json({ from, to, ...clients.recurringStats({ from, to, projectIds, projectId }) });
+});
+
 // Kytkettävät toiminnot (vain admin)
 app.get('/api/features', requireAuth, requirePerm('manageUsers'), (req, res) => {
   res.json({ features: Object.entries(FEATURES).map(([key, f]) => ({ key, label: f.label, description: f.description, enabled: featureEnabled(key) })) });

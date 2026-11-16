@@ -417,6 +417,26 @@ test('asiakaspolut: koosteet adminille ja tiiminvetäjälle, ei muille; Excel il
   assert.equal(leak, false);
 });
 
+test('toistuvat asiakkuudet: vähintään 2 kohtaamista aikavälillä, tuki ja hyödyt asiakastasolla', async () => {
+  const p = P();
+  const a = users.admin;
+  const pay = (mode, answers) => basePayload(p.VOLJY, { client_mode: mode, client_ref: 'Toistuva Testi 5',
+    answers: { ...basePayload(p.VOLJY).answers, voljy_toimintamuoto: 'Kohtaamispaikan toiminta', ...answers } });
+  let r = await a('POST', '/encounters', pay('new', { tuki_ja_apu: ['Keskustelu tai kuuntelu', 'Palveluohjaus'] }));
+  assert.equal(r.status, 201, JSON.stringify(r.data));
+  r = await a('POST', '/encounters', pay('existing', { tuki_ja_apu: ['Palveluohjaus'], myonteiset_seuraukset: ['Asiakas löysi keinoja tilanteensa käsittelyyn'] }));
+  assert.equal(r.status, 201, JSON.stringify(r.data));
+  const s = await a('GET', `/recurring?from=${today}&to=${today}&project_id=${p.VOLJY}`);
+  assert.equal(s.status, 200, JSON.stringify(s.data));
+  assert.equal(s.data.clients, 1); assert.equal(s.data.encounters, 2); assert.equal(s.data.median_days, 0);
+  assert.equal(s.data.countBuckets[0].value, 1);
+  const pk = s.data.support.items.find(i => i.label === 'Palveluohjaus');
+  assert.equal(pk.clients, 1, 'asiakas lasketaan kerran, vaikka tuki kirjattiin kahdesti'); assert.equal(pk.share, 1);
+  assert.equal(s.data.benefits.answered, 1);
+  assert.equal((await users.hanketyontekija('GET', '/recurring')).status, 403);
+  assert.equal((await a('GET', '/recurring?from=2026-02-01&to=2026-01-01')).status, 400);
+});
+
 test('säilytysaika katkaisee vanhan linkityksen', async () => {
   const clients = require('../src/clients');
   const p = P();
@@ -537,7 +557,7 @@ test('tilastot: koosteet, rajaukset, vertailujakso ja oikeudet', async () => {
   assert.equal((await users.hanketyontekija('GET', `/dashboard?from=2020-01-01&to=${today}&project_id=${P().JALMA}`)).status, 200);
   assert.equal((await users.tuntityontekija('GET', '/dashboard')).status !== 200, true);
   // Ei tunnisteita tai vapaatekstejä
-  assert.ok(!/revontuli|Keskustelu|Hyvä keskustelu/i.test(JSON.stringify(a.data)));
+  assert.ok(!/revontuli|Keskustelu(?! tai kuuntelu)|Hyvä keskustelu/i.test(JSON.stringify(a.data)));
 });
 
 test('täydennysehdotukset: kunnat ja aiemmin kirjatut, kadut kaupungin mukaan, yksittäinen toisen arvo ei näy', async () => {

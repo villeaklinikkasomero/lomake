@@ -3,3 +3,4 @@ data/
 .env
 test-results/
 playwright-report/
+Claude outputs/

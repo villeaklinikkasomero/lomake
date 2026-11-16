@@ -338,7 +338,62 @@ function pathStats({ from, to, projectIds, projectId }) {
   };
 }
 
+// Toistuvat yksilöasiakkuudet: asiakkaat, joilla on vähintään 2 kohtaamista valitulla aikavälillä.
+// Vain koosteita (ei yksittäisiä asiakkaita). Kesto = ensimmäisestä viimeiseen kohtaamiseen aikavälillä.
+function recurringStats({ from, to, projectIds, projectId }) {
+  const ph = projectIds.map(() => '?').join(',') || 'NULL';
+  const where = ['e.deleted_at IS NULL', `e.project_id IN (${ph})`, 'e.client_id IS NOT NULL', 'e.encounter_date >= ?', 'e.encounter_date <= ?'];
+  const p = [...projectIds, from, to];
+  if (projectId) { where.push('e.project_id = ?'); p.push(projectId); }
+  const W = where.join(' AND ');
+  const per = db.prepare(`SELECT e.client_id id, COUNT(*) n, julianday(MAX(e.encounter_date)) - julianday(MIN(e.encounter_date)) days
+                          FROM encounters e WHERE ${W} GROUP BY e.client_id`).all(...p);
+  const rec = per.filter(c => c.n >= 2);
+  const recIds = new Set(rec.map(c => c.id));
+  const encounters = rec.reduce((a, c) => a + c.n, 0);
+  const sortedDays = rec.map(c => c.days).sort((a, b) => a - b);
+  const median = sortedDays.length ? (sortedDays.length % 2 ? sortedDays[(sortedDays.length - 1) / 2]
+    : (sortedDays[sortedDays.length / 2 - 1] + sortedDays[sortedDays.length / 2]) / 2) : null;
+  const countBuckets = [['2', 2, 2], ['3–4', 3, 4], ['5–9', 5, 9], ['10+', 10, Infinity]]
+    .map(([label, lo, hi]) => ({ label, value: rec.filter(c => c.n >= lo && c.n <= hi).length }));
+  const durationBuckets = [['Alle 30 pv', 0, 29], ['30–89 pv', 30, 89], ['90–179 pv', 90, 179], ['180–364 pv', 180, 364], ['≥ 365 pv', 365, Infinity]]
+    .map(([label, lo, hi]) => ({ label, value: rec.filter(c => c.days >= lo && c.days <= hi).length }));
+
+  // Monivalintakysymyksen vastaukset asiakastasolla: osuus toistuvista asiakkaista, joiden jossakin
+  // aikavälin kohtaamisessa vaihtoehto valittiin. Nimittäjä = asiakkaat, joiden kohtaamisissa kysymykseen vastattiin.
+  const optionShares = (key) => {
+    const q = db.prepare('SELECT id, label, options FROM questions WHERE key = ?').get(key);
+    if (!q) return null;
+    const rows = db.prepare(`SELECT e.client_id cid, a.value FROM encounters e JOIN encounter_answers a ON a.encounter_id = e.id AND a.question_id = ?
+                             WHERE ${W}`).all(q.id, ...p);
+    const byClient = new Map();
+    for (const r of rows) {
+      if (!recIds.has(r.cid)) continue;
+      let v; try { v = JSON.parse(r.value); } catch { v = r.value; }
+      const set = byClient.get(r.cid) || new Set();
+      for (const o of Array.isArray(v) ? v : [v]) if (o != null && o !== '') set.add(String(o));
+      byClient.set(r.cid, set);
+    }
+    const counts = new Map();
+    for (const set of byClient.values()) for (const o of set) counts.set(o, (counts.get(o) || 0) + 1);
+    let order = []; try { order = JSON.parse(q.options || '[]'); } catch { /* ohitetaan */ }
+    const labels = [...new Set([...order.map(String), ...counts.keys()])];
+    const answered = byClient.size;
+    return { label: q.label, answered, items: labels.map(label => ({ label, clients: counts.get(label) || 0, share: answered ? (counts.get(label) || 0) / answered : 0 }))
+      .filter(i => i.clients > 0).sort((a, b) => b.clients - a.clients) };
+  };
+
+  return {
+    enabled: ENABLED,
+    clients: rec.length, identified: per.length, encounters,
+    avg: rec.length ? encounters / rec.length : null, median_days: median,
+    countBuckets, durationBuckets,
+    support: optionShares('tuki_ja_apu'), benefits: optionShares('myonteiset_seuraukset'),
+  };
+}
+
 module.exports = {
+  recurringStats,
   ENABLED, RETENTION_MONTHS, normalize, hashRef, validateRef, findClient, generateUniqueCode, clientSummary,
   prepareClientPart, applyClientPart, migratePlaintextPseudonyms, applyRetention, pathStats,
 };

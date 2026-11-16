@@ -136,6 +136,7 @@ const ROUTES = [
   { re: /^#\/vienti$/, view: viewExport, perm: (p) => p.exportScope !== 'none' },
   { re: /^#\/tyontekijat$/, view: viewStaff, perm: (p) => p.staffScope !== 'none' },
   { re: /^#\/asiakaspolut$/, view: viewPaths, perm: (p) => p.pathScope !== 'none' },
+  { re: /^#\/toistuvat$/, view: viewRecurring, perm: (p) => p.pathScope !== 'none' },
   { re: /^#\/tilastot$/, view: viewDashboard, perm: (p) => p.dashScope !== 'none' },
   { re: /^#\/hallinta\/ohjauspalvelut$/, view: viewServices, perm: (p) => p.manageQuestions },
   { re: /^#\/tyontekijat\/(\d+)$/, view: viewStaffDetail, perm: (p) => p.staffScope !== 'none' },
@@ -186,6 +187,7 @@ const ICONS = {
   chart: 'M4 20V10M10 20V4M16 20v-7M22 20H2',
   list: 'M8 6h13M8 12h13M8 18h13M3.5 6h.01M3.5 12h.01M3.5 18h.01',
   users: 'M16 20v-1.5a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4V20M9 10.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7zM22 20v-1.5a4 4 0 0 0-3-3.87M16 3.63a3.5 3.5 0 0 1 0 6.75',
+  repeat: 'M17 2l4 4-4 4M3 11V9a3 3 0 0 1 3-3h15M7 22l-4-4 4-4M21 13v2a3 3 0 0 1-3 3H3',
   route: 'M6 19a2 2 0 1 0 0-4 2 2 0 0 0 0 4zM18 9a2 2 0 1 0 0-4 2 2 0 0 0 0 4zM6 15V9a4 4 0 0 1 4-4h6M18 9v6a4 4 0 0 1-4 4H8',
   download: 'M12 3v12M7 10l5 5 5-5M4 21h16',
   settings: 'M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12M20 18h0M14 4v4M8 10v4M16 16v4',
@@ -224,6 +226,7 @@ function renderNav(hash) {
       p.dashScope !== 'none' ? link('#/tilastot', 'Tilastot', 'chart') : null,
       p.staffScope !== 'none' ? link('#/tyontekijat', 'Työntekijät', 'users', '#/tyontekijat') : null,
       p.pathScope !== 'none' ? link('#/asiakaspolut', 'Asiakaspolut', 'route') : null,
+      p.pathScope !== 'none' ? link('#/toistuvat', 'Toistuvat asiakkaat', 'repeat') : null,
       p.exportScope !== 'none' ? link('#/vienti', 'Excel-vienti', 'download') : null,
     ]),
     group('Ylläpito', [adminHome(p) ? link(adminHome(p), 'Hallinta', 'settings', '#/hallinta') : null]),
@@ -277,13 +280,13 @@ function renderTabbar(hash) {
   bar.hidden = !on;
   if (!on) return;
   const p = state.me.permissions;
-  const item = (href, label, ic, prefix) => {
-    const active = hash === href || (prefix && hash.startsWith(prefix));
+  const item = (href, label, ic, prefix, also = []) => {
+    const active = hash === href || (prefix && hash.startsWith(prefix)) || also.includes(hash);
     return h('a', { href, class: 'tab' + (active ? ' active' : ''), 'aria-current': active ? 'page' : null }, icon(ic, 22), h('span', null, label));
   };
   const candidates = [
     p.viewScope !== 'none' ? item('#/kirjaukset', p.viewScope === 'own' ? 'Omat' : 'Kirjaukset', 'list', '#/kirjaukset') : null,
-    p.dashScope !== 'none' ? item('#/tilastot', 'Tilastot', 'chart') : null,
+    p.dashScope !== 'none' ? item('#/tilastot', 'Tilastot', 'chart', null, ['#/toistuvat']) : null,
     p.staffScope !== 'none' ? item('#/tyontekijat', 'Työntekijät', 'users', '#/tyontekijat') : null,
     p.exportScope !== 'none' ? item('#/vienti', 'Excel', 'download') : null,
   ].filter(Boolean).slice(0, 3);
@@ -327,6 +330,34 @@ if ('ResizeObserver' in window) new ResizeObserver(syncTabbarHeight).observe(doc
   window.addEventListener('hashchange', () => { document.getElementById('topbar').classList.remove('topbar-hidden'); lastY = 0; });
   // Kun kenttä saa fokuksen, se ei saa jäädä yläpalkin alle
   document.addEventListener('focusin', () => { lastY = window.scrollY; });
+})();
+
+// Tuntopalaute alavalikon painikkeille. Android: värinä (navigator.vibrate). iPhone (iOS 18+): Safari ei tue
+// värinä-rajapintaa, mutta järjestelmän kytkinkentän (<input type=checkbox switch>) vaihtaminen antaa lyhyen
+// tuntopalautteen; vanhemmissa iOS-versioissa painallus vain ei värise.
+const haptic = (() => {
+  let label = null;
+  return () => {
+    try { if (navigator.vibrate && navigator.vibrate(10)) return; } catch { /* ohitetaan */ }
+    if (!/iPhone|iPad/.test(navigator.userAgent)) return;
+    if (!label) {
+      const input = h('input', { type: 'checkbox', id: 'hapticSwitch', tabindex: '-1', 'aria-hidden': 'true' });
+      input.setAttribute('switch', '');
+      label = h('label', { for: 'hapticSwitch', class: 'haptic-switch', 'aria-hidden': 'true' }, input);
+      document.body.append(label);
+    }
+    label.click();
+  };
+})();
+(() => {
+  const bar = document.getElementById('tabbar');
+  const tabOf = (e) => e.target.closest('.tab:not(.tab-empty):not(.tab-notch)');
+  // Painalluksen korostus heti kosketuksesta (iOS ei näytä :active-tilaa ilman kosketuskuuntelijaa)
+  bar.addEventListener('touchstart', (e) => { const t = tabOf(e); if (t) t.classList.add('pressed'); }, { passive: true });
+  const clear = () => bar.querySelectorAll('.tab.pressed').forEach(t => t.classList.remove('pressed'));
+  bar.addEventListener('touchend', () => setTimeout(clear, 120), { passive: true });
+  bar.addEventListener('touchcancel', clear, { passive: true });
+  bar.addEventListener('click', (e) => { if (tabOf(e)) haptic(); });
 })();
 
 // Sovellusversio (PWA): service worker kotinäytön sovellusta ja yhteydettömän tilan ilmoitusta varten
@@ -1277,7 +1308,7 @@ function staffFilterBar(onChange, st = staffState) {
     h('div', { class: 'field' }, h('label', { for: 's-to' }, 'Päättyen'), toEl),
     (() => {
       // Työntekijät-näkymässä kaikki hankkeet (säätiöläisten luvut kaikista hankkeista), asiakaspoluissa omat
-      const list = st !== pathState && (state.me.staffProjects || []).length ? state.me.staffProjects : state.me.projects;
+      const list = st !== pathState && st !== recState && (state.me.staffProjects || []).length ? state.me.staffProjects : state.me.projects;
       return list.length > 1 ? h('div', { class: 'field' }, h('label', { for: 's-proj' }, 'Hanke'),
         f('project_id', h('select', { id: 's-proj' }, h('option', { value: '' }, 'Kaikki hankkeet'), list.map(x => h('option', { value: x.id }, x.name))))) : null;
     })()),
@@ -1451,12 +1482,12 @@ function niceStep(max) { const raw = max / 4; const p = 10 ** Math.floor(Math.lo
 function hBars(items, opts = {}) {
   const max = Math.max(1, ...items.map(i => i.value));
   // opts.onPick: rivit ovat painikkeita (esim. paikkakunnan valinta rajaukseksi)
-  return h('div', { class: 'hbars' + (opts.compact ? ' compact' : '') + (opts.onPick ? ' pickable' : '') }, items.map(i => h(opts.onPick ? 'button' : 'div', {
+  return h('div', { class: 'hbars' + (opts.compact ? ' compact' : '') + (opts.onPick ? ' pickable' : '') + (opts.tone ? ' tone-' + opts.tone : '') }, items.map(i => h(opts.onPick ? 'button' : 'div', {
     class: 'hbar' + (i.active ? ' active' : ''), type: opts.onPick ? 'button' : null, 'aria-pressed': opts.onPick ? String(!!i.active) : null,
     onclick: opts.onPick ? () => opts.onPick(i) : null, title: `${i.label}: ${fmtNum(i.value)}${opts.unit ? ' ' + opts.unit : ''}` },
     h('div', { class: 'hbar-label' }, i.label),
     h('div', { class: 'hbar-track' }, i.value > 0 ? (() => { const el = h('div', { class: 'hbar-fill' }); el.style.width = `${(i.value / max) * 100}%`; return el; })() : null),
-    h('div', { class: 'hbar-value' }, fmtNum(i.value)))));
+    h('div', { class: 'hbar-value' }, opts.format ? opts.format(i) : fmtNum(i.value)))));
 }
 
 // ---------------------------------------------------------------------------
@@ -1594,7 +1625,8 @@ async function viewDashboard() {
         infoTip('Yksilökohtaamisissa tehdyt palveluohjaukset. Toteutumisaste = toteutuneet / (toteutuneet + ei toteutuneet).')),
       h('p', { class: 'kpi-value small-kpi' }, fmtNum(d.referrals.total)), h('p', { class: 'muted small' }, 'ohjausta'),
       h('p', null, h('strong', null, fmtPct(d.referrals.rate)), ' toteutumisaste', h('span', { class: 'muted' }, ` · ${fmtNum(d.referrals.toteutui)} toteutui, ${fmtNum(d.referrals.ei_toteutunut)} ei, ${fmtNum(d.referrals.avoin)} avoinna`)),
-      p.pathScope !== 'none' ? h('a', { href: '#/asiakaspolut' }, 'Asiakaspolut ja ohjaukset palveluittain →') : null) : null;
+      p.pathScope !== 'none' ? h('a', { href: '#/asiakaspolut' }, 'Asiakaspolut ja ohjaukset palveluittain →') : null,
+      p.pathScope !== 'none' ? h('a', { href: '#/toistuvat' }, ' · Toistuvat asiakkuudet →') : null) : null;
     body.replaceChildren(...[
       !T.rows ? h('div', { class: 'notice info' }, 'Valituilla rajauksilla ei ole kirjauksia.') : null,
       h('div', { class: 'dash-row r1' }, kpi1, kpi2, donutCard),
@@ -1643,6 +1675,7 @@ async function viewDashboard() {
   }
 
   $app.replaceChildren(
+    statsTabs('#/tilastot'),
     h('div', { class: 'page-head dash-head' }, h('div', null, h('h1', null, 'Kohtaamisten raportointi'), h('p', { class: 'muted' }, 'A-klinikkasäätiö')), updated),
     filterBox, body);
   body.replaceChildren(h('div', { class: 'loading' }, 'Ladataan…'));
@@ -1794,6 +1827,87 @@ async function viewPaths() {
     h('div', { class: 'page-head' }, h('div', null, h('h1', null, 'Asiakaspolut'),
       h('p', { class: 'muted' }, 'Hankekohtaisesti tunnistettujen asiakkaiden palaaminen ja palveluohjausten toteutuminen. Kaikki luvut ovat koosteita, eikä yksittäisiä asiakkaita näytetä.'))),
     staffFilterBar(load, pathState), box);
+  await load();
+}
+
+// ---------------------------------------------------------------------------
+// Toistuvat yksilöasiakkuudet: asiakkaat, joilla on vähintään 2 kohtaamista valitulla aikavälillä.
+// Näyttää, kuinka paljon työtä asiakkaan kiinnittyminen tukeen ja palveluihin vaatii. Vain koosteita.
+// ---------------------------------------------------------------------------
+const recState = { from: '', to: '', project_id: '' };
+// Välilehdet Tilastot / Toistuvat asiakkaat (alavalikon Tilastot-kohdan alla), kun molemmat ovat käytössä
+function statsTabs(active) {
+  const p = state.me.permissions;
+  if (p.dashScope === 'none' || p.pathScope === 'none') return null;
+  const t = (href, text) => h('a', { href, class: active === href ? 'active' : null, 'aria-current': active === href ? 'page' : null }, text);
+  return h('nav', { class: 'tabs stats-tabs', 'aria-label': 'Tilastot' }, t('#/tilastot', 'Tilastot'), t('#/toistuvat', 'Toistuvat asiakkaat'));
+}
+// Lyhyet nimet kaavioon (koko vaihtoehto näkyy vietäessä hiiren alle)
+const SHORT_LABELS = {
+  'Asiakas sai tietoa tai ymmärrystä tilanteestaan': 'Sai tietoa tai ymmärrystä tilanteestaan',
+  'Asiakas koki tulleensa kuulluksi tai saaneensa tukea': 'Koki tulleensa kuulluksi / sai tukea',
+  'Asiakkaan motivaatio tai valmius muutokseen vahvistui': 'Motivaatio muutokseen vahvistui',
+  'Asiakas löysi keinoja tilanteensa käsittelyyn': 'Löysi keinoja tilanteensa käsittelyyn',
+  'Asiakkaan hakeutuminen palveluihin tai tuen piiriin edistyi': 'Hakeutuminen palveluihin edistyi',
+  'Asiakkaan elämäntilanteeseen liittyvä konkreettinen asia eteni tai ratkesi': 'Konkreettinen asia eteni tai ratkesi',
+  'Asiakkaan turvallisuus tai haittojen ehkäisy vahvistui': 'Turvallisuus tai haittojen ehkäisy vahvistui',
+  'Konkreettinen apu (esim. ruoka, vaatteet, hygienia)': 'Konkreettinen apu',
+};
+// Pystypylväät (asiakkaat kohtaamiskertojen mukaan)
+function vBars(items, opts = {}) {
+  const max = Math.max(1, ...items.map(i => i.value));
+  return h('div', { class: 'vbars-wrap' },
+    h('div', { class: 'vbars', role: 'img', 'aria-label': items.map(i => `${i.label}: ${fmtNum(i.value)}`).join(', ') },
+      items.map(i => h('div', { class: 'vbar' },
+        h('div', { class: 'vbar-col' }, h('span', { class: 'vbar-value' }, fmtNum(i.value)),
+          (() => { const el = h('div', { class: 'vbar-fill' }); el.style.height = `${Math.max(i.value ? 2 : 0, (i.value / max) * 85)}%`; return el; })()),
+        h('span', { class: 'vbar-label' }, i.label)))),
+    opts.xTitle ? h('p', { class: 'vbars-x muted small' }, opts.xTitle) : null);
+}
+function shareCard(title, sub, data, tone, emptyText) {
+  const body = [];
+  if (!data || !data.answered) body.push(h('p', { class: 'muted' }, emptyText));
+  else {
+    const items = data.items.map(i => ({ label: SHORT_LABELS[i.label] || i.label, full: i.label, value: Math.round(i.share * 1000) / 10, share: i.share }));
+    const bars = (list) => hBars(list, { tone, format: (i) => fmtPct(i.share) });
+    body.push(bars(items.slice(0, 5)));
+    if (items.length > 5) body.push(h('details', { class: 'more-bars' }, h('summary', null, `Näytä loput (${items.length - 5})`), bars(items.slice(5))));
+    body.push(h('p', { class: 'help small' }, `Osuus niistä ${fmtNum(data.answered)} toistuvasta asiakkaasta, joiden kohtaamisiin kysymykseen vastattiin. Asiakas lasketaan kerran, vaikka sama asia kirjattaisiin useammin.`));
+  }
+  return h('div', { class: 'card' }, h('h2', null, title), h('p', { class: 'muted small card-sub' }, sub), ...body);
+}
+async function viewRecurring() {
+  const box = h('div');
+  async function load() {
+    box.replaceChildren(h('div', { class: 'loading' }, 'Ladataan…'));
+    const q = new URLSearchParams(); for (const k of ['from', 'to', 'project_id']) if (recState[k]) q.set(k, recState[k]);
+    let d; try { d = await api('/recurring?' + q); } catch (ex) { box.replaceChildren(h('div', { class: 'notice err' }, ex.message)); return; }
+    const tile = (v, label, sub) => h('div', { class: 'stat' }, h('b', null, v), h('span', null, label), sub ? h('small', null, sub) : null);
+    const pct = (n) => (d.clients ? ` (${Math.round((n / d.clients) * 100)}\u00a0%)` : '');
+    box.replaceChildren(...[
+      !d.enabled ? h('div', { class: 'notice warn' }, 'Asiakastunnisteet eivät ole käytössä, joten toistuvia asiakkaita ei voi tunnistaa.') : null,
+      h('div', { class: 'stats stats-grid' },
+        tile(fmtNum(d.clients), 'toistuvaa asiakasta', `≥ 2 kohtaamista · ${fmtNum(d.identified)} tunnistettua asiakasta yhteensä`),
+        tile(fmtNum(d.encounters), 'kohtaamista', 'toistuvien asiakkaiden kanssa'),
+        tile(d.avg == null ? '–' : d.avg.toLocaleString('fi-FI', { maximumFractionDigits: 1 }), 'kohtaamista / asiakas', 'keskiarvo'),
+        tile(d.median_days == null ? '–' : `${fmtNum(Math.round(d.median_days))}\u00a0pv`, 'kohtaamisjakson mediaanikesto', 'ensimmäisestä viimeiseen')),
+      d.clients ? h('div', { class: 'grid-2' },
+        h('div', { class: 'card' }, h('h2', null, 'Asiakkaat kohtaamiskertojen mukaan'), vBars(d.countBuckets, { xTitle: 'Kohtaamisia asiakasta kohden' })),
+        h('div', { class: 'card' }, h('h2', null, 'Kohtaamisjakson kesto'),
+          hBars(d.durationBuckets, { tone: 'purple', format: (i) => `${fmtNum(i.value)}${pct(i.value)}` }),
+          h('p', { class: 'help small' }, 'Ensimmäisestä viimeiseen kohtaamiseen valitulla aikavälillä.'))) : h('div', { class: 'card' }, h('p', { class: 'muted' }, 'Valitulla aikavälillä ei ole asiakkaita, joilla olisi vähintään kaksi kohtaamista.')),
+      d.clients ? h('div', { class: 'grid-2' },
+        shareCard('Annettu tuki tai apu', 'Osuus toistuvista asiakkaista, joille tuki kirjattiin', d.support, 'blue',
+          'Kysymykseen ”Mitä tukea tai apua kohtaamisessa annettiin?” ei ole vielä vastauksia toistuvien asiakkaiden kohtaamisissa.'),
+        shareCard('Arvioidut hyödyt', 'Osuus toistuvista asiakkaista, joille hyöty kirjattiin', d.benefits, 'green',
+          'Myönteisiä seurauksia ei ole kirjattu toistuvien asiakkaiden kohtaamisissa.')) : null,
+    ].filter(Boolean));
+  }
+  $app.replaceChildren(
+    statsTabs('#/toistuvat'),
+    h('div', { class: 'page-head' }, h('div', null, h('h1', null, 'Toistuvat asiakkuudet'),
+      h('p', { class: 'muted' }, 'Yksilöasiakkaat, joilla on vähintään kaksi kohtaamista valitulla aikavälillä samassa hankkeessa. Näkymä kertoo, kuinka paljon työtä asiakkaan tukeminen ja kiinnittyminen palveluihin vaatii. Kaikki luvut ovat koosteita.'))),
+    staffFilterBar(load, recState), box);
   await load();
 }
 

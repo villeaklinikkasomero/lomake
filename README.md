@@ -172,6 +172,8 @@ Näkyvyys roolin mukaan:
 
 **Asiakaspolut-sivu** (admin ja tiiminvetäjä; oletuksena piilotettu – admin aktivoi kohdassa Hallinta → Toiminnot, jolloin näkymä ja valikkolinkki tulevat näkyviin): tunnistetut, uudet ja palaavat asiakkaat, tunnisteen käyttöaste, ohjaukset palveluittain, toteutumisaste, mediaaniaika toteutumiseen ja kohtaamiset asiakasta kohden. Kaikki luvut ovat koosteita, eikä hankkeiden välisiä lukuja ole.
 
+**Toistuvat asiakkuudet -sivu** (samat oikeudet ja sama käyttöönotto kuin Asiakaspoluilla): yksilöasiakkaat, joilla on vähintään kaksi kohtaamista valitulla aikavälillä samassa hankkeessa. Suodattimina aikaväli ja hanke. Näkyvät toistuvien asiakkaiden ja heidän kohtaamistensa määrä, kohtaamiset asiakasta kohden, kohtaamisjakson mediaanikesto (ensimmäisestä viimeiseen), asiakkaat kohtaamiskertojen ja jakson keston mukaan sekä annettu tuki tai apu ja arvioidut hyödyt. Tuki ja hyödyt lasketaan asiakastasolla: osuus niistä toistuvista asiakkaista, joiden kohtaamisiin kysymykseen vastattiin, ja asiakas lasketaan kerran. Tuki tulee yhteisestä kysymyksestä *Mitä tukea tai apua kohtaamisessa annettiin?* ja hyödyt kysymyksestä *Mitä myönteisiä seurauksia kohtaamisella arvioit olevan asiakkaalle?* (molemmat yksilökohtaamisissa, eivät pakollisia).
+
 **Suojaus:**
 - Kantaan tallennetaan vain `HMAC-SHA256(PSEUDONYM_KEY, hanke + vakioitu tunniste)`. Avain on vain palvelimen ympäristömuuttujassa.
 - Tunniste ei näy kirjauksissa, raporteissa, tapahtumalokissa eikä Excel-viennissä.
@@ -194,25 +196,6 @@ Viennissä valitaan aikaväli ja hankkeet (yksi, useita tai kaikki). Jokainen ta
 ## Tietomalli (Sammio-siirtoa varten)
 
 `users`, `projects`, `user_projects`, `questions`, `encounters` (yksi rivi = yksi tallennus), `encounter_answers` (vastaukset rivimuodossa: encounter_id, question_id, value) ja `audit_log`. Uudet kysymykset eivät vaadi skeemamuutoksia. Power BI voi lukea `encounters`- ja `encounter_answers`-tauluja suoraan tai niistä tehtyä pivot-näkymää. Poistot ovat pehmeitä (`deleted_at`).
-
-## Testit
-
-**Rajapintatestit** (`test/`, Noden oma testityökalu `node --test`) tarkistavat roolit, oikeudet, validoinnin ja kirjautumisen suoraan API:a vasten:
-
-```bash
-npm test
-```
-
-**Selaintestit eli E2E-testit** (`e2e/`, [Playwright](https://playwright.dev)) käyttävät sovellusta oikeassa selaimessa kuten käyttäjä: kirjautuminen, kirjauksen tallennus, pakolliset kentät ja henkilötunnuksen esto. Jokainen testi ajetaan sekä työpöytä- että mobiilikoossa.
-
-```bash
-npx playwright install chromium   # kerran: lataa testiselaimen
-npm run test:e2e                  # aja testit
-npm run test:e2e:ui               # avaa Playwrightin käyttöliittymä (testien seuraaminen ja vianetsintä)
-npx playwright show-report        # näytä edellisen ajon raportti
-```
-
-Playwright käynnistää sovelluksen itse (`e2e/server.js`) porttiin 3100 omalla väliaikaisella tietokannalla, joten testit eivät koske kehitys- tai tuotantodataan. Testikäyttäjät ovat tiedostossa `e2e/users.js`.
 
 ## Ennen tuotantoa
 

@@ -115,7 +115,7 @@ function generateDemoPayloads(count, seed = Date.now()) {
           // Muut (myös myöhemmin lisätyt hankekohtaiset) kysymykset tyypin mukaan
           if (!q.required && chance(0.2)) { v = null; break; }
           if (q.type === 'choice') v = pick(q.options);
-          else if (q.type === 'multichoice') v = q.options.filter(() => chance(0.4)).slice(0, 3);
+          else if (q.type === 'multichoice') { v = q.options.filter(() => chance(0.4)).slice(0, 3); if (!v.length && q.required) v = [pick(q.options)]; }
           else if (q.type === 'rating') v = String(int(2, 5));
           else if (q.type === 'number') v = String(int(1, 20));
           else if (q.type === 'date') v = payload.encounter_date;

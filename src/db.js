@@ -505,6 +505,17 @@ once('kysymykset_2027', () => {
     options: ['Häätö ehkäistiin', 'Vuokrasuhde säilyi / asuminen turvattiin', 'Uusi asumisratkaisu löytyi', 'Ei vielä varmistunutta tulosta'] });
 });
 
+// Yhteinen kysymys: annettu tuki tai apu (yksilökohtaamiset). Käytetään mm. Toistuvat asiakkuudet -näkymässä.
+const TUKI_JA_APU_OPTIONS = ['Keskustelu tai kuuntelu', 'Neuvonta tai tiedon antaminen', 'Psykososiaalinen tuki', 'Päihdeneuvonta', 'Mielenterveysneuvonta',
+  'Haittoja vähentävä tuki tai terveysneuvonta', 'Sosiaalineuvonta tai etuusasiat', 'Palveluohjaus', 'Saatto tai tuettu asiointi',
+  'Konkreettinen apu (esim. ruoka, vaatteet, hygienia)', 'Vertaistuki', 'Muu tuki'];
+once('kysymys_tuki_ja_apu', () => {
+  if (db.prepare("SELECT 1 FROM questions WHERE key = 'tuki_ja_apu'").get()) return;
+  db.prepare(`INSERT INTO questions (key, project_id, label, help, type, options, required, applies_to, applies, show_if, min_value, free_text_warning, sort)
+              VALUES ('tuki_ja_apu', NULL, ?, ?, 'multichoice', ?, 0, 'kaikki', ?, NULL, NULL, 0, 24)`)
+    .run('Mitä tukea tai apua kohtaamisessa annettiin?', 'Valitse kaikki, jotka toteutuivat.', JSON.stringify(TUKI_JA_APU_OPTIONS), JSON.stringify(['yksilo']));
+});
+
 // Yhteisten kysymysten näkyvyys määrittelytaulukon mukaan: tavoittamisessa ei kysytä kohtaamiskohtaisia tietoja
 once('yhteiset_2027_nakyvyys', () => {
   db.prepare(`UPDATE questions SET applies = '["yksilo","ryhma"]' WHERE applies IS NULL AND project_id IS NULL
