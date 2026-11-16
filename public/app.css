@@ -904,3 +904,5 @@ svg .series.cmp { stroke: var(--cmp, #8a8f96); stroke-width: 2; stroke-dasharray
   .stats-tabs { flex-wrap: nowrap; gap: 0; margin: -.25rem 0 .9rem; }
   .stats-tabs a { flex: 1; text-align: center; padding: .7rem .4rem; }
 }
+/* Asennusohje koskee puhelinta ja tablettia; tietokoneen sivupalkissa sitä ei näytetä */
+@media (min-width: 1024px) { .nav-install { display: none; } }

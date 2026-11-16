@@ -136,7 +136,7 @@ const ROUTES = [
   { re: /^#\/vienti$/, view: viewExport, perm: (p) => p.exportScope !== 'none' },
   { re: /^#\/tyontekijat$/, view: viewStaff, perm: (p) => p.staffScope !== 'none' },
   { re: /^#\/asiakaspolut$/, view: viewPaths, perm: (p) => p.pathScope !== 'none' },
-  { re: /^#\/toistuvat$/, view: viewRecurring, perm: (p) => p.pathScope !== 'none' },
+  { re: /^#\/toistuvat$/, view: viewRecurring, perm: (p) => p.dashScope !== 'none' },
   { re: /^#\/tilastot$/, view: viewDashboard, perm: (p) => p.dashScope !== 'none' },
   { re: /^#\/hallinta\/ohjauspalvelut$/, view: viewServices, perm: (p) => p.manageQuestions },
   { re: /^#\/tyontekijat\/(\d+)$/, view: viewStaffDetail, perm: (p) => p.staffScope !== 'none' },
@@ -223,10 +223,9 @@ function renderNav(hash) {
       p.viewScope !== 'none' ? link('#/kirjaukset', p.viewScope === 'own' ? 'Omat kirjaukset' : 'Kirjaukset', 'list', '#/kirjaukset') : null,
     ]),
     group('Seuranta', [
-      p.dashScope !== 'none' ? link('#/tilastot', 'Tilastot', 'chart') : null,
+      p.dashScope !== 'none' ? link('#/tilastot', 'Tilastot', 'chart', '#/toistuvat') : null,
       p.staffScope !== 'none' ? link('#/tyontekijat', 'Työntekijät', 'users', '#/tyontekijat') : null,
       p.pathScope !== 'none' ? link('#/asiakaspolut', 'Asiakaspolut', 'route') : null,
-      p.pathScope !== 'none' ? link('#/toistuvat', 'Toistuvat asiakkaat', 'repeat') : null,
       p.exportScope !== 'none' ? link('#/vienti', 'Excel-vienti', 'download') : null,
     ]),
     group('Ylläpito', [adminHome(p) ? link(adminHome(p), 'Hallinta', 'settings', '#/hallinta') : null]),
@@ -234,7 +233,7 @@ function renderNav(hash) {
       h(u.authMethod === 'entra' ? 'div' : 'a', u.authMethod === 'entra' ? { class: 'who', title: 'Kirjautunut Microsoft-tunnuksella' } : { href: '#/salasana', class: 'who' + (hash === '#/salasana' ? ' active' : ''), title: 'Vaihda salasana' },
         h('span', { class: 'avatar', 'aria-hidden': 'true' }, initials), h('span', { class: 'who-text' }, h('strong', null, u.name), h('small', null, u.roleLabel))),
       themeSwitch(),
-      !isStandalone() ? h('a', { href: '#/sovellus', class: 'nav-logout' + (hash === '#/sovellus' ? ' active' : '') }, icon('phone'), h('span', null, 'Asenna puhelimeen')) : null,
+      !isStandalone() ? h('a', { href: '#/sovellus', class: 'nav-logout nav-install' + (hash === '#/sovellus' ? ' active' : '') }, icon('phone'), h('span', null, 'Asenna puhelimeen')) : null,
       h('a', { href: '#/ilmoita', class: 'nav-logout' + (hash === '#/ilmoita' ? ' active' : '') }, icon('flag'), h('span', null, 'Ilmoita ongelmasta')),
       h('button', { type: 'button', class: 'nav-logout', onclick: logout }, icon('logout'), h('span', null, 'Kirjaudu ulos'))),
   ].filter(Boolean));
@@ -1308,7 +1307,8 @@ function staffFilterBar(onChange, st = staffState) {
     h('div', { class: 'field' }, h('label', { for: 's-to' }, 'Päättyen'), toEl),
     (() => {
       // Työntekijät-näkymässä kaikki hankkeet (säätiöläisten luvut kaikista hankkeista), asiakaspoluissa omat
-      const list = st !== pathState && st !== recState && (state.me.staffProjects || []).length ? state.me.staffProjects : state.me.projects;
+      const list = st === recState ? (state.me.dashProjects || state.me.projects)
+        : st !== pathState && (state.me.staffProjects || []).length ? state.me.staffProjects : state.me.projects;
       return list.length > 1 ? h('div', { class: 'field' }, h('label', { for: 's-proj' }, 'Hanke'),
         f('project_id', h('select', { id: 's-proj' }, h('option', { value: '' }, 'Kaikki hankkeet'), list.map(x => h('option', { value: x.id }, x.name))))) : null;
     })()),
@@ -1625,8 +1625,7 @@ async function viewDashboard() {
         infoTip('Yksilökohtaamisissa tehdyt palveluohjaukset. Toteutumisaste = toteutuneet / (toteutuneet + ei toteutuneet).')),
       h('p', { class: 'kpi-value small-kpi' }, fmtNum(d.referrals.total)), h('p', { class: 'muted small' }, 'ohjausta'),
       h('p', null, h('strong', null, fmtPct(d.referrals.rate)), ' toteutumisaste', h('span', { class: 'muted' }, ` · ${fmtNum(d.referrals.toteutui)} toteutui, ${fmtNum(d.referrals.ei_toteutunut)} ei, ${fmtNum(d.referrals.avoin)} avoinna`)),
-      p.pathScope !== 'none' ? h('a', { href: '#/asiakaspolut' }, 'Asiakaspolut ja ohjaukset palveluittain →') : null,
-      p.pathScope !== 'none' ? h('a', { href: '#/toistuvat' }, ' · Toistuvat asiakkuudet →') : null) : null;
+      p.pathScope !== 'none' ? h('a', { href: '#/asiakaspolut' }, 'Asiakaspolut ja ohjaukset palveluittain →') : null) : null;
     body.replaceChildren(...[
       !T.rows ? h('div', { class: 'notice info' }, 'Valituilla rajauksilla ei ole kirjauksia.') : null,
       h('div', { class: 'dash-row r1' }, kpi1, kpi2, donutCard),
@@ -1674,10 +1673,10 @@ async function viewDashboard() {
     return h('div', { class: 'dash-row r3' }, cityCard, streetCard);
   }
 
-  $app.replaceChildren(
+  $app.replaceChildren(...[
     statsTabs('#/tilastot'),
     h('div', { class: 'page-head dash-head' }, h('div', null, h('h1', null, 'Kohtaamisten raportointi'), h('p', { class: 'muted' }, 'A-klinikkasäätiö')), updated),
-    filterBox, body);
+    filterBox, body].filter(Boolean));
   body.replaceChildren(h('div', { class: 'loading' }, 'Ladataan…'));
   await load();
 }
@@ -1835,10 +1834,10 @@ async function viewPaths() {
 // Näyttää, kuinka paljon työtä asiakkaan kiinnittyminen tukeen ja palveluihin vaatii. Vain koosteita.
 // ---------------------------------------------------------------------------
 const recState = { from: '', to: '', project_id: '' };
-// Välilehdet Tilastot / Toistuvat asiakkaat (alavalikon Tilastot-kohdan alla), kun molemmat ovat käytössä
+// Välilehdet Tilastot / Toistuvat asiakkaat. Toistuvat asiakkaat on osa tilastoja (samat oikeudet).
 function statsTabs(active) {
   const p = state.me.permissions;
-  if (p.dashScope === 'none' || p.pathScope === 'none') return null;
+  if (p.dashScope === 'none') return null;
   const t = (href, text) => h('a', { href, class: active === href ? 'active' : null, 'aria-current': active === href ? 'page' : null }, text);
   return h('nav', { class: 'tabs stats-tabs', 'aria-label': 'Tilastot' }, t('#/tilastot', 'Tilastot'), t('#/toistuvat', 'Toistuvat asiakkaat'));
 }
@@ -1903,11 +1902,11 @@ async function viewRecurring() {
           'Myönteisiä seurauksia ei ole kirjattu toistuvien asiakkaiden kohtaamisissa.')) : null,
     ].filter(Boolean));
   }
-  $app.replaceChildren(
+  $app.replaceChildren(...[
     statsTabs('#/toistuvat'),
     h('div', { class: 'page-head' }, h('div', null, h('h1', null, 'Toistuvat asiakkuudet'),
       h('p', { class: 'muted' }, 'Yksilöasiakkaat, joilla on vähintään kaksi kohtaamista valitulla aikavälillä samassa hankkeessa. Näkymä kertoo, kuinka paljon työtä asiakkaan tukeminen ja kiinnittyminen palveluihin vaatii. Kaikki luvut ovat koosteita.'))),
-    staffFilterBar(load, recState), box);
+    staffFilterBar(load, recState), box].filter(Boolean));
   await load();
 }
 

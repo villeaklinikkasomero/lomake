@@ -825,10 +825,9 @@ app.get('/api/paths', requireAuth, (req, res) => {
   res.json(clients.pathStats({ from: isDate(req.query.from) ? req.query.from : null, to: isDate(req.query.to) ? req.query.to : null, projectIds, projectId }));
 });
 
-// Toistuvat yksilöasiakkuudet (samat oikeudet kuin asiakaspoluilla). Vain koosteita.
+// Toistuvat yksilöasiakkuudet: osa tilastoja (samat oikeudet kuin Tilastoilla). Vain koosteita.
 app.get('/api/recurring', requireAuth, (req, res) => {
-  if (!featureEnabled('paths')) return bad(res, 'Asiakaspolut eivät ole käytössä.', 404);
-  const s = scope(req.user, 'pathScope');
+  const s = scope(req.user, 'dashScope');
   if (s === 'none') return bad(res, 'Ei oikeutta.', 403);
   const projectIds = s === 'all' ? db.prepare('SELECT id FROM projects').all().map(r => r.id) : req.projectIds;
   const projectId = req.query.project_id ? Number(req.query.project_id) : null;

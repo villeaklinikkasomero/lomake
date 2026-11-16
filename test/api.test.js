@@ -433,7 +433,10 @@ test('toistuvat asiakkuudet: vähintään 2 kohtaamista aikavälillä, tuki ja h
   const pk = s.data.support.items.find(i => i.label === 'Palveluohjaus');
   assert.equal(pk.clients, 1, 'asiakas lasketaan kerran, vaikka tuki kirjattiin kahdesti'); assert.equal(pk.share, 1);
   assert.equal(s.data.benefits.answered, 1);
-  assert.equal((await users.hanketyontekija('GET', '/recurring')).status, 403);
+  assert.equal((await users.hanketyontekija('GET', '/recurring')).status, 200, 'tilasto-oikeus riittää');
+  db.prepare("INSERT INTO users (email, name, password_hash, role, must_change_password) VALUES ('tt-rec@t.fi', 'Avustaja R', ?, 'tuntityontekija', 0)").run(require('bcryptjs').hashSync('Avustaja-salasana-1', 4));
+  const tt = await login('tt-rec@t.fi', 'Avustaja-salasana-1');
+  assert.equal((await tt('GET', '/recurring')).status, 403, 'ilman tilasto-oikeutta ei pääsyä');
   assert.equal((await a('GET', '/recurring?from=2026-02-01&to=2026-01-01')).status, 400);
 });
 
