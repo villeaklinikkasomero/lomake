@@ -440,6 +440,41 @@ test('toistuvat asiakkuudet: vähintään 2 kohtaamista aikavälillä, tuki ja h
   assert.equal((await a('GET', '/recurring?from=2026-02-01&to=2026-01-01')).status, 400);
 });
 
+test('asetusten siirto: vienti, esikatselu, tuonti ja oikeudet', async () => {
+  const a = users.admin;
+  const ex = await a('GET', '/admin/config/export');
+  assert.equal(ex.status, 200);
+  const data = ex.data;
+  assert.equal(data.format, 'kohtaamiset-asetukset');
+  assert.ok(data.questions.length > 10 && data.projects.length >= 5 && data.record_types.length >= 3);
+  // Muutettu tiedosto: otsikko muuttuu, uusi kysymys hankkeelle, yksi palvelu puuttuu
+  const q0 = data.questions.find(q => q.key === 'tuki_ja_apu'); q0.label = 'Mitä tukea annettiin?';
+  data.questions.push({ ...q0, key: 'siirto_uusi', label: 'Siirtotesti', project_code: 'OSIS', options: JSON.stringify(['A', 'B']) });
+  const removed = data.referral_services.pop();
+  let r = await a('POST', '/admin/config/import', { data });
+  assert.equal(r.status, 200, JSON.stringify(r.data));
+  assert.equal(r.data.applied, false);
+  const sec = Object.fromEntries(r.data.sections.map(x => [x.key, x]));
+  assert.deepEqual(sec.questions.create.map(x => x.id), ['siirto_uusi']);
+  assert.deepEqual(sec.questions.update.map(x => x.id), ['tuki_ja_apu']);
+  assert.deepEqual(sec.referral_services.deactivate.map(x => x.id), [removed.name]);
+  assert.equal(db.prepare("SELECT label FROM questions WHERE key = 'tuki_ja_apu'").get().label, 'Mitä tukea tai apua kohtaamisessa annettiin?', 'esikatselu ei muuta mitään');
+  r = await a('POST', '/admin/config/import', { data, apply: true });
+  assert.equal(r.status, 200); assert.equal(r.data.applied, true);
+  assert.equal(db.prepare("SELECT label FROM questions WHERE key = 'tuki_ja_apu'").get().label, 'Mitä tukea annettiin?');
+  const nq = db.prepare("SELECT q.*, p.code FROM questions q JOIN projects p ON p.id = q.project_id WHERE q.key = 'siirto_uusi'").get();
+  assert.equal(nq.code, 'OSIS');
+  assert.equal(db.prepare('SELECT active FROM referral_services WHERE name = ?').get(removed.name).active, 0);
+  r = await a('POST', '/admin/config/import', { data });
+  assert.equal(r.data.total, 0, 'toinen tuonti ei muuta mitään');
+  assert.equal((await a('POST', '/admin/config/import', { data: { format: 'muu' } })).status, 400);
+  assert.equal((await users.tiimivetaja('GET', '/admin/config/export')).status, 403);
+  // palautetaan muuttunut otsikko muita testejä varten
+  db.prepare("UPDATE questions SET label = 'Mitä tukea tai apua kohtaamisessa annettiin?' WHERE key = 'tuki_ja_apu'").run();
+  db.prepare("UPDATE questions SET active = 0 WHERE key = 'siirto_uusi'").run();
+  db.prepare('UPDATE referral_services SET active = 1 WHERE name = ?').run(removed.name);
+});
+
 test('säilytysaika katkaisee vanhan linkityksen', async () => {
   const clients = require('../src/clients');
   const p = P();

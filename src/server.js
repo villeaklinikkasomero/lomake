@@ -16,6 +16,7 @@ const { buildWorkbook } = require('./export');
 const demo = require('./demo');
 const clients = require('./clients');
 const errorlog = require('./errorlog');
+const configsync = require('./configsync');
 const { dashboard } = require('./dashboard');
 const auth = require('./auth');
 const QRCode = require('qrcode');
@@ -53,6 +54,7 @@ if (IS_PROD) app.set('trust proxy', 1);
 app.use(helmet({
   contentSecurityPolicy: { directives: { defaultSrc: ["'self'"], scriptSrc: ["'self'"], styleSrc: ["'self'"], imgSrc: ["'self'", 'data:'] } },
 }));
+app.use('/api/admin/config', express.json({ limit: '5mb' }));   // asetustiedosto voi olla suurempi
 app.use(express.json({ limit: '200kb' }));
 app.use(session({
   name: 'kr.sid',
@@ -839,6 +841,24 @@ app.get('/api/recurring', requireAuth, (req, res) => {
 });
 
 // Kytkettävät toiminnot (vain admin)
+// Asetusten siirto ympäristöstä toiseen (hankkeet, kirjaustyypit, toteuttajat, ohjauspalvelut, kysymykset)
+const requireConfigAdmin = (req, res, next) => (can(req.user, 'manageQuestions') && can(req.user, 'manageProjects') ? next() : bad(res, 'Ei oikeutta.', 403));
+app.get('/api/admin/config/export', requireAuth, requireConfigAdmin, (req, res) => {
+  const data = configsync.exportConfig();
+  audit(req.user.id, 'config_export', 'settings', null, { questions: data.questions.length, projects: data.projects.length });
+  res.setHeader('Content-Disposition', `attachment; filename="kohtaamiset-asetukset_${today()}.json"`);
+  res.type('application/json').send(JSON.stringify(data, null, 2));
+});
+app.post('/api/admin/config/import', requireAuth, requireConfigAdmin, (req, res) => {
+  const data = req.body && req.body.data;
+  const result = req.body && req.body.apply === true ? configsync.apply(data) : configsync.plan(data);
+  if (result.error) return bad(res, result.error);
+  if (req.body.apply === true) {
+    audit(req.user.id, 'config_import', 'settings', null, Object.fromEntries(result.sections.map(s => [s.key, { lisatty: s.create.length, paivitetty: s.update.length, pois_kaytosta: s.deactivate.length }])));
+  }
+  res.json({ applied: req.body.apply === true, ...result });
+});
+
 app.get('/api/features', requireAuth, requirePerm('manageUsers'), (req, res) => {
   res.json({ features: Object.entries(FEATURES).map(([key, f]) => ({ key, label: f.label, description: f.description, enabled: featureEnabled(key) })) });
 });

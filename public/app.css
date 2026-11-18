@@ -906,3 +906,6 @@ svg .series.cmp { stroke: var(--cmp, #8a8f96); stroke-width: 2; stroke-dasharray
 }
 /* Asennusohje koskee puhelinta ja tablettia; tietokoneen sivupalkissa sitä ei näytetä */
 @media (min-width: 1024px) { .nav-install { display: none; } }
+/* Asetusten siirto */
+.cfg-list { margin: .25rem 0 .75rem; padding-left: 1.2rem; }
+.cfg-list li { margin: .15rem 0; }

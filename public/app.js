@@ -69,7 +69,10 @@ async function api(path, opts = {}) {
   let data = null;
   try { data = await res.json(); } catch { /* ei JSONia */ }
   if (res.ok && pendingErrors.length) flushErrors();
-  if (res.status === 401 && !path.startsWith('/login')) { state.me = null; go('#/kirjaudu'); throw new Error((data && data.error) || 'Kirjaudu sisään.'); }
+  if (res.status === 401 && !path.startsWith('/login')) {
+    state.me = null; go('#/kirjaudu');
+    const err = new Error((data && data.error) || 'Kirjaudu sisään.'); err.auth = true; throw err;   // istunto vanhentunut: ei virhe
+  }
   if (!res.ok) { const err = new Error((data && data.error) || 'Toiminto epäonnistui.'); err.fromApi = true; err.code = data && data.code; throw err; }
   return data;
 }
@@ -97,7 +100,9 @@ async function flushErrors() {
   finally { flushing = false; }
 }
 function reportJsError(err, where) {
-  if (!err || err.fromApi || err.network) return;  // palvelimen virheet on jo kirjattu palvelimella
+  if (!err || err.fromApi || err.network || err.auth) return;  // palvelimen virheet on jo kirjattu palvelimella; vanhentunut istunto ei ole virhe
+  // Selaimen lisäosien tai muiden sivustojen skriptien virheet näkyvät vain tekstinä "Script error." ilman tietoja
+  if (/^Script error\.?$/.test(err.message || '') && (!err.stack || /^:0:0$|^undefined:/.test(err.stack))) return;
   queueError({ kind: 'js_error', message: `${where ? where + ': ' : ''}${err.message || String(err)}`, detail: err.stack ? String(err.stack).slice(0, 2000) : null });
 }
 window.addEventListener('error', (e) => reportJsError(e.error || { message: e.message, stack: `${e.filename}:${e.lineno}:${e.colno}` }));
@@ -152,6 +157,7 @@ const ROUTES = [
   { re: /^#\/sovellus$/, view: viewInstall },
   { re: /^#\/hallinta\/testidata$/, view: viewDemo, perm: (p) => p.manageUsers },
   { re: /^#\/hallinta\/toiminnot$/, view: viewFeatures, perm: (p) => p.manageUsers },
+  { re: /^#\/hallinta\/siirto$/, view: viewConfigTransfer, perm: (p) => p.manageQuestions && p.manageProjects },
 ];
 
 async function route() {
@@ -175,7 +181,7 @@ async function route() {
   $app.classList.toggle('container', hash !== '#/kirjaudu');
   $app.replaceChildren(h('div', { class: 'loading' }, 'Ladataan…'));
   try { await r.view(...hash.match(r.re).slice(1)); }
-  catch (e) { reportJsError(e, 'näkymä'); $app.replaceChildren(h('div', { class: 'notice err' }, e.message)); }
+  catch (e) { reportJsError(e, 'näkymä'); if (!e.auth) $app.replaceChildren(h('div', { class: 'notice err' }, e.message)); }
   $app.focus({ preventScroll: true });
   window.scrollTo(0, 0);
 }
@@ -2087,6 +2093,59 @@ async function viewRoles() {
         h('td', null, r.active ? h('span', { class: 'badge green' }, 'Käytössä') : h('span', { class: 'badge grey' }, 'Pois käytöstä'))))))));
 }
 
+// Asetusten siirto ympäristöstä toiseen (esim. testiympäristö → tuotanto)
+async function viewConfigTransfer() {
+  const result = h('div');
+  const err = h('div', { class: 'notice err', hidden: true });
+  const fileInput = h('input', { type: 'file', accept: '.json,application/json', id: 'cfg-file' });
+  let data = null;
+  const showErr = (m) => { err.textContent = m; err.hidden = false; };
+  const list = (items, fmt) => h('ul', { class: 'cfg-list' }, items.slice(0, 50).map(i => h('li', null, fmt(i))),
+    items.length > 50 ? h('li', { class: 'muted' }, `… ja ${items.length - 50} muuta`) : null);
+  const FIELD = { name: 'nimi', label: 'otsikko', help: 'ohje', options: 'vaihtoehdot', required: 'pakollisuus', applies: 'kirjaustyypit', show_if: 'näyttöehto',
+    sort: 'järjestys', active: 'käytössä', project_code: 'hanke', type: 'tyyppi', color: 'väri', digital: 'digihanke', description: 'kuvaus', count_label: 'määräkentän nimi',
+    kind: 'laji', recorder_index: 'rooli', min_value: 'pienin arvo', digital_mode: 'digialustalla', digital_value: 'digiarvo', suggest: 'ehdotukset', free_text_warning: 'tunnistetietovaroitus' };
+  function render(plan, applied) {
+    const nothing = plan.total === 0;
+    result.replaceChildren(
+      h('div', { class: 'notice ' + (applied ? 'ok' : nothing ? 'info' : 'warn') }, applied
+        ? `Asetukset tuotu: ${fmtNum(plan.total)} muutosta tehty.`
+        : nothing ? 'Tämän ympäristön asetukset ovat jo samat kuin tiedostossa.'
+          : `Tuonti tekee ${fmtNum(plan.total)} muutosta. Tarkista alta ja hyväksy.`,
+        plan.exported_at ? h('div', { class: 'small muted' }, `Tiedosto viety ${new Date(plan.exported_at).toLocaleString('fi-FI')}`) : null),
+      ...plan.sections.map(sec => h('div', { class: 'card' },
+        h('h2', null, sec.label, ' ', h('span', { class: 'badge grey' }, `${fmtNum(sec.unchanged)} ennallaan`)),
+        !sec.create.length && !sec.update.length && !sec.deactivate.length ? h('p', { class: 'muted' }, 'Ei muutoksia.') : null,
+        sec.create.length ? [h('h3', null, `Lisätään (${sec.create.length})`), list(sec.create, i => i.name)] : null,
+        sec.update.length ? [h('h3', null, `Päivitetään (${sec.update.length})`), list(sec.update, i => [i.name, h('span', { class: 'muted' }, ' – ' + i.fields.map(f => FIELD[f] || f).join(', '))])] : null,
+        sec.deactivate.length ? [h('h3', null, `Poistetaan käytöstä (${sec.deactivate.length})`), list(sec.deactivate, i => i.name),
+          h('p', { class: 'help small' }, 'Näitä ei ole tiedostossa. Ne otetaan pois käytöstä mutta säilyvät, joten vanhat kirjaukset eivät muutu.')] : null)),
+      !applied && !nothing ? h('div', { class: 'actions' },
+        h('button', { class: 'btn btn-primary', type: 'button', onclick: async (e) => {
+          e.target.disabled = true;
+          try { const r = await api('/admin/config/import', { method: 'POST', body: { data, apply: true } }); state.form = null; render(r, true); toast('Asetukset tuotu.'); }
+          catch (ex) { showErr(ex.message); e.target.disabled = false; } } }, 'Hyväksy ja tuo asetukset'),
+        h('button', { class: 'btn btn-secondary', type: 'button', onclick: () => { data = null; fileInput.value = ''; result.replaceChildren(); } }, 'Peruuta')) : null);
+  }
+  fileInput.addEventListener('change', async () => {
+    err.hidden = true; result.replaceChildren();
+    const f = fileInput.files[0]; if (!f) return;
+    try { data = JSON.parse(await f.text()); } catch { showErr('Tiedostoa ei voitu lukea. Valitse tästä sovelluksesta ladattu asetustiedosto (.json).'); return; }
+    result.replaceChildren(h('div', { class: 'loading' }, 'Verrataan…'));
+    try { render(await api('/admin/config/import', { method: 'POST', body: { data, apply: false } }), false); }
+    catch (ex) { result.replaceChildren(); showErr(ex.message); }
+  });
+  $app.replaceChildren(adminTabs('#/hallinta/siirto'),
+    h('p', { class: 'muted' }, 'Siirrä lomakkeen asetukset ympäristöstä toiseen, esimerkiksi testiympäristöstä tuotantoon. Mukana ovat hankkeet, kirjaustyypit, toteuttajat, ohjauspalvelut ja kysymykset vaihtoehtoineen. Käyttäjiä, rooleja, toimintoja ja kirjauksia ei siirretä.'),
+    h('div', { class: 'card' }, h('h2', null, '1. Vie asetukset'),
+      h('p', null, 'Lataa tämän ympäristön asetukset tiedostoksi.'),
+      h('a', { class: 'btn btn-secondary', href: '/api/admin/config/export' }, icon('download'), ' Lataa asetustiedosto')),
+    h('div', { class: 'card' }, h('h2', null, '2. Tuo asetukset'),
+      h('p', null, 'Valitse toisesta ympäristöstä ladattu tiedosto. Näet muutokset ennen kuin mitään tallennetaan. Tiedosto on lähde: tämän ympäristön asetukset muutetaan sen mukaisiksi.'),
+      h('div', { class: 'field' }, h('label', { for: 'cfg-file' }, 'Asetustiedosto (.json)'), fileInput), err),
+    result);
+}
+
 function adminTabs(active) {
   const p = state.me.permissions;
   const t = (href, text) => h('a', { href, class: active === href ? 'active' : null }, text);
@@ -2099,6 +2158,7 @@ function adminTabs(active) {
     p.manageUsers ? t('#/hallinta/kayttajat', 'Käyttäjät') : null,
     p.manageUsers ? t('#/hallinta/roolit', 'Roolit') : null,
     p.manageUsers ? t('#/hallinta/toiminnot', 'Toiminnot') : null,
+    p.manageQuestions && p.manageProjects ? t('#/hallinta/siirto', 'Asetusten siirto') : null,
     p.manageUsers ? t('#/hallinta/testidata', 'Testidata') : null,
     p.manageUsers ? t('#/hallinta/loki', 'Tapahtumaloki') : null,
     p.manageUsers ? t('#/hallinta/virheloki', 'Virheloki') : null));
