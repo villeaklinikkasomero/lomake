@@ -17,7 +17,7 @@ const demo = require('./demo');
 const clients = require('./clients');
 const errorlog = require('./errorlog');
 const configsync = require('./configsync');
-const { dashboard } = require('./dashboard');
+const { dashboard, filterQuestions } = require('./dashboard');
 const auth = require('./auth');
 const QRCode = require('qrcode');
 
@@ -884,9 +884,27 @@ app.get('/api/dashboard', requireAuth, (req, res) => {
   const types = req.query.types ? String(req.query.types).split(',').filter(t => allTypes.includes(t)) : allTypes;
   if (!types.length) return bad(res, 'Valitse vähintään yksi kirjaustyyppi.');
   const role = RECORDER_ROLES.includes(req.query.role) ? req.query.role : null;
-  res.json(dashboard({ from, to, projectIds, projectId, types, role,
+  // Hankkeen tilastot: vain omat hankkeet, rajaus hankkeen omilla kysymyksillä (enintään 3 ehtoa)
+  const own = req.query.own === '1' || !!req.query.qf;
+  let answerFilters = [], questions = null;
+  if (own) {
+    if (!projectId || !req.projectIds.includes(projectId)) return bad(res, 'Valitse oma hanke.', 403);
+    questions = filterQuestions(projectId);
+    let qf = []; try { qf = JSON.parse(String(req.query.qf || '[]')); } catch { return bad(res, 'Virheellinen kysymysrajaus.'); }
+    if (!Array.isArray(qf) || qf.length > 3) return bad(res, 'Valitse enintään kolme kysymystä.');
+    for (const f of qf) {
+      const q = questions.find(x => x.key === (f && f.q));
+      const values = Array.isArray(f && f.v) ? [...new Set(f.v.map(String))] : [];
+      if (!q) return bad(res, 'Kysymys ei kuulu hankkeelle.');
+      if (!values.length || values.some(v => !q.options.includes(v))) return bad(res, 'Tarkista kysymyksen vastausvaihtoehdot.');
+      if (answerFilters.some(x => x.id === q.id)) return bad(res, 'Sama kysymys on valittu kahdesti.');
+      answerFilters.push({ id: q.id, type: q.type, values });
+    }
+  }
+  const result = dashboard({ from, to, projectIds, projectId, types, role, answerFilters,
     ika: req.query.ika ? String(req.query.ika) : null, sukupuoli: req.query.sukupuoli ? String(req.query.sukupuoli) : null,
-    compare: String(req.query.compare || 'none'), kaupunki: req.query.kaupunki ? String(req.query.kaupunki).slice(0, 100) : null }));
+    compare: String(req.query.compare || 'none'), kaupunki: req.query.kaupunki ? String(req.query.kaupunki).slice(0, 100) : null });
+  res.json(questions ? { ...result, filterQuestions: questions } : result);
 });
 
 // Ohjauspalveluiden ylläpito (admin)

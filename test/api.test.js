@@ -440,6 +440,32 @@ test('toistuvat asiakkuudet: vähintään 2 kohtaamista aikavälillä, tuki ja h
   assert.equal((await a('GET', '/recurring?from=2026-02-01&to=2026-01-01')).status, 400);
 });
 
+test('hankkeen tilastot: vain omat hankkeet, rajaus omilla kysymyksillä, alle 6 kirjauksen tulokset piilotetaan', async () => {
+  const p = P(); const a = users.admin;
+  const from = '2020-01-01';
+  // Osis: oma kysymys, 6 kirjausta vaihtoehdolla Yksilötuki ja 1 vaihtoehdolla Vertaisvuoro
+  const pay = (muoto) => basePayload(p.OSIS, { answers: { ...basePayload(p.OSIS).answers, osis_toimintamuoto: muoto,
+    ...(muoto === 'Yksilötuki' ? { osis_kasitellyt_asiat: ['Viranomaisasiointi'], osis_saatto: ['Ei toteutunut'], osis_eteneminen: 'Eteni' } : { osis_vertaisvuorot: '2' }) } });
+  for (let i = 0; i < 6; i++) { const r = await a('POST', '/encounters', pay('Yksilötuki')); assert.equal(r.status, 201, JSON.stringify(r.data)); }
+  assert.equal((await a('POST', '/encounters', pay('Vertaisvuoro'))).status, 201);
+  const q = (qf) => `/dashboard?from=${from}&to=${today}&project_id=${p.OSIS}&own=1` + (qf ? '&qf=' + encodeURIComponent(JSON.stringify(qf)) : '');
+  let r = await a('GET', q());
+  assert.equal(r.status, 200, JSON.stringify(r.data));
+  assert.ok(r.data.filterQuestions.some(x => x.key === 'osis_toimintamuoto'));
+  assert.ok(r.data.filterQuestions.every(x => x.key.startsWith('osis_')), 'vain hankkeen omat kysymykset');
+  r = await a('GET', q([{ q: 'osis_toimintamuoto', v: ['Yksilötuki'] }]));
+  assert.equal(r.status, 200); assert.ok(!r.data.suppressed); assert.ok(r.data.totals.rows >= 6);
+  r = await a('GET', q([{ q: 'osis_toimintamuoto', v: ['Vertaisvuoro'] }]));
+  assert.equal(r.data.suppressed, true); assert.equal(r.data.totals, undefined, 'pieniä lukuja ei palauteta');
+  // yhdistelmä: monivalinta + valinta
+  r = await a('GET', q([{ q: 'osis_toimintamuoto', v: ['Yksilötuki'] }, { q: 'osis_kasitellyt_asiat', v: ['Viranomaisasiointi', 'Asuminen tai asunnottomuus'] }]));
+  assert.equal(r.status, 200); assert.ok(!r.data.suppressed); assert.ok(r.data.totals.rows >= 6);
+  // vieraan hankkeen kysymys ja vieras hanke hylätään
+  assert.equal((await a('GET', q([{ q: 'katu_tukimuodot', v: ['Palveluohjaus'] }]))).status, 400);
+  assert.equal((await users.hanketyontekija('GET', `/dashboard?project_id=${p.OSIS}&own=1`)).status, 403, 'hanketyöntekijä ei ole Osiksessa');
+  assert.equal((await a('GET', q([{ q: 'osis_toimintamuoto', v: ['Ei ole'] }]))).status, 400);
+});
+
 test('asetusten siirto: vienti, esikatselu, tuonti ja oikeudet', async () => {
   const a = users.admin;
   const ex = await a('GET', '/admin/config/export');

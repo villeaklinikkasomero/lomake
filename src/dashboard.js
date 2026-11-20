@@ -21,7 +21,7 @@ function shiftYear(from, to) {
   return [back(from), back(to)];
 }
 
-function buildWhere({ from, to, projectIds, projectId, types, role, ika, sukupuoli, kaupunki }) {
+function buildWhere({ from, to, projectIds, projectId, types, role, ika, sukupuoli, kaupunki, answerFilters }) {
   const w = ['e.deleted_at IS NULL', `e.project_id IN (${projectIds.map(() => '?').join(',') || 'NULL'})`];
   const p = [...projectIds];
   if (from) { w.push('e.encounter_date >= ?'); p.push(from); }
@@ -40,6 +40,16 @@ function buildWhere({ from, to, projectIds, projectId, types, role, ika, sukupuo
   if (kaupunki) {
     w.push('EXISTS (SELECT 1 FROM encounter_answers a WHERE a.encounter_id = e.id AND a.question_id = ? AND lower(trim(a.value)) = ?)');
     p.push(qid('kaupunki'), String(kaupunki).trim().toLowerCase());
+  }
+  // Hankkeen omien kysymysten ehdot: kysymyksen sisällä mikä tahansa valituista vaihtoehdoista, kysymysten välillä kaikki
+  for (const f of answerFilters || []) {
+    const ph = f.values.map(() => '?').join(',');
+    if (f.type === 'multichoice') {
+      w.push(`EXISTS (SELECT 1 FROM encounter_answers a, json_each(a.value) j WHERE a.encounter_id = e.id AND a.question_id = ? AND j.value IN (${ph}))`);
+    } else {
+      w.push(`EXISTS (SELECT 1 FROM encounter_answers a WHERE a.encounter_id = e.id AND a.question_id = ? AND a.value IN (${ph}))`);
+    }
+    p.push(f.id, ...f.values);
   }
   return { sql: w.join(' AND '), params: p };
 }
@@ -100,14 +110,37 @@ function totals(W) {
   return t;
 }
 
+// Kysymysrajauksella paikkakunnat ja kadut, joilla on alle 6 kohtaamista, jätetään pois
+const maskPlaces = (pl) => ({ ...pl, cities: pl.cities.filter(c => c.encounters >= MIN_ROWS), streets: pl.streets.filter(c => c.encounters >= MIN_ROWS),
+  streetCount: pl.streets.filter(c => c.encounters >= MIN_ROWS).length });
+
+// Pienin näytettävä kirjausmäärä, kun tuloksia rajataan hankkeen omilla kysymyksillä
+const MIN_ROWS = 6;
+
+// Hankkeen omat valintakysymykset, joilla hankkeen tilastoja voi rajata
+function filterQuestions(projectId) {
+  return db.prepare(`SELECT id, key, label, type, options, active FROM questions WHERE project_id = ? AND type IN ('choice', 'multichoice', 'rating')
+    ORDER BY active DESC, sort, id`).all(projectId)
+    .map(q => ({ id: q.id, key: q.key, label: q.label, type: q.type, active: !!q.active,
+      options: q.type === 'rating' ? ['1', '2', '3', '4', '5'] : JSON.parse(q.options || '[]').map(String) }));
+}
+
 function dashboard(filters) {
   const W = buildWhere(filters);
   const cur = totals(W);
+  // Kysymysrajauksella pienet joukot piilotetaan (vain luvut > 5 näytetään)
+  if ((filters.answerFilters || []).length && cur.rows < MIN_ROWS) {
+    const opt = (key) => { const q = db.prepare('SELECT options FROM questions WHERE key = ?').get(key); return q && q.options ? JSON.parse(q.options) : []; };
+    return { suppressed: true, minRows: MIN_ROWS, period: { from: filters.from, to: filters.to, compare: 'none' },
+      options: { roles: RECORDER_ROLES, ika: opt('ika'), sukupuoli: opt('sukupuoli') }, places: { cities: [] } };
+  }
   // Vertailu valinnan mukaan: ei vertailua, edellinen yhtä pitkä jakso tai sama jakso vuotta aiemmin
   const compare = ['prev', 'year'].includes(filters.compare) ? filters.compare : 'none';
   const [pf, pt] = compare === 'year' ? shiftYear(filters.from, filters.to) : shiftPeriod(filters.from, filters.to);
   const PW = compare === 'none' ? null : buildWhere({ ...filters, from: pf, to: pt });
-  const prev = PW ? totals(PW) : null;
+  let prev = PW ? totals(PW) : null;
+  const filtered = (filters.answerFilters || []).length > 0;
+  if (filtered && prev && prev.rows < MIN_ROWS) prev = null;   // pientä vertailujaksoa ei näytetä
 
   const monthlyFor = (w) => db.prepare(`SELECT substr(e.encounter_date, 1, 7) month, COUNT(*) rows,
       COALESCE(SUM(CASE WHEN e.kind <> 'tavoittaminen' THEN e.encounter_count END), 0) encounters,
@@ -116,7 +149,7 @@ function dashboard(filters) {
       COALESCE(SUM(CASE WHEN e.kind = 'ryhma' THEN e.encounter_count END), 0) ryhma
     FROM encounters e WHERE ${w.sql} GROUP BY month ORDER BY month`).all(...w.params);
   const monthly = monthlyFor(W);
-  const monthlyPrev = PW ? monthlyFor(PW) : null;
+  const monthlyPrev = PW && prev ? monthlyFor(PW) : null;
 
   const byProject = db.prepare(`SELECT p.id, p.name, COUNT(*) rows, COALESCE(SUM(CASE WHEN e.kind <> 'tavoittaminen' THEN e.encounter_count END), 0) encounters,
       COALESCE(SUM(CASE WHEN e.kind = 'tavoittaminen' THEN e.encounter_count END), 0) reach
@@ -148,7 +181,10 @@ function dashboard(filters) {
     const options = q.type === 'rating' ? ['1', '2', '3', '4', '5'] : JSON.parse(q.options || '[]');
     const items = options.map(o => ({ label: String(o), value: counts.get(String(o)) || 0 }));
     for (const [k, v] of counts) if (!options.map(String).includes(k)) items.push({ label: k, value: v }); // poistuneet vaihtoehdot
-    distributions.push({ key: q.key, label: q.label, project: q.project_name || null, multiple: q.type === 'multichoice', answered: rows.length, items });
+    // Kysymysrajauksella vaihtoehdot, joilla on 1–5 vastausta, jätetään pois (pienet joukot voisivat tunnistaa henkilön)
+    const shown = filtered ? items.filter(i => i.value === 0 || i.value >= MIN_ROWS) : items;
+    distributions.push({ key: q.key, label: q.label, project: q.project_name || null, multiple: q.type === 'multichoice', answered: rows.length,
+      items: shown, hiddenSmall: items.length - shown.length });
   }
 
   const ref = db.prepare(`SELECT COUNT(*) total, COALESCE(SUM(r.status = 'toteutui'), 0) toteutui, COALESCE(SUM(r.status = 'ei_toteutunut'), 0) ei_toteutunut,
@@ -158,16 +194,16 @@ function dashboard(filters) {
 
   const opt = (key) => { const q = db.prepare('SELECT options FROM questions WHERE key = ?').get(key); return q && q.options ? JSON.parse(q.options) : []; };
   return {
-    period: { from: filters.from, to: filters.to, compare, prevFrom: PW ? pf : null, prevTo: PW ? pt : null },
+    period: { from: filters.from, to: filters.to, compare: prev ? compare : 'none', prevFrom: prev ? pf : null, prevTo: prev ? pt : null },
     totals: cur, previous: prev, monthly, monthlyPrev, byProject,
     // Kirjaustyypeittäin (kohtaamiset ja tavoitetut)
     byType: db.prepare(`SELECT e.encounter_type key, rt.label, rt.kind, COUNT(*) rows, SUM(e.encounter_count) count FROM encounters e
       LEFT JOIN record_types rt ON rt.key = e.encounter_type WHERE ${W.sql} GROUP BY e.encounter_type ORDER BY rt.sort`).all(...W.params),
     ratings: { worker: ratingStats('tyontekijan_arvio'), client: ratingStats('asiakkaan_arvio') },
     referrals: { ...ref, rate: ref.toteutui + ref.ei_toteutunut ? ref.toteutui / (ref.toteutui + ref.ei_toteutunut) : null },
-    distributions, updated, places: places(filters, W),
+    distributions, updated, places: filtered ? maskPlaces(places(filters, W)) : places(filters, W),
     options: { roles: RECORDER_ROLES, ika: opt('ika'), sukupuoli: opt('sukupuoli') },
   };
 }
 
-module.exports = { dashboard, shiftPeriod, shiftYear };
+module.exports = { dashboard, filterQuestions, shiftPeriod, shiftYear, MIN_ROWS };

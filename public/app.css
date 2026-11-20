@@ -909,3 +909,12 @@ svg .series.cmp { stroke: var(--cmp, #8a8f96); stroke-width: 2; stroke-dasharray
 /* Asetusten siirto */
 .cfg-list { margin: .25rem 0 .75rem; padding-left: 1.2rem; }
 .cfg-list li { margin: .15rem 0; }
+/* Hankkeen tilastot: kysymysrajaus */
+.qfilter { margin: .25rem 0 .75rem; padding: .75rem; border: 1px solid var(--line); border-radius: 10px; background: var(--surface-2, #f7f9fc); }
+.qfilter .label { font-weight: 600; }
+.qfilter-row { margin: .6rem 0; padding-top: .6rem; border-top: 1px solid var(--line); }
+.qfilter-head { display: flex; gap: .5rem; align-items: center; }
+.qfilter-head select { flex: 1; min-width: 0; }
+.qfilter-opts { display: flex; flex-wrap: wrap; gap: .4rem; margin-top: .5rem; }
+.qfilter-opts .opt { flex: 0 1 auto; }
+.qfilter-opts .opt span { padding: .4rem .65rem; min-height: 0; font-size: .9rem; }
