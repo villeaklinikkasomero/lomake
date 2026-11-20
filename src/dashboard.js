@@ -32,10 +32,12 @@ function buildWhere({ from, to, projectIds, projectId, types, role, ika, sukupuo
     if (types.length < all) { w.push(`e.encounter_type IN (${types.map(() => '?').join(',')})`); p.push(...types); }
   }
   if (role) { w.push('e.recorder_role = ?'); p.push(role); }
+  // Ikä: yksi tai useampi ikäryhmä (mikä tahansa valituista); sukupuoli: yksi arvo
   for (const [key, val] of [['ika', ika], ['sukupuoli', sukupuoli]]) {
-    if (!val) continue;
-    w.push('EXISTS (SELECT 1 FROM encounter_answers a WHERE a.encounter_id = e.id AND a.question_id = ? AND a.value = ?)');
-    p.push(qid(key), val);
+    const vals = [].concat(val || []).map(String).filter(Boolean);
+    if (!vals.length) continue;
+    w.push(`EXISTS (SELECT 1 FROM encounter_answers a WHERE a.encounter_id = e.id AND a.question_id = ? AND a.value IN (${vals.map(() => '?').join(',')}))`);
+    p.push(qid(key), ...vals);
   }
   if (kaupunki) {
     w.push('EXISTS (SELECT 1 FROM encounter_answers a WHERE a.encounter_id = e.id AND a.question_id = ? AND lower(trim(a.value)) = ?)');

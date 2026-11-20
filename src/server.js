@@ -902,7 +902,7 @@ app.get('/api/dashboard', requireAuth, (req, res) => {
     }
   }
   const result = dashboard({ from, to, projectIds, projectId, types, role, answerFilters,
-    ika: req.query.ika ? String(req.query.ika) : null, sukupuoli: req.query.sukupuoli ? String(req.query.sukupuoli) : null,
+    ika: req.query.ika ? [].concat(req.query.ika).map(String).slice(0, 20) : null, sukupuoli: req.query.sukupuoli ? String(req.query.sukupuoli) : null,
     compare: String(req.query.compare || 'none'), kaupunki: req.query.kaupunki ? String(req.query.kaupunki).slice(0, 100) : null });
   res.json(questions ? { ...result, filterQuestions: questions } : result);
 });

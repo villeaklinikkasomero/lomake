@@ -1500,8 +1500,8 @@ function hBars(items, opts = {}) {
 // ---------------------------------------------------------------------------
 // Tilastot (dashboard) – määrittelydokumentin mallin mukaan
 // ---------------------------------------------------------------------------
-const dashState = { from: '', to: '', project_id: '', types: null, role: '', ika: '', sukupuoli: '', kaupunki: '', compare: 'none' };
-const projDashState = { from: '', to: '', project_id: '', types: null, role: '', ika: '', sukupuoli: '', kaupunki: '', compare: 'none', qf: [] };
+const dashState = { from: '', to: '', project_id: '', types: null, role: '', ika: [], sukupuoli: '', kaupunki: '', compare: 'none' };
+const projDashState = { from: '', to: '', project_id: '', types: null, role: '', ika: [], sukupuoli: '', kaupunki: '', compare: 'none', qf: [] };
 const COMPARE = { none: 'Ei vertailua', prev: 'Edellinen jakso', year: 'Vuotta aiemmin' };
 const SERIES = [
   { key: 'encounters', label: 'Kohtaamiset yhteensä', cls: 's1' },
@@ -1537,7 +1537,8 @@ async function viewDashboard(mode) {
   function query() {
     const q = new URLSearchParams({ from: st.from, to: st.to });
     if (st.types) q.set('types', st.types.join(','));
-    for (const k of ['project_id', 'role', 'ika', 'sukupuoli', 'kaupunki']) if (st[k]) q.set(k, st[k]);
+    for (const k of ['project_id', 'role', 'sukupuoli', 'kaupunki']) if (st[k]) q.set(k, st[k]);
+    for (const v of st.ika || []) q.append('ika', v);   // ikäryhmät: useita voi valita
     if (st.compare !== 'none') q.set('compare', st.compare);
     if (project) { q.set('own', '1'); const qf = (st.qf || []).filter(x => x.q && x.v.length); if (qf.length) q.set('qf', JSON.stringify(qf)); }
     return q;
@@ -1558,7 +1559,7 @@ async function viewDashboard(mode) {
       el.addEventListener('change', () => { const set = new Set(selTypes()); el.checked ? set.add(v) : set.delete(v);
         if (!set.size) { el.checked = true; return; } const next = allTypes.filter(x => set.has(x)); st.types = next.length === allTypes.length ? null : next; load(); });
       return h('label', { class: 'opt' }, el, h('span', null, t)); };
-    const active = ['role', 'ika', 'sukupuoli', 'kaupunki'].concat(project ? [] : ['project_id']).filter(k => st[k]).length + (st.types ? 1 : 0)
+    const active = ['role', 'sukupuoli', 'kaupunki'].concat(project ? [] : ['project_id']).filter(k => st[k]).length + (st.types ? 1 : 0) + ((st.ika || []).length ? 1 : 0)
       + (project ? (st.qf || []).filter(x => x.q && x.v.length).length : 0);
     const det = h('details', { class: 'dash-filter-details', open: filtersOpen || null },
       h('summary', null, `Rajaukset · ${fmtDate(st.from)}–${fmtDate(st.to)}${active ? ` · ${active} lisärajausta` : ''}${st.compare !== 'none' ? ' · vertailu' : ''}`));
@@ -1572,7 +1573,6 @@ async function viewDashboard(mode) {
             el.addEventListener('change', () => { st.project_id = el.value; st.qf = []; load(); }); return el; })()) : null)
         : (me.dashProjects || me.projects).length > 1 ? sel('project_id', 'd-proj', 'Hanke', (me.dashProjects || me.projects).map(x => [x.id, x.name]), 'Kaikki hankkeet') : null,
         sel('role', 'd-role', 'Kirjaajan rooli', opts.roles.map(r => [r, r]), 'Kaikki'),
-        sel('ika', 'd-ika', 'Ikä (arvio)', opts.ika.map(r => [r, r]), 'Kaikki'),
         sel('sukupuoli', 'd-sp', 'Sukupuoli', opts.sukupuoli.map(r => [r, r]), 'Kaikki'),
         opts.cities.length || st.kaupunki ? sel('kaupunki', 'd-city', 'Paikkakunta',
           [...opts.cities.map(c => [c.label, c.label]), ...(st.kaupunki && !opts.cities.some(c => c.label.toLowerCase() === st.kaupunki.toLowerCase()) ? [[st.kaupunki, st.kaupunki]] : [])], 'Kaikki') : null),
@@ -1583,6 +1583,12 @@ async function viewDashboard(mode) {
           onclick: () => { st.from = f; st.to = to; load(); } }, t))),
         h('div', { class: 'type-checks', role: 'group', 'aria-label': 'Kohtaamisen tyyppi' }, h('span', { class: 'label' }, 'Kohtaamisen tyyppi'),
           recordTypes().filter(t => t.active || (st.types || []).includes(t.key)).map(t => typeBox(t.key, t.label)))),
+      // Ikäryhmät valintaruutuina: ei valintaa = kaikki ikäryhmät
+      opts.ika.length ? h('div', { class: 'dash-filter-row' }, h('div', { class: 'type-checks', role: 'group', 'aria-label': 'Ikä (arvio)' }, h('span', { class: 'label' }, 'Ikä (arvio)'),
+        opts.ika.map(v => { const el = h('input', { type: 'checkbox', checked: (st.ika || []).includes(v) });
+          el.addEventListener('change', () => { const set = new Set(st.ika || []); el.checked ? set.add(v) : set.delete(v); st.ika = opts.ika.filter(x => set.has(x)); load(); });
+          return h('label', { class: 'opt' }, el, h('span', null, v)); }),
+        (st.ika || []).length ? h('button', { type: 'button', class: 'btn btn-link btn-sm', onclick: () => { st.ika = []; load(); } }, 'Kaikki iät') : null)) : null,
       // Vertailu pikavalintojen alle, Excel-vienti oikealle
       h('div', { class: 'dash-filter-row dash-filter-bottom' },
         h('div', { class: 'field cmp-field' }, h('label', { for: 'd-cmp' }, 'Vertailu'),
@@ -1676,6 +1682,42 @@ async function viewDashboard(mode) {
       h('p', { class: 'kpi-value small-kpi' }, fmtNum(d.referrals.total)), h('p', { class: 'muted small' }, 'ohjausta'),
       h('p', null, h('strong', null, fmtPct(d.referrals.rate)), ' toteutumisaste', h('span', { class: 'muted' }, ` · ${fmtNum(d.referrals.toteutui)} toteutui, ${fmtNum(d.referrals.ei_toteutunut)} ei, ${fmtNum(d.referrals.avoin)} avoinna`)),
       p.pathScope !== 'none' ? h('a', { href: '#/asiakaspolut' }, 'Asiakaspolut ja ohjaukset palveluittain →') : null) : null;
+    const distCard = (q) => h('div', { class: 'card' },
+      h('h3', null, q.label, q.project && !project ? h('span', { class: 'tag' }, ' hankekohtainen') : null),
+      h('p', { class: 'muted small' }, `${fmtNum(q.answered)} kirjausta vastannut${q.multiple ? ' · voi valita useita' : ''}`),
+      hBars(q.items, { keepOrder: true, unit: 'kirjausta' }),
+      q.hiddenSmall ? h('p', { class: 'help small' }, `${q.hiddenSmall} vaihtoehtoa, joilla on alle 6 vastausta, ei näytetä.`) : null);
+    if (project) {
+      // Hankkeen tilastot: ensin tunnusluvut ja hankkeen omat kysymykset; yhteiset tilastot avattavissa alempana
+      const ownD = dists.filter(q => q.project), commonD = dists.filter(q => !q.project);
+      const tile = (v, label, sub) => h('div', { class: 'stat' }, h('b', null, v), h('span', null, label), sub ? h('small', null, sub) : null);
+      const more = h('details', { class: 'more-stats' }, h('summary', null, 'Yhteiset kysymykset ja muut tilastot'),
+        h('div', { class: 'dash-row r1' }, kpi1, kpi2, donutCard),
+        h('div', { class: 'card' }, h('div', { class: 'kpi-head' }, h('h2', null, 'Kohtaamisten määrä kuukausittain')),
+          lineChart(fillMonths(d.monthly, d.period.from, d.period.to), [...new Set((st.types || recordTypes().map(t => t.key)).map(typeKind))],
+            cmpOn ? { data: fillMonths(d.monthlyPrev, d.period.prevFrom, d.period.prevTo), label: `Vertailujakso ${prevLabel}` } : null)),
+        h('div', { class: 'dash-row r3' },
+          h('div', { class: 'card' }, h('div', { class: 'kpi-head' }, h('h2', null, 'Arviot kohtaamisen hyödystä')),
+            h('div', { class: 'grid-2 tight' }, ratingBlock('Työntekijän arvio, keskiarvo', R.worker), ratingBlock('Asiakkaan arvio, keskiarvo', R.client))),
+          locationCard),
+        placesRow(d.places),
+        commonD.length ? h('h2', { class: 'sub-head' }, 'Yhteiset kysymykset') : null,
+        commonD.length ? h('div', { class: 'dist-grid' }, commonD.map(distCard)) : null);
+      body.replaceChildren(...[
+        !T.rows ? h('div', { class: 'notice info' }, 'Valituilla rajauksilla ei ole kirjauksia.') : null,
+        h('div', { class: 'stats stats-grid' },
+          tile(fmtNum(T.encounters), 'kohtaamista', `${fmtNum(T.rows)} lomaketallennusta`),
+          tile(fmtNum(T.persons), 'eri henkilöä (arvio)', 'tunnistetut asiakkaat ja ryhmien osallistujat'),
+          tile(fmtNum(T.yksilo), 'yksilökohtaamista', `ryhmissä ${fmtNum(T.ryhma)} kohtaamista`),
+          T.reach ? tile(fmtNum(T.reach), 'tavoitettua', `${fmtNum(T.reach_rows)} tilaisuutta`) : null),
+        h('h2', { class: 'sub-head' }, 'Hankkeen kysymykset'),
+        ownD.length ? h('div', { class: 'dist-grid' }, ownD.map(distCard))
+          : h('div', { class: 'card' }, h('p', { class: 'muted' }, 'Hankkeen omiin kysymyksiin ei ole vastauksia valituilla rajauksilla.')),
+        more,
+      ].filter(Boolean));
+      body.classList.remove('refreshing');
+      return;
+    }
     body.replaceChildren(...[
       !T.rows ? h('div', { class: 'notice info' }, 'Valituilla rajauksilla ei ole kirjauksia.') : null,
       h('div', { class: 'dash-row r1' }, kpi1, kpi2, donutCard),
@@ -1695,11 +1737,7 @@ async function viewDashboard(mode) {
       referralCard ? h('div', { class: 'dash-row r3' }, referralCard) : null,
       placesRow(d.places),
       dists.length ? h('h2', { class: 'sub-head' }, st.project_id ? 'Vastausjakaumat (yhteiset ja hankekohtaiset kysymykset)' : 'Vastausjakaumat (yhteiset kysymykset – valitse hanke nähdäksesi hankekohtaiset)') : null,
-      dists.length ? h('div', { class: 'dist-grid' }, dists.map(q => h('div', { class: 'card' },
-        h('h3', null, q.label, q.project ? h('span', { class: 'tag' }, ' hankekohtainen') : null),
-        h('p', { class: 'muted small' }, `${fmtNum(q.answered)} kirjausta vastannut${q.multiple ? ' · voi valita useita' : ''}`),
-        hBars(q.items, { keepOrder: true, unit: 'kirjausta' }),
-        q.hiddenSmall ? h('p', { class: 'help small' }, `${q.hiddenSmall} vaihtoehtoa, joilla on alle 6 vastausta, ei näytetä.`) : null))) : null,
+      dists.length ? h('div', { class: 'dist-grid' }, dists.map(distCard)) : null,
     ].filter(Boolean));
     body.classList.remove('refreshing');
   }

@@ -614,6 +614,10 @@ test('tilastot: koosteet, rajaukset, vertailujakso ja oikeudet', async () => {
   // Ikärajaus
   const ik = await users.admin('GET', `/dashboard?from=2020-01-01&to=${today}&ika=${encodeURIComponent('18–29 vuotta')}`);
   assert.ok(ik.data.totals.rows >= 1 && ik.data.totals.rows < all.n);
+  // Useampi ikäryhmä: mikä tahansa valituista
+  const ik2 = await users.admin('GET', `/dashboard?from=2020-01-01&to=${today}&ika=${encodeURIComponent('18–29 vuotta')}&ika=${encodeURIComponent('30–62 vuotta')}`);
+  const ik3 = await users.admin('GET', `/dashboard?from=2020-01-01&to=${today}&ika=${encodeURIComponent('30–62 vuotta')}`);
+  assert.equal(ik2.data.totals.rows, ik.data.totals.rows + ik3.data.totals.rows);
   // Hanketyöntekijä näkee kaikkien hankkeiden tilastot (koosteet)
   const ht = await users.hanketyontekija('GET', `/dashboard?from=2020-01-01&to=${today}`);
   assert.equal(ht.status, 200);

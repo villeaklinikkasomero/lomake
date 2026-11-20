@@ -918,3 +918,7 @@ svg .series.cmp { stroke: var(--cmp, #8a8f96); stroke-width: 2; stroke-dasharray
 .qfilter-opts { display: flex; flex-wrap: wrap; gap: .4rem; margin-top: .5rem; }
 .qfilter-opts .opt { flex: 0 1 auto; }
 .qfilter-opts .opt span { padding: .4rem .65rem; min-height: 0; font-size: .9rem; }
+.more-stats { margin-top: 1.25rem; }
+.more-stats > summary { cursor: pointer; font-weight: 600; color: var(--blue); padding: .75rem 1rem; border: 1px solid var(--line); border-radius: var(--radius); background: var(--card); margin-bottom: 1rem; }
+.more-stats[open] > summary { margin-bottom: 1rem; }
+.btn-link { background: none; border: 0; color: var(--blue); text-decoration: underline; cursor: pointer; padding: .25rem .4rem; font: inherit; font-size: .85rem; }
