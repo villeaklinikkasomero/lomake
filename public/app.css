@@ -922,3 +922,9 @@ svg .series.cmp { stroke: var(--cmp, #8a8f96); stroke-width: 2; stroke-dasharray
 .more-stats > summary { cursor: pointer; font-weight: 600; color: var(--blue); padding: .75rem 1rem; border: 1px solid var(--line); border-radius: var(--radius); background: var(--card); margin-bottom: 1rem; }
 .more-stats[open] > summary { margin-bottom: 1rem; }
 .btn-link { background: none; border: 0; color: var(--blue); text-decoration: underline; cursor: pointer; padding: .25rem .4rem; font: inherit; font-size: .85rem; }
+/* Pitkät vaihtoehdot eivät saa valua palkin päälle: teksti rivittyy (myös pitkät yhdyssanat),
+   ja vastausjakaumien korteissa nimi on omalla rivillään palkin yläpuolella */
+.hbar-label { min-width: 0; overflow-wrap: anywhere; hyphens: auto; }
+.dist-grid .hbar { grid-template-columns: 1fr auto; row-gap: .2rem; }
+.dist-grid .hbar-label { grid-column: 1 / -1; }
+.dist-grid .hbars { gap: .6rem; }
