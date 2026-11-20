@@ -855,3 +855,14 @@ test('muut toteuttajat: vapaaehtoinen ja vertainen erikseen, ylläpidettävät',
   const list = await users.admin('GET', '/performer-types');
   assert.ok(list.data.types.find(t => t.key === 'vertainen').encounter_rows >= 1);
 });
+
+test('testidata yhteen hankkeeseen', async () => {
+  const p = P();
+  const before0 = db.prepare("SELECT COUNT(*) n FROM encounters WHERE is_test = 1").get().n;
+  const r = await users.admin('POST', '/admin/demo-data', { count: 40, project_id: p.OSIS });
+  assert.equal(r.status, 201, JSON.stringify(r.data));
+  const rows = db.prepare("SELECT project_id FROM encounters WHERE is_test = 1 ORDER BY rowid DESC LIMIT 40").all();
+  assert.ok(rows.every(x => x.project_id === p.OSIS), 'kaikki uudet testikirjaukset Osikseen');
+  assert.equal(db.prepare("SELECT COUNT(*) n FROM encounters WHERE is_test = 1").get().n, before0 + 40);
+  assert.equal((await users.admin('POST', '/admin/demo-data', { count: 5, project_id: 999999 })).status, 400);
+});

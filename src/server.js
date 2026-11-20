@@ -1338,8 +1338,10 @@ app.get('/api/admin/demo-data', requireAuth, requirePerm('manageUsers'), (req, r
 app.post('/api/admin/demo-data', requireAuth, requirePerm('manageUsers'), (req, res) => {
   const count = Math.min(Math.max(parseInt(req.body.count, 10) || 40, 1), 500);
   try {
-    const created = demo.createDemoData({ count, userId: req.user.id, validate: validateEncounter, user: req.user, projectIds: req.projectIds });
-    audit(req.user.id, 'demo_create', 'encounter', null, { created });
+    const projectId = req.body.project_id ? Number(req.body.project_id) : null;
+    if (projectId && !db.prepare('SELECT 1 FROM projects WHERE id = ? AND active = 1').get(projectId)) return bad(res, 'Valitse käytössä oleva hanke.');
+    const created = demo.createDemoData({ count, userId: req.user.id, validate: validateEncounter, user: req.user, projectIds: req.projectIds, projectId });
+    audit(req.user.id, 'demo_create', 'encounter', null, { created, project_id: projectId });
     res.status(201).json({ created, ...demo.demoCount() });
   } catch (e) { bad(res, e.message); }
 });

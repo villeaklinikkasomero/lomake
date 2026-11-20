@@ -46,13 +46,14 @@ const FEEDBACK = [
   'Vastaus tuli nopeasti.',
 ];
 
-function generateDemoPayloads(count, seed = Date.now()) {
+function generateDemoPayloads(count, seed = Date.now(), projectId = null) {
   const r = rng(seed);
   const pick = (arr) => arr[Math.floor(r() * arr.length)];
   const chance = (p) => r() < p;
   const int = (min, max) => min + Math.floor(r() * (max - min + 1));
 
-  const projects = db.prepare('SELECT * FROM projects WHERE active = 1 ORDER BY sort').all();
+  // projectId: kaikki kirjaukset yhteen hankkeeseen (esim. hankkeen tilastojen rajausten testaamiseen)
+  const projects = db.prepare('SELECT * FROM projects WHERE active = 1 ORDER BY sort').all().filter(p => !projectId || p.id === projectId);
   const hasReach = !!db.prepare("SELECT 1 FROM record_types WHERE key = 'tavoittaminen' AND active = 1").get();
   const questions = db.prepare('SELECT * FROM questions WHERE active = 1').all()
     .map(q => ({ ...q, options: q.options ? JSON.parse(q.options) : null }));
@@ -161,10 +162,10 @@ function ensureDemoWorkers() {
   });
 }
 
-function createDemoData({ count, userId, validate, user, projectIds }) {
+function createDemoData({ count, userId, validate, user, projectIds, projectId = null }) {
   const clients = require('./clients');
   const seed = Date.now();
-  const payloads = generateDemoPayloads(count, seed);
+  const payloads = generateDemoPayloads(count, seed, projectId);
   const services = db.prepare('SELECT id FROM referral_services WHERE active = 1').all().map(s => s.id);
   const clientIds = new Map();   // testiasiakkaan indeksi → clients.id
   const workers = ensureDemoWorkers();

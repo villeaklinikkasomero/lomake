@@ -2678,11 +2678,13 @@ async function viewRecordTypes() {
 async function viewDemo() {
   const c = await api('/admin/demo-data');
   const count = h('input', { type: 'number', id: 'd-count', class: 'input-narrow', min: '1', max: '500', value: 40 });
+  const projSel = h('select', { id: 'd-proj-demo', class: 'input-narrow' }, h('option', { value: '' }, 'Kaikki hankkeet'),
+    (state.me.dashProjects || state.me.projects).map(x => h('option', { value: x.id }, x.name)));
   const msg = h('div', { class: 'notice', hidden: true });
   const show = (cls, text) => { msg.className = 'notice ' + cls; msg.textContent = text; msg.hidden = false; };
   const createBtn = h('button', { class: 'btn btn-primary', type: 'button', onclick: async () => {
     createBtn.disabled = true;
-    try { const r = await api('/admin/demo-data', { method: 'POST', body: { count: Number(count.value) } });
+    try { const r = await api('/admin/demo-data', { method: 'POST', body: { count: Number(count.value), project_id: projSel.value || null } });
       toast(`Luotiin ${r.created} testikirjausta.`); viewDemo(); }
     catch (ex) { show('err', ex.message); createBtn.disabled = false; }
   } }, 'Luo testikirjaukset');
@@ -2703,6 +2705,8 @@ async function viewDemo() {
       h('p', { class: 'muted' }, 'Luo vaihtelevia kirjauksia kaikkiin käytössä oleviin hankkeisiin kuluvan vuoden ajalle: yksilö- ja ryhmäkohtaamisia, toistuvia nimimerkkejä, eri kirjaajarooleja, kaupunkeja, arvioita ja vapaatekstejä. Myös myöhemmin lisättyihin hankekohtaisiin kysymyksiin vastataan.'),
       h('p', { class: 'muted' }, 'Testikirjaukset näkyvät listassa merkinnällä ”testi” ja Excel-viennissä sarakkeessa ”Testidata”.'),
       h('div', { class: 'field' }, h('label', { for: 'd-count' }, 'Määrä'), count),
+      h('div', { class: 'field' }, h('label', { for: 'd-proj-demo' }, 'Hanke'), projSel,
+        h('p', { class: 'help' }, 'Valitse hanke, jos haluat kaikki testikirjaukset yhteen hankkeeseen, esimerkiksi hankkeen tilastojen rajausten kokeilemiseksi. Vähintään 200 kirjausta antaa useimmille vaihtoehdoille yli 5 vastausta.')),
       msg, h('div', { class: 'actions' }, createBtn)),
     h('div', { class: 'card' },
       h('h2', null, 'Poista testidata'),
