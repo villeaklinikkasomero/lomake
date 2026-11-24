@@ -6,9 +6,7 @@
   "scripts": {
     "start": "node src/server.js",
     "dev": "node --watch src/server.js",
-    "test": "LOGIN_RATE_LIMIT=1000 MFA_REQUIRED=false node --test test/api.test.js test/auth.test.js",
-    "test:e2e": "playwright test",
-    "test:e2e:ui": "playwright test --ui"
+    "test": "LOGIN_RATE_LIMIT=1000 MFA_REQUIRED=false node --test test/api.test.js test/auth.test.js"
   },
   "dependencies": {
     "bcryptjs": "^3.0.3",
@@ -25,7 +23,7 @@
   "engines": {
     "node": ">=20"
   },
-  "devDependencies": {
-    "@playwright/test": "^1.63.0"
+  "overrides": {
+    "uuid": "^11.1.1"
   }
 }

@@ -866,3 +866,20 @@ test('testidata yhteen hankkeeseen', async () => {
   assert.equal(db.prepare("SELECT COUNT(*) n FROM encounters WHERE is_test = 1").get().n, before0 + 40);
   assert.equal((await users.admin('POST', '/admin/demo-data', { count: 5, project_id: 999999 })).status, 400);
 });
+
+test('tietoturva: oma salasanan vaihto päättää muut istunnot; suuri asetusrunko vain ylläpitäjälle', async () => {
+  db.prepare("INSERT INTO users (email, name, password_hash, role, must_change_password) VALUES ('sess@t.fi', 'Istunto Testi', ?, 'tuntityontekija', 0)").run(require('bcryptjs').hashSync('Vanha-salasana-123', 4));
+  const a = await login('sess@t.fi', 'Vanha-salasana-123');
+  const b = await login('sess@t.fi', 'Vanha-salasana-123');
+  assert.equal((await b('GET', '/me')).status, 200);
+  const r = await a('POST', '/me/password', { current: 'Vanha-salasana-123', next: 'Uusi-salasana-456' });
+  assert.equal(r.status, 200, JSON.stringify(r.data));
+  assert.equal((await a('GET', '/me')).status, 200, 'vaihtajan oma istunto jatkuu');
+  assert.equal((await b('GET', '/me')).status, 401, 'toinen istunto päättyy');
+  // Yli 200 kt:n runko: asetustuonti vaatii ensin ylläpito-oikeuden, muualla runko hylätään
+  const big = { data: { format: 'x', pad: 'x'.repeat(600 * 1024) } };
+  assert.equal((await client()('POST', '/admin/config/import', big)).status, 401);
+  assert.equal((await users.tiimivetaja('POST', '/admin/config/import', big)).status, 403);
+  assert.equal((await users.admin('POST', '/admin/config/import', big)).status, 400, 'ylläpitäjältä jäsennetään ja tarkistetaan');
+  assert.equal((await users.admin('POST', '/questions', big)).status, 413);
+});

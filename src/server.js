@@ -54,8 +54,11 @@ if (IS_PROD) app.set('trust proxy', 1);
 app.use(helmet({
   contentSecurityPolicy: { directives: { defaultSrc: ["'self'"], scriptSrc: ["'self'"], styleSrc: ["'self'"], imgSrc: ["'self'", 'data:'] } },
 }));
-app.use('/api/admin/config', express.json({ limit: '5mb' }));   // asetustiedosto voi olla suurempi
-app.use(express.json({ limit: '200kb' }));
+// JSON-runko enintään 200 kt. Asetustiedoston tuonti (enintään 5 Mt) jäsennetään vasta reitillä
+// kirjautumis- ja oikeustarkistuksen jälkeen, jotta suurta runkoa ei käsitellä kirjautumattomalta.
+const jsonBody = express.json({ limit: '200kb' });
+const configJsonBody = express.json({ limit: '5mb' });
+app.use((req, res, next) => (req.path === '/api/admin/config/import' ? next() : jsonBody(req, res, next)));
 app.use(session({
   name: 'kr.sid',
   secret: SESSION_SECRET,
@@ -544,6 +547,8 @@ app.post('/api/me/password', requireAuth, (req, res) => {
   if (typeof newPw !== 'string' || newPw.length < 12) return bad(res, 'Uuden salasanan on oltava vähintään 12 merkkiä.');
   if (newPw === current) return bad(res, 'Uusi salasana ei voi olla sama kuin vanha.');
   db.prepare('UPDATE users SET password_hash = ?, must_change_password = 0 WHERE id = ?').run(bcrypt.hashSync(newPw, 12), req.user.id);
+  // Muut kirjautumiset (esim. toinen laite) päättyvät; tämä istunto jatkuu
+  db.prepare("DELETE FROM sessions WHERE json_extract(sess, '$.userId') = ? AND sid <> ?").run(req.user.id, req.sessionID);
   audit(req.user.id, 'password_changed', 'user', req.user.id);
   res.json({ ok: true });
 });
@@ -849,7 +854,7 @@ app.get('/api/admin/config/export', requireAuth, requireConfigAdmin, (req, res) 
   res.setHeader('Content-Disposition', `attachment; filename="kohtaamiset-asetukset_${today()}.json"`);
   res.type('application/json').send(JSON.stringify(data, null, 2));
 });
-app.post('/api/admin/config/import', requireAuth, requireConfigAdmin, (req, res) => {
+app.post('/api/admin/config/import', requireAuth, requireConfigAdmin, configJsonBody, (req, res) => {
   const data = req.body && req.body.data;
   const result = req.body && req.body.apply === true ? configsync.apply(data) : configsync.plan(data);
   if (result.error) return bad(res, result.error);
