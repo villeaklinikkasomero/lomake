@@ -235,7 +235,12 @@ function renderNav(hash) {
       p.pathScope !== 'none' ? link('#/asiakaspolut', 'Asiakaspolut', 'route') : null,
       p.exportScope !== 'none' ? link('#/vienti', 'Excel-vienti', 'download') : null,
     ]),
-    group('Ylläpito', [adminHome(p) ? link(adminHome(p), 'Hallinta', 'settings', '#/hallinta') : null]),
+    group('Ylläpito', [adminHome(p) ? (hash.startsWith('#/hallinta')
+      // Hallinnassa: alilinkit ryhmittäin Hallinta-kohdan alla
+      ? h('div', { class: 'nav-admin' }, h('a', { href: adminHome(p), class: 'nav-link open' }, icon('settings'), h('span', null, 'Hallinta')),
+        h('div', { class: 'nav-sub' }, adminSections(p).map(sec => h('div', { class: 'nav-subgroup' }, h('span', { class: 'nav-subheading' }, sec.title),
+          sec.items.map(([href, text]) => h('a', { href, class: 'nav-sublink' + (hash === href ? ' active' : ''), 'aria-current': hash === href ? 'page' : null }, text))))))
+      : link(adminHome(p), 'Hallinta', 'settings', '#/hallinta')) : null]),
     h('div', { class: 'nav-user' },
       h(u.authMethod === 'entra' ? 'div' : 'a', u.authMethod === 'entra' ? { class: 'who', title: 'Kirjautunut Microsoft-tunnuksella' } : { href: '#/salasana', class: 'who' + (hash === '#/salasana' ? ' active' : ''), title: 'Vaihda salasana' },
         h('span', { class: 'avatar', 'aria-hidden': 'true' }, initials), h('span', { class: 'who-text' }, h('strong', null, u.name), h('small', null, u.roleLabel))),
@@ -2198,7 +2203,7 @@ async function viewRoles() {
   }
 
   $app.replaceChildren(adminTabs('#/hallinta/roolit'),
-    h('div', { class: 'page-head' }, h('p', { class: 'muted' }, 'Roolit määräävät, mitä käyttäjä näkee ja voi tehdä. Käyttäjälle valitaan rooli Käyttäjät-välilehdellä.'),
+    h('div', { class: 'page-head' }, h('p', { class: 'muted' }, 'Roolit määräävät, mitä käyttäjä näkee ja voi tehdä. Käyttäjälle valitaan rooli Käyttäjät-sivulla.'),
       h('button', { class: 'btn btn-primary', type: 'button', onclick: () => openEditor(null) }, '+ Uusi rooli')),
     editorBox,
     h('div', { class: 'table-wrap' }, h('table', null,
@@ -2264,22 +2269,29 @@ async function viewConfigTransfer() {
     result);
 }
 
+// Hallinnan sivut ryhmiteltyinä; näkyvät sivupalkissa Hallinta-kohdan alla (oikeuksien mukaan)
+const ADMIN_SECTIONS = [
+  { title: 'Lomake', items: [
+    ['#/hallinta/kysymykset', 'Kysymykset', (p) => p.manageQuestions],
+    ['#/hallinta/kirjaustyypit', 'Kirjaustyypit', (p) => p.manageQuestions],
+    ['#/hallinta/toteuttajat', 'Toteuttajat', (p) => p.manageQuestions],
+    ['#/hallinta/ohjauspalvelut', 'Ohjauspalvelut', (p) => p.manageQuestions],
+    ['#/hallinta/hankkeet', 'Hankkeet', (p) => p.manageProjects]] },
+  { title: 'Käyttäjät', items: [
+    ['#/hallinta/kayttajat', 'Käyttäjät', (p) => p.manageUsers],
+    ['#/hallinta/roolit', 'Roolit', (p) => p.manageUsers]] },
+  { title: 'Järjestelmä', items: [
+    ['#/hallinta/toiminnot', 'Toiminnot', (p) => p.manageUsers],
+    ['#/hallinta/siirto', 'Asetusten siirto', (p) => p.manageQuestions && p.manageProjects],
+    ['#/hallinta/testidata', 'Testidata', (p) => p.manageUsers],
+    ['#/hallinta/loki', 'Tapahtumaloki', (p) => p.manageUsers],
+    ['#/hallinta/virheloki', 'Virheloki', (p) => p.manageUsers]] },
+];
+const adminSections = (p) => ADMIN_SECTIONS.map(sec => ({ ...sec, items: sec.items.filter(([, , ok]) => ok(p)) })).filter(sec => sec.items.length);
+// Hallinnan sivun otsikko (sivut valitaan sivupalkista)
 function adminTabs(active) {
-  const p = state.me.permissions;
-  const t = (href, text) => h('a', { href, class: active === href ? 'active' : null }, text);
-  return h('div', null, h('h1', null, 'Hallinta'), h('nav', { class: 'tabs' },
-    p.manageQuestions ? t('#/hallinta/kysymykset', 'Kysymykset') : null,
-    p.manageQuestions ? t('#/hallinta/kirjaustyypit', 'Kirjaustyypit') : null,
-    p.manageQuestions ? t('#/hallinta/toteuttajat', 'Toteuttajat') : null,
-    p.manageQuestions ? t('#/hallinta/ohjauspalvelut', 'Ohjauspalvelut') : null,
-    p.manageProjects ? t('#/hallinta/hankkeet', 'Hankkeet') : null,
-    p.manageUsers ? t('#/hallinta/kayttajat', 'Käyttäjät') : null,
-    p.manageUsers ? t('#/hallinta/roolit', 'Roolit') : null,
-    p.manageUsers ? t('#/hallinta/toiminnot', 'Toiminnot') : null,
-    p.manageQuestions && p.manageProjects ? t('#/hallinta/siirto', 'Asetusten siirto') : null,
-    p.manageUsers ? t('#/hallinta/testidata', 'Testidata') : null,
-    p.manageUsers ? t('#/hallinta/loki', 'Tapahtumaloki') : null,
-    p.manageUsers ? t('#/hallinta/virheloki', 'Virheloki') : null));
+  const item = ADMIN_SECTIONS.flatMap(sec => sec.items.map(it => [...it, sec.title])).find(([href]) => href === active);
+  return h('div', { class: 'admin-head' }, h('p', { class: 'admin-crumb' }, 'Hallinta', item ? ` · ${item[3]}` : ''), h('h1', null, item ? item[1] : 'Hallinta'));
 }
 
 // --- Käyttäjät
@@ -2474,7 +2486,7 @@ async function viewProjects() {
     (isNew ? code : name).focus();
   }
   $app.replaceChildren(adminTabs('#/hallinta/hankkeet'),
-    h('div', { class: 'page-head' }, h('p', { class: 'muted' }, 'Hankkeet näkyvät lomakkeen hankevalinnassa. Käyttäjät liitetään hankkeisiin Käyttäjät-välilehdellä.'),
+    h('div', { class: 'page-head' }, h('p', { class: 'muted' }, 'Hankkeet näkyvät lomakkeen hankevalinnassa. Käyttäjät liitetään hankkeisiin Käyttäjät-sivulla.'),
       h('button', { class: 'btn btn-primary', type: 'button', onclick: () => openEditor(null) }, '+ Uusi hanke')),
     editorBox,
     h('div', { class: 'table-wrap' }, h('table', null,
@@ -2628,7 +2640,7 @@ async function viewQuestions() {
   }
 
   $app.replaceChildren(adminTabs('#/hallinta/kysymykset'),
-    h('div', { class: 'notice info' }, 'Lomakkeen kiinteät perustiedot (ajankohta, hanke, toteuttaja, kirjaustyyppi, määrät ja asiakastunniste) ovat aina mukana. Kirjaustyyppejä hallitaan välilehdellä Kirjaustyypit. ',
+    h('div', { class: 'notice info' }, 'Lomakkeen kiinteät perustiedot (ajankohta, hanke, toteuttaja, kirjaustyyppi, määrät ja asiakastunniste) ovat aina mukana. Kirjaustyyppejä hallitaan sivulla Kirjaustyypit. ',
       'Kysymyksiä ei poisteta, vaan ne otetaan pois käytöstä – näin aiempien vuosien raportointi säilyy ehjänä.'),
     editorBox,
     dashFilterCard(),

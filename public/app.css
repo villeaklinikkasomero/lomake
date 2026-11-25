@@ -944,3 +944,13 @@ svg .series.cmp { stroke: var(--cmp, #8a8f96); stroke-width: 2; stroke-dasharray
 .ms-clear { margin: .25rem .25rem 0; }
 .dash-filter-admin > summary { cursor: pointer; }
 .dash-filter-admin[open] > summary { margin-bottom: .5rem; }
+/* Hallinnan alilinkit sivupalkissa */
+.nav-link.open { color: var(--ink); font-weight: 600; }
+.nav-sub { margin: .1rem 0 .4rem 1.55rem; padding-left: .6rem; border-left: 1px solid var(--line); }
+.nav-subgroup + .nav-subgroup { margin-top: .4rem; }
+.nav-subheading { display: block; font-size: .7rem; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); font-weight: 600; padding: .35rem .6rem .15rem; }
+.nav-sublink { display: block; padding: .42rem .6rem; border-radius: 8px; color: var(--ink); text-decoration: none; font-size: .9rem; min-height: 36px; line-height: 1.5; }
+.nav-sublink:hover { background: var(--bg); }
+.nav-sublink.active { background: var(--blue-50); color: var(--blue); font-weight: 600; }
+.admin-head { margin-bottom: 1rem; }
+.admin-crumb { margin: 0 0 .1rem; font-size: .85rem; color: var(--muted); font-weight: 500; }
