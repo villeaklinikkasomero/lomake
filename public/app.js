@@ -150,6 +150,7 @@ const ROUTES = [
   { re: /^#\/hallinta\/roolit$/, view: viewRoles, perm: (p) => p.manageUsers },
   { re: /^#\/hallinta\/hankkeet$/, view: viewProjects, perm: (p) => p.manageProjects },
   { re: /^#\/hallinta\/kysymykset$/, view: viewQuestions, perm: (p) => p.manageQuestions },
+  { re: /^#\/hallinta\/suodattimet$/, view: viewDashFilters, perm: (p) => p.manageQuestions },
   { re: /^#\/hallinta\/kirjaustyypit$/, view: viewRecordTypes, perm: (p) => p.manageQuestions },
   { re: /^#\/hallinta\/toteuttajat$/, view: viewPerformerTypes, perm: (p) => p.manageQuestions },
   { re: /^#\/hallinta\/loki$/, view: viewAudit, perm: (p) => p.manageUsers },
@@ -2276,6 +2277,7 @@ const ADMIN_SECTIONS = [
     ['#/hallinta/kirjaustyypit', 'Kirjaustyypit', (p) => p.manageQuestions],
     ['#/hallinta/toteuttajat', 'Toteuttajat', (p) => p.manageQuestions],
     ['#/hallinta/ohjauspalvelut', 'Ohjauspalvelut', (p) => p.manageQuestions],
+    ['#/hallinta/suodattimet', 'Tilastojen suodattimet', (p) => p.manageQuestions],
     ['#/hallinta/hankkeet', 'Hankkeet', (p) => p.manageProjects]] },
   { title: 'Käyttäjät', items: [
     ['#/hallinta/kayttajat', 'Käyttäjät', (p) => p.manageUsers],
@@ -2624,28 +2626,30 @@ async function viewQuestions() {
         h('button', { class: 'btn btn-secondary btn-sm', type: 'button', onclick: () => openEditor(q) }, 'Muokkaa'))))
       : h('p', { class: 'muted small' }, 'Ei hankekohtaisia kysymyksiä.'));
 
-  // Tilastojen suodattimet: yhteiset valintakysymykset, joilla Tilastot-sivua voi rajata
-  function dashFilterCard() {
-    const eligible = questions.filter(q => q.project_id == null && ['choice', 'multichoice', 'rating'].includes(q.type));
-    const boxes = eligible.map(q => ({ q, el: h('input', { type: 'checkbox', checked: !!q.dash_filter }) }));
-    const msg = h('div', { class: 'notice err', hidden: true });
-    return h('details', { class: 'card dash-filter-admin' },
-      h('summary', null, h('strong', null, 'Tilastojen suodattimet'), ' ', h('span', { class: 'badge grey' }, `${boxes.filter(b => b.q.dash_filter).length} valittu`)),
-      h('p', { class: 'muted' }, 'Valitse yhteiset kysymykset, joilla Tilastot- ja Hankkeen tilastot -sivua voi rajata. Jokaisesta tulee suodattimiin monivalintavalikko.'),
-      h('div', { class: 'checks' }, boxes.map(b => h('label', { class: 'opt' }, b.el, h('span', null, b.q.label, b.q.active ? '' : ' (ei käytössä)')))),
-      msg,
-      h('div', { class: 'actions' }, h('button', { type: 'button', class: 'btn btn-primary', onclick: async () => {
-        try { await api('/dash-filters', { method: 'PUT', body: { keys: boxes.filter(b => b.el.checked).map(b => b.q.key) } }); toast('Suodattimet tallennettu.'); viewQuestions(); }
-        catch (ex) { msg.textContent = ex.message; msg.hidden = false; } } }, 'Tallenna suodattimet')));
-  }
-
   $app.replaceChildren(adminTabs('#/hallinta/kysymykset'),
     h('div', { class: 'notice info' }, 'Lomakkeen kiinteät perustiedot (ajankohta, hanke, toteuttaja, kirjaustyyppi, määrät ja asiakastunniste) ovat aina mukana. Kirjaustyyppejä hallitaan sivulla Kirjaustyypit. ',
       'Kysymyksiä ei poisteta, vaan ne otetaan pois käytöstä – näin aiempien vuosien raportointi säilyy ehjänä.'),
     editorBox,
-    dashFilterCard(),
     groupBlock('Yhteiset kysymykset', null, questions.filter(q => q.project_id == null)),
     ...projects.map(p => groupBlock(p.name + (p.active ? '' : ' (ei käytössä)'), p.id, questions.filter(q => q.project_id === p.id))));
+}
+
+// --- Tilastojen suodattimet: yhteiset valintakysymykset, joilla Tilastot-sivua voi rajata
+async function viewDashFilters() {
+  const { questions } = await api('/questions');
+  const eligible = questions.filter(q => q.project_id == null && ['choice', 'multichoice', 'rating'].includes(q.type));
+  const boxes = eligible.map(q => ({ q, el: h('input', { type: 'checkbox', checked: !!q.dash_filter }) }));
+  const msg = h('div', { class: 'notice err', hidden: true });
+  $app.replaceChildren(adminTabs('#/hallinta/suodattimet'),
+    h('p', { class: 'muted' }, 'Valitse yhteiset kysymykset, joilla Tilastot- ja Hankkeen tilastot -sivua voi rajata. Jokaisesta tulee rajauksiin monivalintavalikko. Hankkeiden omilla kysymyksillä rajataan Hankkeen tilastoissa.'),
+    h('div', { class: 'card' },
+      eligible.length ? h('div', { class: 'checks' }, boxes.map(b => h('label', { class: 'opt' }, b.el, h('span', null, b.q.label, b.q.active ? '' : ' (ei käytössä)'))))
+        : h('p', { class: 'muted' }, 'Yhteisiä valintakysymyksiä ei ole.'),
+      msg,
+      h('div', { class: 'actions' }, h('button', { type: 'button', class: 'btn btn-primary', onclick: async () => {
+        msg.hidden = true;
+        try { await api('/dash-filters', { method: 'PUT', body: { keys: boxes.filter(b => b.el.checked).map(b => b.q.key) } }); toast('Suodattimet tallennettu.'); }
+        catch (ex) { msg.textContent = ex.message; msg.hidden = false; } } }, 'Tallenna suodattimet'))));
 }
 
 // --- Kirjaustyypit ("Valitse, mitä raportoit")

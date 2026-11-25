@@ -954,3 +954,11 @@ svg .series.cmp { stroke: var(--cmp, #8a8f96); stroke-width: 2; stroke-dasharray
 .nav-sublink.active { background: var(--blue-50); color: var(--blue); font-weight: 600; }
 .admin-head { margin-bottom: 1rem; }
 .admin-crumb { margin: 0 0 .1rem; font-size: .85rem; color: var(--muted); font-weight: 500; }
+/* Sivupalkin ryhmäotsikot erottuvammiksi: tumma teksti, lihavointi ja erotinviiva ryhmien väliin */
+.nav-group { margin-top: .35rem; }
+.nav-group + .nav-group { border-top: 1px solid var(--line); padding-top: .55rem; margin-top: .55rem; }
+.nav-heading { color: var(--ink); font-weight: 700; font-size: .74rem; letter-spacing: .09em; padding: .2rem .75rem .35rem; }
+.nav-subheading { color: var(--ink); font-weight: 700; font-size: .7rem; padding-top: .55rem; }
+.nav-subgroup:first-child .nav-subheading { padding-top: .3rem; }
+.card > .checks + .notice, .card > .checks + .actions, .card > .checks ~ .actions { margin-top: 1rem; }
+.nav-cta + .nav-group { margin-top: 1rem; }
