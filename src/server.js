@@ -17,7 +17,7 @@ const demo = require('./demo');
 const clients = require('./clients');
 const errorlog = require('./errorlog');
 const configsync = require('./configsync');
-const { dashboard, filterQuestions } = require('./dashboard');
+const { dashboard, filterQuestions, commonFilterQuestions } = require('./dashboard');
 const auth = require('./auth');
 const QRCode = require('qrcode');
 
@@ -150,7 +150,7 @@ function sensitiveHit(text) {
 
 function parseQ(q) {
   return { ...q, options: q.options ? JSON.parse(q.options) : null, required: !!q.required, active: !!q.active, free_text_warning: !!q.free_text_warning,
-    suggest: !!q.suggest, applies: q.applies ? JSON.parse(q.applies) : null, show_if: q.show_if ? JSON.parse(q.show_if) : null };
+    suggest: !!q.suggest, dash_filter: !!q.dash_filter, applies: q.applies ? JSON.parse(q.applies) : null, show_if: q.show_if ? JSON.parse(q.show_if) : null };
 }
 
 // Kirjaustyypit (ylläpidettävät). kind määrää määräkentät ja tilastoinnin.
@@ -906,7 +906,22 @@ app.get('/api/dashboard', requireAuth, (req, res) => {
       answerFilters.push({ id: q.id, type: q.type, values });
     }
   }
-  const result = dashboard({ from, to, projectIds, projectId, types, role, answerFilters,
+  // Yhteisten kysymysten suodattimet: cf = {"kysymys": ["vaihtoehto", …]} (mikä tahansa valituista)
+  const commonFilters = [];
+  if (req.query.cf) {
+    let cf; try { cf = JSON.parse(String(req.query.cf)); } catch { return bad(res, 'Virheellinen suodatin.'); }
+    if (!cf || typeof cf !== 'object' || Array.isArray(cf)) return bad(res, 'Virheellinen suodatin.');
+    const allowed = commonFilterQuestions();
+    for (const [key, vals] of Object.entries(cf)) {
+      const q = allowed.find(x => x.key === key);
+      const values = Array.isArray(vals) ? [...new Set(vals.map(String))] : [];
+      if (!q) return bad(res, 'Suodatin ei ole käytössä.');
+      if (!values.length) continue;
+      if (values.some(v => !q.options.includes(v))) return bad(res, 'Tarkista suodattimen vaihtoehdot.');
+      commonFilters.push({ id: q.id, type: q.type, values });
+    }
+  }
+  const result = dashboard({ from, to, projectIds, projectId, types, role, answerFilters, commonFilters,
     ika: req.query.ika ? [].concat(req.query.ika).map(String).slice(0, 20) : null, sukupuoli: req.query.sukupuoli ? String(req.query.sukupuoli) : null,
     compare: String(req.query.compare || 'none'), kaupunki: req.query.kaupunki ? String(req.query.kaupunki).slice(0, 100) : null });
   res.json(questions ? { ...result, filterQuestions: questions } : result);
@@ -1261,6 +1276,19 @@ app.put('/api/questions/:id', requireAuth, requirePerm('manageQuestions'), (req,
          b.active === false ? 0 : 1, ...digitalCols(b), b.type === 'text' && b.suggest ? 1 : 0, ...visibilityCols(b), Number.isInteger(b.sort) ? b.sort : null, id);
   audit(req.user.id, 'question_update', 'question', id, { label: b.label, active: b.active });
   res.json({ ok: true });
+});
+// Tilastojen suodattimet: ylläpito valitsee yhteiset valintakysymykset, joilla tilastoja voi rajata
+app.put('/api/dash-filters', requireAuth, requirePerm('manageQuestions'), (req, res) => {
+  const keys = Array.isArray(req.body.keys) ? req.body.keys.map(String) : null;
+  if (!keys) return bad(res, 'Virheellinen valinta.');
+  const eligible = db.prepare("SELECT key FROM questions WHERE project_id IS NULL AND type IN ('choice', 'multichoice', 'rating')").all().map(r => r.key);
+  if (keys.some(k => !eligible.includes(k))) return bad(res, 'Suodattimeksi voi valita vain yhteisen valintakysymyksen.');
+  db.transaction(() => {
+    db.prepare('UPDATE questions SET dash_filter = 0 WHERE dash_filter = 1').run();
+    for (const k of keys) db.prepare('UPDATE questions SET dash_filter = 1 WHERE key = ? AND project_id IS NULL').run(k);
+  })();
+  audit(req.user.id, 'dash_filters_update', 'question', null, { keys });
+  res.json({ ok: true, keys });
 });
 // Kirjaustyypit (Hallinta → Kirjaustyypit). Tyyppejä ei poisteta, ne otetaan pois käytöstä.
 // Muut toteuttajat (Hallinta → Toteuttajat)

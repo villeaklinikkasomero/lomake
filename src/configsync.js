@@ -22,7 +22,7 @@ const SECTIONS = [
     fields: ['name', 'active', 'sort'] },
   { key: 'questions', label: 'Kysymykset', table: 'questions', id: 'key', name: 'label',
     fields: ['key', 'project_code', 'label', 'help', 'type', 'options', 'required', 'applies', 'show_if', 'min_value',
-      'free_text_warning', 'sort', 'active', 'digital_mode', 'digital_value', 'suggest'] },
+      'free_text_warning', 'sort', 'active', 'digital_mode', 'digital_value', 'suggest', 'dash_filter'] },
 ];
 const QUESTION_TYPES = ['text', 'textarea', 'number', 'choice', 'multichoice', 'rating', 'date'];
 const KINDS = ['yksilo', 'ryhma', 'tavoittaminen'];
@@ -78,7 +78,8 @@ function plan(data) {
       incoming.add(r[s.id]);
       const c = cur.get(r[s.id]);
       if (!c) { create.push({ id: r[s.id], name: r[s.name] || r[s.id] }); continue; }
-      const changed = s.fields.filter(f => f !== s.id && norm(r[f]) !== norm(c[f]));
+      // Kenttä, jota tiedostossa ei ole (vanhempi versio), jätetään ennalleen
+      const changed = s.fields.filter(f => f !== s.id && r[f] !== undefined && norm(r[f]) !== norm(c[f]));
       if (changed.length) update.push({ id: r[s.id], name: r[s.name] || r[s.id], fields: changed });
       else unchanged++;
     }
@@ -100,11 +101,11 @@ function apply(data) {
       const exists = db.prepare(`SELECT 1 FROM ${s.table} WHERE ${s.id} = ?`);
       for (const r of rows) {
         const v = Object.fromEntries(cols.map(f => [f, f === 'project_id' ? (r.project_code ? projectId[r.project_code] : null) : (r[f] === undefined ? null : r[f])]));
-        for (const k of ['active', 'sort', 'digital', 'required', 'free_text_warning', 'suggest']) if (k in v) v[k] = Number(v[k]) || 0;
+        for (const k of ['active', 'sort', 'digital', 'required', 'free_text_warning', 'suggest', 'dash_filter']) if (k in v) v[k] = Number(v[k]) || 0;
         if ('digital_mode' in v && !v.digital_mode) v.digital_mode = 'show';
         if ('recorder_index' in v) v.recorder_index = Number(v.recorder_index);
         if (exists.get(r[s.id])) {
-          const set = cols.filter(f => f !== s.id).map(f => `${f} = @${f}`).join(', ');
+          const set = cols.filter(f => f !== s.id && (f === 'project_id' || r[f] !== undefined)).map(f => `${f} = @${f}`).join(', ');
           db.prepare(`UPDATE ${s.table} SET ${set}${s.key === 'questions' ? ", updated_at = datetime('now')" : ''} WHERE ${s.id} = @${s.id}`).run(v);
         } else {
           db.prepare(`INSERT INTO ${s.table} (${cols.join(', ')}) VALUES (${cols.map(f => '@' + f).join(', ')})`).run(v);

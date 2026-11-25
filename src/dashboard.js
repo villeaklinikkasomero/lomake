@@ -21,7 +21,7 @@ function shiftYear(from, to) {
   return [back(from), back(to)];
 }
 
-function buildWhere({ from, to, projectIds, projectId, types, role, ika, sukupuoli, kaupunki, answerFilters }) {
+function buildWhere({ from, to, projectIds, projectId, types, role, ika, sukupuoli, kaupunki, answerFilters, commonFilters }) {
   const w = ['e.deleted_at IS NULL', `e.project_id IN (${projectIds.map(() => '?').join(',') || 'NULL'})`];
   const p = [...projectIds];
   if (from) { w.push('e.encounter_date >= ?'); p.push(from); }
@@ -44,7 +44,7 @@ function buildWhere({ from, to, projectIds, projectId, types, role, ika, sukupuo
     p.push(qid('kaupunki'), String(kaupunki).trim().toLowerCase());
   }
   // Hankkeen omien kysymysten ehdot: kysymyksen sisällä mikä tahansa valituista vaihtoehdoista, kysymysten välillä kaikki
-  for (const f of answerFilters || []) {
+  for (const f of [...(commonFilters || []), ...(answerFilters || [])]) {
     const ph = f.values.map(() => '?').join(',');
     if (f.type === 'multichoice') {
       w.push(`EXISTS (SELECT 1 FROM encounter_answers a, json_each(a.value) j WHERE a.encounter_id = e.id AND a.question_id = ? AND j.value IN (${ph}))`);
@@ -119,6 +119,15 @@ const maskPlaces = (pl) => ({ ...pl, cities: pl.cities.filter(c => c.encounters 
 // Pienin näytettävä kirjausmäärä, kun tuloksia rajataan hankkeen omilla kysymyksillä
 const MIN_ROWS = 6;
 
+// Yhteiset kysymykset, jotka ylläpito on valinnut tilastojen suodattimiksi (monivalinta)
+function commonFilterQuestions() {
+  return db.prepare(`SELECT id, key, label, type, options FROM questions WHERE project_id IS NULL AND dash_filter = 1
+    AND type IN ('choice', 'multichoice', 'rating') ORDER BY sort, id`).all()
+    .map(q => ({ id: q.id, key: q.key, label: q.label, type: q.type,
+      options: q.type === 'rating' ? ['1', '2', '3', '4', '5'] : JSON.parse(q.options || '[]').map(String) }));
+}
+const publicFilters = () => commonFilterQuestions().map(({ id, ...q }) => q);
+
 // Hankkeen omat valintakysymykset, joilla hankkeen tilastoja voi rajata
 function filterQuestions(projectId) {
   return db.prepare(`SELECT id, key, label, type, options, active FROM questions WHERE project_id = ? AND type IN ('choice', 'multichoice', 'rating')
@@ -134,7 +143,7 @@ function dashboard(filters) {
   if ((filters.answerFilters || []).length && cur.rows < MIN_ROWS) {
     const opt = (key) => { const q = db.prepare('SELECT options FROM questions WHERE key = ?').get(key); return q && q.options ? JSON.parse(q.options) : []; };
     return { suppressed: true, minRows: MIN_ROWS, period: { from: filters.from, to: filters.to, compare: 'none' },
-      options: { roles: RECORDER_ROLES, ika: opt('ika'), sukupuoli: opt('sukupuoli') }, places: { cities: [] } };
+      options: { roles: RECORDER_ROLES, ika: opt('ika'), sukupuoli: opt('sukupuoli'), filters: publicFilters() }, places: { cities: [] } };
   }
   // Vertailu valinnan mukaan: ei vertailua, edellinen yhtä pitkä jakso tai sama jakso vuotta aiemmin
   const compare = ['prev', 'year'].includes(filters.compare) ? filters.compare : 'none';
@@ -204,8 +213,8 @@ function dashboard(filters) {
     ratings: { worker: ratingStats('tyontekijan_arvio'), client: ratingStats('asiakkaan_arvio') },
     referrals: { ...ref, rate: ref.toteutui + ref.ei_toteutunut ? ref.toteutui / (ref.toteutui + ref.ei_toteutunut) : null },
     distributions, updated, places: filtered ? maskPlaces(places(filters, W)) : places(filters, W),
-    options: { roles: RECORDER_ROLES, ika: opt('ika'), sukupuoli: opt('sukupuoli') },
+    options: { roles: RECORDER_ROLES, ika: opt('ika'), sukupuoli: opt('sukupuoli'), filters: publicFilters() },
   };
 }
 
-module.exports = { dashboard, filterQuestions, shiftPeriod, shiftYear, MIN_ROWS };
+module.exports = { dashboard, filterQuestions, commonFilterQuestions, shiftPeriod, shiftYear, MIN_ROWS };

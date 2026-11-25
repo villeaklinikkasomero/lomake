@@ -1486,6 +1486,39 @@ function monthChart(data) {
 function niceStep(max) { const raw = max / 4; const p = 10 ** Math.floor(Math.log10(raw)); const n = raw / p; return Math.max(1, (n <= 1 ? 1 : n <= 2 ? 2 : n <= 5 ? 5 : 10) * p); }
 
 // Vaakapylväät HTML:nä (yksi sarja, arvo tekstinä)
+// Monivalintapudotusvalikko: painike näyttää valinnat, paneelissa valintaruudut. Valinta päivittää heti;
+// paneeli pysyy auki, vaikka näkymä piirretään uudelleen (msOpen muistaa avoimen valikon).
+let msOpen = null;
+function multiSelect({ id, label, options, selected, onChange }) {
+  const sel = new Set(selected.filter(v => options.includes(v)));
+  const summary = () => (!sel.size ? 'Kaikki' : sel.size <= 2 ? options.filter(o => sel.has(o)).join(', ') : `${sel.size} valittu`);
+  const btnText = h('span', { class: 'ms-text' }, summary());
+  const btn = h('button', { type: 'button', class: 'ms-btn', id, 'aria-haspopup': 'true', 'aria-expanded': 'false', 'aria-controls': id + '-panel' }, btnText);
+  const panel = h('div', { class: 'ms-panel', id: id + '-panel', role: 'group', 'aria-label': label, hidden: true },
+    options.map((o, i) => {
+      const el = h('input', { type: 'checkbox', checked: sel.has(o), 'data-i': i });
+      el.addEventListener('change', () => { el.checked ? sel.add(o) : sel.delete(o); btnText.textContent = summary(); msOpen = { id, focus: i }; onChange(options.filter(x => sel.has(x))); });
+      return h('label', { class: 'ms-opt' }, el, h('span', null, o));
+    }),
+    h('button', { type: 'button', class: 'btn btn-link btn-sm ms-clear', hidden: !sel.size, onclick: () => { sel.clear(); msOpen = { id, focus: 0 }; onChange([]); } }, 'Tyhjennä'));
+  const wrap = h('div', { class: 'field ms' + (sel.size ? ' ms-active' : '') }, h('label', { for: id }, label), h('div', { class: 'ms-box' }, btn, panel));
+  const open = (on) => { panel.hidden = !on; btn.setAttribute('aria-expanded', String(on)); msOpen = on ? { id } : (msOpen && msOpen.id === id ? null : msOpen); };
+  btn.addEventListener('click', () => open(panel.hidden));
+  wrap.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !panel.hidden) { open(false); btn.focus(); } });
+  // Uudelleenpiirron jälkeen avoin valikko pysyy auki ja kohdistus palaa samaan valintaan
+  if (msOpen && msOpen.id === id) {
+    panel.hidden = false; btn.setAttribute('aria-expanded', 'true');
+    if (msOpen.focus != null) setTimeout(() => { const el = panel.querySelector(`input[data-i="${msOpen && msOpen.focus}"]`) || panel.querySelector('input'); if (el) el.focus(); }, 0);
+  }
+  return wrap;
+}
+// Valikko sulkeutuu, kun napautetaan muualle
+document.addEventListener('pointerdown', (e) => {
+  if (!msOpen) return;
+  const box = document.getElementById(msOpen.id); if (!box) { msOpen = null; return; }
+  if (!box.closest('.ms-box').contains(e.target)) { const panel = document.getElementById(msOpen.id + '-panel'); if (panel) panel.hidden = true; box.setAttribute('aria-expanded', 'false'); msOpen = null; }
+});
+
 function hBars(items, opts = {}) {
   const max = Math.max(1, ...items.map(i => i.value));
   // opts.onPick: rivit ovat painikkeita (esim. paikkakunnan valinta rajaukseksi)
@@ -1500,8 +1533,8 @@ function hBars(items, opts = {}) {
 // ---------------------------------------------------------------------------
 // Tilastot (dashboard) – määrittelydokumentin mallin mukaan
 // ---------------------------------------------------------------------------
-const dashState = { from: '', to: '', project_id: '', types: null, role: '', ika: [], sukupuoli: '', kaupunki: '', compare: 'none' };
-const projDashState = { from: '', to: '', project_id: '', types: null, role: '', ika: [], sukupuoli: '', kaupunki: '', compare: 'none', qf: [] };
+const dashState = { from: '', to: '', project_id: '', types: null, role: '', cf: {}, kaupunki: '', compare: 'none' };
+const projDashState = { from: '', to: '', project_id: '', types: null, role: '', cf: {}, kaupunki: '', compare: 'none', qf: [] };
 const COMPARE = { none: 'Ei vertailua', prev: 'Edellinen jakso', year: 'Vuotta aiemmin' };
 const SERIES = [
   { key: 'encounters', label: 'Kohtaamiset yhteensä', cls: 's1' },
@@ -1537,8 +1570,10 @@ async function viewDashboard(mode) {
   function query() {
     const q = new URLSearchParams({ from: st.from, to: st.to });
     if (st.types) q.set('types', st.types.join(','));
-    for (const k of ['project_id', 'role', 'sukupuoli', 'kaupunki']) if (st[k]) q.set(k, st[k]);
-    for (const v of st.ika || []) q.append('ika', v);   // ikäryhmät: useita voi valita
+    for (const k of ['project_id', 'role', 'kaupunki']) if (st[k]) q.set(k, st[k]);
+    // Yhteisten kysymysten suodattimet (esim. ikä, sukupuoli): useita vaihtoehtoja voi valita
+    const cf = Object.fromEntries(Object.entries(st.cf || {}).filter(([, v]) => v.length));
+    if (Object.keys(cf).length) q.set('cf', JSON.stringify(cf));
     if (st.compare !== 'none') q.set('compare', st.compare);
     if (project) { q.set('own', '1'); const qf = (st.qf || []).filter(x => x.q && x.v.length); if (qf.length) q.set('qf', JSON.stringify(qf)); }
     return q;
@@ -1559,7 +1594,8 @@ async function viewDashboard(mode) {
       el.addEventListener('change', () => { const set = new Set(selTypes()); el.checked ? set.add(v) : set.delete(v);
         if (!set.size) { el.checked = true; return; } const next = allTypes.filter(x => set.has(x)); st.types = next.length === allTypes.length ? null : next; load(); });
       return h('label', { class: 'opt' }, el, h('span', null, t)); };
-    const active = ['role', 'sukupuoli', 'kaupunki'].concat(project ? [] : ['project_id']).filter(k => st[k]).length + (st.types ? 1 : 0) + ((st.ika || []).length ? 1 : 0)
+    const active = ['role', 'kaupunki'].concat(project ? [] : ['project_id']).filter(k => st[k]).length + (st.types ? 1 : 0)
+      + Object.values(st.cf || {}).filter(v => v.length).length
       + (project ? (st.qf || []).filter(x => x.q && x.v.length).length : 0);
     const det = h('details', { class: 'dash-filter-details', open: filtersOpen || null },
       h('summary', null, `Rajaukset · ${fmtDate(st.from)}–${fmtDate(st.to)}${active ? ` · ${active} lisärajausta` : ''}${st.compare !== 'none' ? ' · vertailu' : ''}`));
@@ -1573,22 +1609,18 @@ async function viewDashboard(mode) {
             el.addEventListener('change', () => { st.project_id = el.value; st.qf = []; load(); }); return el; })()) : null)
         : (me.dashProjects || me.projects).length > 1 ? sel('project_id', 'd-proj', 'Hanke', (me.dashProjects || me.projects).map(x => [x.id, x.name]), 'Kaikki hankkeet') : null,
         sel('role', 'd-role', 'Kirjaajan rooli', opts.roles.map(r => [r, r]), 'Kaikki'),
-        sel('sukupuoli', 'd-sp', 'Sukupuoli', opts.sukupuoli.map(r => [r, r]), 'Kaikki'),
+        // Ylläpidon valitsemat yhteiset kysymykset monivalintoina (Hallinta → Kysymykset → Tilastojen suodattimet)
+        ...(opts.filters || []).map(f => multiSelect({ id: 'd-cf-' + f.key, label: f.label, options: f.options, selected: (st.cf || {})[f.key] || [],
+          onChange: (vals) => { st.cf = { ...(st.cf || {}), [f.key]: vals }; load(); } })),
         opts.cities.length || st.kaupunki ? sel('kaupunki', 'd-city', 'Paikkakunta',
           [...opts.cities.map(c => [c.label, c.label]), ...(st.kaupunki && !opts.cities.some(c => c.label.toLowerCase() === st.kaupunki.toLowerCase()) ? [[st.kaupunki, st.kaupunki]] : [])], 'Kaikki') : null),
-      project ? questionFilter() : null,
+      ...(project ? [questionFilter()] : []),
       h('div', { class: 'dash-filter-row' },
         h('div', { class: 'actions presets' }, presets.map(([t, f, to]) => h('button', { type: 'button',
           class: 'btn btn-sm ' + (st.from === f && st.to === to ? 'btn-primary' : 'btn-secondary'),
           onclick: () => { st.from = f; st.to = to; load(); } }, t))),
         h('div', { class: 'type-checks', role: 'group', 'aria-label': 'Kohtaamisen tyyppi' }, h('span', { class: 'label' }, 'Kohtaamisen tyyppi'),
           recordTypes().filter(t => t.active || (st.types || []).includes(t.key)).map(t => typeBox(t.key, t.label)))),
-      // Ikäryhmät valintaruutuina: ei valintaa = kaikki ikäryhmät
-      opts.ika.length ? h('div', { class: 'dash-filter-row' }, h('div', { class: 'type-checks', role: 'group', 'aria-label': 'Ikä (arvio)' }, h('span', { class: 'label' }, 'Ikä (arvio)'),
-        opts.ika.map(v => { const el = h('input', { type: 'checkbox', checked: (st.ika || []).includes(v) });
-          el.addEventListener('change', () => { const set = new Set(st.ika || []); el.checked ? set.add(v) : set.delete(v); st.ika = opts.ika.filter(x => set.has(x)); load(); });
-          return h('label', { class: 'opt' }, el, h('span', null, v)); }),
-        (st.ika || []).length ? h('button', { type: 'button', class: 'btn btn-link btn-sm', onclick: () => { st.ika = []; load(); } }, 'Kaikki iät') : null)) : null,
       // Vertailu pikavalintojen alle, Excel-vienti oikealle
       h('div', { class: 'dash-filter-row dash-filter-bottom' },
         h('div', { class: 'field cmp-field' }, h('label', { for: 'd-cmp' }, 'Vertailu'),
@@ -2580,10 +2612,26 @@ async function viewQuestions() {
         h('button', { class: 'btn btn-secondary btn-sm', type: 'button', onclick: () => openEditor(q) }, 'Muokkaa'))))
       : h('p', { class: 'muted small' }, 'Ei hankekohtaisia kysymyksiä.'));
 
+  // Tilastojen suodattimet: yhteiset valintakysymykset, joilla Tilastot-sivua voi rajata
+  function dashFilterCard() {
+    const eligible = questions.filter(q => q.project_id == null && ['choice', 'multichoice', 'rating'].includes(q.type));
+    const boxes = eligible.map(q => ({ q, el: h('input', { type: 'checkbox', checked: !!q.dash_filter }) }));
+    const msg = h('div', { class: 'notice err', hidden: true });
+    return h('details', { class: 'card dash-filter-admin' },
+      h('summary', null, h('strong', null, 'Tilastojen suodattimet'), ' ', h('span', { class: 'badge grey' }, `${boxes.filter(b => b.q.dash_filter).length} valittu`)),
+      h('p', { class: 'muted' }, 'Valitse yhteiset kysymykset, joilla Tilastot- ja Hankkeen tilastot -sivua voi rajata. Jokaisesta tulee suodattimiin monivalintavalikko.'),
+      h('div', { class: 'checks' }, boxes.map(b => h('label', { class: 'opt' }, b.el, h('span', null, b.q.label, b.q.active ? '' : ' (ei käytössä)')))),
+      msg,
+      h('div', { class: 'actions' }, h('button', { type: 'button', class: 'btn btn-primary', onclick: async () => {
+        try { await api('/dash-filters', { method: 'PUT', body: { keys: boxes.filter(b => b.el.checked).map(b => b.q.key) } }); toast('Suodattimet tallennettu.'); viewQuestions(); }
+        catch (ex) { msg.textContent = ex.message; msg.hidden = false; } } }, 'Tallenna suodattimet')));
+  }
+
   $app.replaceChildren(adminTabs('#/hallinta/kysymykset'),
     h('div', { class: 'notice info' }, 'Lomakkeen kiinteät perustiedot (ajankohta, hanke, toteuttaja, kirjaustyyppi, määrät ja asiakastunniste) ovat aina mukana. Kirjaustyyppejä hallitaan välilehdellä Kirjaustyypit. ',
       'Kysymyksiä ei poisteta, vaan ne otetaan pois käytöstä – näin aiempien vuosien raportointi säilyy ehjänä.'),
     editorBox,
+    dashFilterCard(),
     groupBlock('Yhteiset kysymykset', null, questions.filter(q => q.project_id == null)),
     ...projects.map(p => groupBlock(p.name + (p.active ? '' : ' (ei käytössä)'), p.id, questions.filter(q => q.project_id === p.id))));
 }

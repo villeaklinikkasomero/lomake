@@ -413,6 +413,11 @@ once('kirjaustyypit', () => {
   }
   if (!cols.includes('show_if')) db.exec('ALTER TABLE questions ADD COLUMN show_if TEXT');
   if (!cols.includes('min_value')) db.exec('ALTER TABLE questions ADD COLUMN min_value INTEGER');
+  // dash_filter = yhteinen valintakysymys näkyy tilastojen suodattimena (Hallinta → Kysymykset → Tilastojen suodattimet)
+  if (!cols.includes('dash_filter')) {
+    db.exec('ALTER TABLE questions ADD COLUMN dash_filter INTEGER NOT NULL DEFAULT 0');
+    db.exec("UPDATE questions SET dash_filter = 1 WHERE key IN ('ika', 'sukupuoli') AND project_id IS NULL");
+  }
 }
 
 // Kysymykset 2027 (määrittelytaulukko "Kohtaamisten raportointi 2027 kysymykset ja huomiot"):

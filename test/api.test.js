@@ -883,3 +883,24 @@ test('tietoturva: oma salasanan vaihto päättää muut istunnot; suuri asetusru
   assert.equal((await users.admin('POST', '/admin/config/import', big)).status, 400, 'ylläpitäjältä jäsennetään ja tarkistetaan');
   assert.equal((await users.admin('POST', '/questions', big)).status, 413);
 });
+
+test('tilastojen suodattimet: ylläpito valitsee yhteiset kysymykset, monivalinta rajaa', async () => {
+  const a = users.admin;
+  let d = await a('GET', `/dashboard?from=2020-01-01&to=${today}`);
+  assert.deepEqual(d.data.options.filters.map(f => f.key).sort(), ['ika', 'sukupuoli'], 'oletuksena ikä ja sukupuoli');
+  const all = d.data.totals.rows;
+  const one = await a('GET', `/dashboard?from=2020-01-01&to=${today}&cf=` + encodeURIComponent(JSON.stringify({ ika: ['18–29 vuotta'] })));
+  const two = await a('GET', `/dashboard?from=2020-01-01&to=${today}&cf=` + encodeURIComponent(JSON.stringify({ ika: ['18–29 vuotta', '30–62 vuotta'] })));
+  assert.ok(one.data.totals.rows >= 1 && two.data.totals.rows >= one.data.totals.rows && two.data.totals.rows < all);
+  // Suodatin, jota ei ole valittu, hylätään
+  assert.equal((await a('GET', `/dashboard?cf=` + encodeURIComponent(JSON.stringify({ tuki_ja_apu: ['Palveluohjaus'] })))).status, 400);
+  // Ylläpito lisää tukikysymyksen suodattimeksi ja poistaa sukupuolen
+  assert.equal((await users.tiimivetaja('PUT', '/dash-filters', { keys: ['ika'] })).status, 403);
+  assert.equal((await a('PUT', '/dash-filters', { keys: ['osis_toimintamuoto'] })).status, 400, 'hankkeen kysymys ei kelpaa');
+  assert.equal((await a('PUT', '/dash-filters', { keys: ['ika', 'tuki_ja_apu'] })).status, 200);
+  d = await a('GET', `/dashboard?from=2020-01-01&to=${today}`);
+  assert.deepEqual(d.data.options.filters.map(f => f.key).sort(), ['ika', 'tuki_ja_apu']);
+  const t = await a('GET', `/dashboard?from=2020-01-01&to=${today}&cf=` + encodeURIComponent(JSON.stringify({ tuki_ja_apu: ['Palveluohjaus'] })));
+  assert.equal(t.status, 200, JSON.stringify(t.data));
+  assert.equal((await a('PUT', '/dash-filters', { keys: ['ika', 'sukupuoli'] })).status, 200);
+});
